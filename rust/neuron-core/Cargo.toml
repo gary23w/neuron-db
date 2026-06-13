@@ -6,6 +6,7 @@ description = "Associative memory core (the neuron) in pure Rust, std-only. Writ
 license = "MIT"
 
 [lib]
+crate-type = ["rlib", "cdylib"]
 name = "neuron_core"
 path = "src/lib.rs"
 

@@ -1,0 +1,14 @@
+{
+  // Deploy neuron-db's Rust/WASM core to Cloudflare Workers.
+  //   1. ./build.sh           # compiles rust/neuron-core -> neuron_core.wasm (model baked in)
+  //   2. npx wrangler deploy  # needs your Cloudflare account (wrangler login)
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "neuron-db",
+  "main": "index.mjs",
+  "compatibility_date": "2025-05-01",
+  "observability": { "enabled": true },
+  // bundle the .wasm as a CompiledWasm module so `import wasm from "./neuron_core.wasm"` works
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": false }
+  ]
+}
