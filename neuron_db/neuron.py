@@ -140,6 +140,19 @@ class Neuron:
         if pet_query and (bes&PETS): cov=1.0
         val,echo=_pick_value(best,cue,bool(cue&_stem({"many","much","number"})))
         return {"fact":best["t"],"value":val,"coverage":cov,"overlap":bk[0],"echo":echo}
+    def recall_many(self, query, k=20):
+        cue=_stem(_content(query)) if isinstance(query,str) else _stem(set(query))
+        if not cue: return []
+        if self._index is None or self._index_len!=len(self.episodes): self._build_index()
+        cand=set()
+        for s in cue: cand.update(self._index.get(s,()))
+        scored=[]
+        for i in cand:
+            e=self.episodes[i]; es=set(e["s"]); ov=len(cue&es)
+            if ov<1: continue
+            scored.append(((ov,-len(es-cue-STOPVAL_S),i), e["t"]))
+        scored.sort(key=lambda x:x[0], reverse=True)
+        return [t for _,t in scored[:k]]
     def dump(self): return json.dumps([[e["t"],1 if e.get("self") else 0] for e in self.episodes], ensure_ascii=False)
     @classmethod
     def load(cls, blob, max_facts=500):
