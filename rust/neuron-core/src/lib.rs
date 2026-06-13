@@ -220,3 +220,8 @@ impl Neuron {
     }
     pub fn fact_count(&self) -> usize { self.episodes.len() }
 }
+
+// ---- inference tier: the emergence cortex, bundled (optional to use) ----
+pub mod cortex;
+pub mod bpe;
+pub mod model;
