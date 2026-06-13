@@ -5,12 +5,11 @@
     db.turn("alice", "the launch is on Friday")
     db.turn("alice", "when is the launch?")   # -> Friday.
 
-A neuron is an associative memory: write facts in plain language, query by cue,
-get the isolated value back -- and there is no bulk-dump of a neuron's values.
+For secrets, use SecureNeuronDB: values are encrypted and the key is never stored.
 """
 from .neuron import Neuron
 from .db import NeuronDB
 from .turn import turn
-
-__version__ = "0.1.0"
-__all__ = ["Neuron", "NeuronDB", "turn", "__version__"]
+from .secure import SecureNeuron, SecureNeuronDB
+__version__ = "0.2.0"
+__all__ = ["Neuron", "NeuronDB", "turn", "SecureNeuron", "SecureNeuronDB", "__version__"]
