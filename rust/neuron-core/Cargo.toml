@@ -45,3 +45,19 @@ lto = true
 [[bin]]
 name = "think"
 path = "src/think.rs"
+
+[[example]]
+name = "quickstart"
+required-features = ["sqlite"]
+
+[[example]]
+name = "chatbot_memory"
+required-features = ["sqlite"]
+
+[[example]]
+name = "user_profiles"
+required-features = ["sqlite"]
+
+[[example]]
+name = "encrypted_secrets"
+required-features = ["secure"]

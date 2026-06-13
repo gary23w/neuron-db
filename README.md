@@ -74,6 +74,13 @@ The store and service tiers are canonical in **Rust** (`rust/neuron-core/`). A P
 reference implementation — including the gary-neuron cortex bridge and training tooling —
 is preserved on the **`legacy-python`** branch.
 
+## Examples
+
+Runnable code and integration guides are in **[examples/](examples/)** — quickstart, a
+chatbot-memory loop, per-user profiles, sharding, encrypted secrets, HTTP clients
+(curl/browser/Node/Python), and guides for wiring neuron-db into a **[chatbot](examples/guides/CHATBOT.md)**
+or an **[existing API](examples/guides/EXISTING_API.md)**.
+
 ## Docs
 
 - [docs/API.md](docs/API.md) — data model and every operation (library / CLI / HTTP)
