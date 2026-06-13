@@ -41,3 +41,12 @@ fn val(n:&mut Neuron,q:&str)->Option<String>{ n.recall(q).map(|r| r.value) }
     assert_eq!(val(&mut n,"how many guests?").as_deref(), Some("200"));
     assert_eq!(val(&mut n,"how many chairs?").as_deref(), Some("50"));
     assert_eq!(val(&mut n,"how many tables?").as_deref(), Some("8")); }
+
+#[test]
+fn semantic_aliases_bridge_paraphrase() {
+    let mut n = neuron_core::Neuron::new(500);
+    n.observe("my plan is pro");
+    n.observe("my manager is Dana");
+    assert_eq!(n.recall("what subscription tier do i have?").unwrap().value, "pro");
+    assert_eq!(n.recall("who do i report to?").unwrap().value, "Dana");
+}

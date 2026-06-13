@@ -166,6 +166,10 @@ GET  /v1/{scope}             -> stats                        (auth)
 POST /v1/{scope}   {message} -> { reply, kind, wrote, facts } (turn: store or answer)
 POST /v1/{scope}/get    {query}  -> { value }
 POST /v1/{scope}/recall {query}  -> { value, fact, coverage }   # for context gating
+POST /v1/{scope}/recall_many {query,k} -> { hits:[{value,fact,coverage}] }  # top-k memory block
+POST /v1/{scope}/observe {facts:[...]} -> { wrote }            # batch ingest (amortized save)
+GET  /healthz                    -> { ok }
+GET  /metrics                    -> { requests, uptime_s }
 POST /v1/{scope}/forget {match}  -> { forgot, remaining }
 ```
 

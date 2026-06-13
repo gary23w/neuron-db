@@ -46,6 +46,21 @@ fn stem1(w: &str) -> String {
 }
 fn stems<'a, I: IntoIterator<Item = &'a String>>(it: I) -> HashSet<String> { it.into_iter().map(|w| stem1(w)).collect() }
 fn stems_s(it: &HashSet<String>) -> HashSet<String> { it.iter().map(|w| stem1(w)).collect() }
+fn aliases() -> &'static HashMap<&'static str, &'static str> {
+    static M: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    M.get_or_init(|| {
+        // curated synonym -> canonical; expands a query's cue so paraphrases recall.
+        [("subscription","plan"),("tier","plan"),("membership","plan"),
+         ("boss","manager"),("supervisor","manager"),("report","manager"),("lead","manager"),
+         ("role","job"),("occupation","job"),("profession","job"),("position","job"),("title","job"),
+         ("ide","editor"),("tz","timezone"),("zone","timezone"),("mail","email"),
+         ("username","handle"),("user","handle"),("due","deadline"),("cell","phone"),("mobile","phone")]
+        .iter().cloned().collect()
+    })
+}
+fn expand_cue(query: &str, cue: &mut HashSet<String>) {
+    for w in content(query) { if let Some(c) = aliases().get(w.as_str()) { cue.insert(stem1(c)); } }
+}
 fn rel_s() -> &'static HashSet<String> { static S: OnceLock<HashSet<String>> = OnceLock::new();
     S.get_or_init(|| rel().iter().map(|w| stem1(w)).collect()) }
 fn pets() -> &'static HashSet<String> { static S: OnceLock<HashSet<String>> = OnceLock::new();
@@ -184,8 +199,9 @@ impl Neuron {
     }
 
     pub fn recall(&mut self, query: &str) -> Option<Recall> {
-        let cue: HashSet<String> = stems_s(&content(query));
+        let mut cue: HashSet<String> = stems_s(&content(query));
         if cue.is_empty() { return None; }
+        expand_cue(query, &mut cue);
         let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let name_query = cue.contains("name") && cue.intersection(rel_s()).count()==0;
@@ -223,6 +239,37 @@ impl Neuron {
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(e, &cue, want_num);
         Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, exact: bk.0 as usize, echo })
+    }
+
+    /// Top-k relevant facts (richest first), for building a memory block. Same scoring as
+    /// recall, but returns several hits instead of one.
+    pub fn recall_many(&mut self, query: &str, k: usize) -> Vec<Recall> {
+        let mut cue: HashSet<String> = stems_s(&content(query));
+        if cue.is_empty() { return Vec::new(); }
+        expand_cue(query, &mut cue);
+        let qraw: HashSet<String> = content(query);
+        let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
+        let order = self.candidates(&cue, pet_query);
+        let mut scored: Vec<((i64,i64,i64),usize)> = Vec::new();
+        for i in order {
+            let e = &self.episodes[i];
+            let es: HashSet<&String> = e.s.iter().collect();
+            let ov = cue.iter().filter(|c| es.contains(c)).count();
+            if ov < 1 { continue; }
+            let exact = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
+            let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
+            scored.push(((exact, ov as i64, spec), i));
+        }
+        scored.sort_by(|a,b| b.0.cmp(&a.0));
+        scored.truncate(k);
+        let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
+        scored.into_iter().map(|(sc,i)| {
+            let e = &self.episodes[i];
+            let bes: HashSet<&String> = e.s.iter().collect();
+            let cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
+            let (val, echo) = pick_value(e, &cue, want_num);
+            Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo }
+        }).collect()
     }
 
     /// minimal persistence: "<flag>\t<text>" per line; index rebuilt on load
