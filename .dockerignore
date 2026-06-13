@@ -1,0 +1,7 @@
+**/target
+worker/node_modules
+worker/.wrangler
+**/*.db
+.git
+docs
+*.md

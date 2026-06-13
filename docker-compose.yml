@@ -1,0 +1,15 @@
+services:
+  neuron-db:
+    build: .
+    image: neuron-db
+    ports:
+      - "8088:8088"
+    environment:
+      NEURON_HOST: 0.0.0.0
+      NEURON_DB: /data/neurons.db
+      NEURON_DB_KEY: ${NEURON_DB_KEY:-}   # set in your shell/.env to require a bearer token
+    volumes:
+      - neuron-data:/data
+    restart: unless-stopped
+volumes:
+  neuron-data:
