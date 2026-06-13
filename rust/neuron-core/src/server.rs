@@ -7,6 +7,7 @@
 //! Bearer auth when NEURON_DB_KEY is set. Feature-gated behind `server`.
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use crate::db::NeuronDB;
 
@@ -61,14 +62,18 @@ fn urldecode(s: &str) -> String {
 pub fn serve(db_path: &str, host: &str, port: u16, max_facts: usize) -> std::io::Result<()> {
     let db = Arc::new(NeuronDB::open(db_path, max_facts));
     let key = std::env::var("NEURON_DB_KEY").ok().filter(|s| !s.is_empty());
+    let log = std::env::var("NEURON_LOG").map(|v| v != "off" && v != "0").unwrap_or(true);
     let listener = TcpListener::bind((host, port))?;
     eprintln!("neuron-db serving {} at http://{}:{}  (auth {})", db_path, host, port, if key.is_some() { "on" } else { "off" });
     for stream in listener.incoming() {
-        if let Ok(s) = stream { let db = db.clone(); let key = key.clone(); std::thread::spawn(move || handle(s, db, key)); }
+        if let Ok(s) = stream { let db = db.clone(); let key = key.clone(); std::thread::spawn(move || handle(s, db, key, log)); }
     }
     Ok(())
 }
-fn handle(mut stream: TcpStream, db: Arc<NeuronDB>, key: Option<String>) {
+fn hms() -> String { let n=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(); format!("{:02}:{:02}:{:02}", (n/3600)%24,(n/60)%60,n%60) }
+
+fn handle(mut stream: TcpStream, db: Arc<NeuronDB>, key: Option<String>, log: bool) {
+    let t0 = Instant::now();
     let peek = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(peek);
     let mut line = String::new(); if reader.read_line(&mut line).is_err() { return; }
@@ -87,38 +92,57 @@ fn handle(mut stream: TcpStream, db: Arc<NeuronDB>, key: Option<String>) {
     let body = String::from_utf8_lossy(&buf).to_string();
     let segs: Vec<String> = path.split('?').next().unwrap_or("").split('/').filter(|s| !s.is_empty()).map(urldecode).collect();
     let authed = key.is_none() || auth.replace("Bearer ", "").trim() == key.as_deref().unwrap_or("");
+    let scope = segs.get(1).map(|s| clip(s)).unwrap_or_default();
 
-    if method == "OPTIONS" { respond(&mut stream, 204, ""); return; }
+    let (status, resp) = route(&db, &method, &segs, authed, &body);
+    respond(&mut stream, status, &resp);
+    if log {
+        eprintln!("{} {:<7} {} scope={} -> {} {}ms", hms(), method, path, if scope.is_empty(){"-"}else{&scope}, status, t0.elapsed().as_millis());
+    }
+}
+
+// Returns (status, json-body). Pure routing so requests are easy to log/test.
+fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str) -> (u16, String) {
+    if method == "OPTIONS" { return (204, String::new()); }
     if method == "GET" {
-        if segs.is_empty() { respond(&mut stream, 200, "{\"service\":\"neuron-db\",\"endpoint\":\"POST /v1/{neuron}\"}"); return; }
-        if !authed { respond(&mut stream, 401, "{\"error\":\"unauthorized\"}"); return; }
+        if segs.is_empty() { return (200, "{\"service\":\"neuron-db\",\"endpoint\":\"POST /v1/{neuron}\"}".into()); }
+        if !authed { return (401, "{\"error\":\"unauthorized\"}".into()); }
         if segs.len() >= 2 && segs[0] == "v1" {
             let s = db.stats(&clip(&segs[1]));
-            respond(&mut stream, 200, &format!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns));
-            return;
+            return (200, format!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns));
         }
-        respond(&mut stream, 404, "{\"error\":\"not found\"}"); return;
+        return (404, "{\"error\":\"not found\"}".into());
     }
     if method == "POST" {
-        if !authed { respond(&mut stream, 401, "{\"error\":\"unauthorized\"}"); return; }
-        if segs.len() < 2 || segs[0] != "v1" { respond(&mut stream, 404, "{\"error\":\"POST /v1/{neuron}\"}"); return; }
+        if !authed { return (401, "{\"error\":\"unauthorized\"}".into()); }
+        if segs.len() < 2 || segs[0] != "v1" { return (404, "{\"error\":\"POST /v1/{neuron}\"}".into()); }
         let nid = clip(&segs[1]);
-        if segs.len() >= 3 && segs[2] == "forget" {
-            let (f, r) = db.forget(&nid, json_field(&body, "match").as_deref());
-            respond(&mut stream, 200, &format!("{{\"forgot\":{},\"remaining\":{}}}", f, r)); return;
+        let sub = segs.get(2).map(|s| s.as_str()).unwrap_or("");
+        if sub == "forget" {
+            let (f, r) = db.forget(&nid, json_field(body, "match").as_deref());
+            return (200, format!("{{\"forgot\":{},\"remaining\":{}}}", f, r));
         }
-        if segs.len() >= 3 && segs[2] == "get" {
-            let q = json_field(&body, "query").or_else(|| json_field(&body, "message")).unwrap_or_default();
-            if q.is_empty() { respond(&mut stream, 400, "{\"error\":\"empty query\"}"); return; }
+        if sub == "get" {
+            let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
+            if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
             let v = db.get(&nid, &cap(&q, 4000));
             let vj = match v { Some(s) => format!("\"{}\"", json_escape(&s)), None => "null".to_string() };
-            respond(&mut stream, 200, &format!("{{\"value\":{}}}", vj)); return;
+            return (200, format!("{{\"value\":{}}}", vj));
         }
-        let msg = json_field(&body, "message").unwrap_or_default();
-        if msg.is_empty() { respond(&mut stream, 400, "{\"error\":\"empty message\"}"); return; }
+        if sub == "recall" {
+            // richer than /get: returns the fact text + coverage so a client can build a
+            // memory block and gate context injection on confidence.
+            let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
+            if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
+            return match db.recall(&nid, &cap(&q, 4000)) {
+                Some(h) => (200, format!("{{\"value\":\"{}\",\"fact\":\"{}\",\"coverage\":{:.4},\"overlap\":{},\"exact\":{}}}", json_escape(&h.value), json_escape(&h.fact), h.coverage, h.overlap, h.exact)),
+                None => (200, "{\"value\":null,\"coverage\":0}".into()),
+            };
+        }
+        let msg = json_field(body, "message").unwrap_or_default();
+        if msg.is_empty() { return (400, "{\"error\":\"empty message\"}".into()); }
         let t = db.turn(&nid, &cap(&msg, 4000));
-        respond(&mut stream, 200, &format!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{},\"capacity_reached\":{}}}", json_escape(&t.reply), t.kind, t.wrote, t.facts, t.capacity_reached));
-        return;
+        return (200, format!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{},\"capacity_reached\":{}}}", json_escape(&t.reply), t.kind, t.wrote, t.facts, t.capacity_reached));
     }
-    respond(&mut stream, 404, "{\"error\":\"not found\"}");
+    (404, "{\"error\":\"not found\"}".into())
 }

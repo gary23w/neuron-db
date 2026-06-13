@@ -46,6 +46,7 @@ Environment:
 | `NEURON_HOST` | bind address (`0.0.0.0` to expose) | `127.0.0.1` |
 | `NEURON_PORT` | port | `8088` |
 | `NEURON_DB_KEY` | if set, require `Authorization: Bearer <key>` | unset (auth off) |
+| `NEURON_LOG` | per-request access logs to stderr (`off`/`0` to disable) | on |
 
 ## Docker
 
