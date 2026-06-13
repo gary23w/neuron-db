@@ -87,7 +87,7 @@ class PlasticNeuron(Neuron):
                 self._link(eid, prev, 0.5)
             self._recent.append(eid); self._recent = self._recent[-32:]
             self.tick += 1
-        return {"fact": best["t"], "value": val, "coverage": cov, "overlap": bk[1], "echo": echo, "strength": round(self._eff(eid), 3)}
+        return {"fact": best["t"], "value": val, "coverage": cov, "overlap": bk[1], "exact": bk[0], "echo": echo, "strength": round(self._eff(eid), 3)}
 
     def recall_related(self, query, k: int = 3) -> list:
         hit = self.recall(query)

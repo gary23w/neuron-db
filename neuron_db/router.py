@@ -31,12 +31,12 @@ class NeuronRouter:
 
     # --- read: fan out across shards, keep the strongest hit ---
     def recall(self, query: str) -> Optional[dict]:
-        best = None; bk = (-1, -1.0)  # (overlap, coverage)
+        best = None; bk = (-1, -1, -1.0)  # (exact, overlap, coverage)
         for sh in self.shards:
             hit = sh.recall(query)
             if hit is None:
                 continue
-            sc = (hit["overlap"], hit["coverage"])
+            sc = (hit.get("exact", 0), hit["overlap"], hit["coverage"])
             if sc > bk:
                 bk = sc; best = hit
         return best

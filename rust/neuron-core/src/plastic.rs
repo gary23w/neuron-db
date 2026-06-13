@@ -114,6 +114,7 @@ impl PlasticNeuron {
         let mut cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
         if pet_query && sset.iter().any(|s| pets().contains(s)) { cov = 1.0; }
         let overlap = cue.iter().filter(|c| bes.contains(c)).count();
+        let exact_n = bk.0 as usize;
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(&self.base.episodes[bi], &cue, want_num);
         if id >= 0 {
@@ -124,7 +125,7 @@ impl PlasticNeuron {
             let l = self.recent.len(); if l > 32 { self.recent.drain(0..l - 32); }
             self.tick += 1;
         }
-        Some(Recall { fact, value: val, coverage: cov, overlap, echo })
+        Some(Recall { fact, value: val, coverage: cov, overlap, exact: exact_n, echo })
     }
 
     /// The hit plus its strongest associates (one-hop spreading).
