@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>neuron-db · live collection PoC</title>
+<style>
+  :root{
+    --bg:#0c0e14; --panel:#141822; --panel2:#1b2130; --line:#262d3d;
+    --ink:#e7ecf5; --dim:#8a93a8; --accent:#5eead4; --accent2:#7c9cff;
+    --you:#1f6feb; --bot:#2a3142;
+    --t-mouse:#6b7280; --t-click:#f59e0b; --t-scroll:#a78bfa; --t-key:#38bdf8;
+    --t-store:#34d399; --t-recall:#5eead4; --t-chat:#7c9cff; --t-session:#f472b6; --t-event:#94a3b8;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+  header h1 b{color:var(--accent)}
+  .pill{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--dim)}
+  .pill #sid{color:var(--accent2)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
+  .on{background:#34d399;box-shadow:0 0 8px #34d399} .off{background:#f59e0b}
+  main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
+  .pane{display:flex;flex-direction:column;min-height:0;min-width:0}
+  .pane.chat{border-right:1px solid var(--line)}
+  .pane h2{margin:0;padding:10px 16px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .counts{font:11px ui-monospace,monospace;color:var(--dim)}
+  .counts b{color:var(--accent)}
+  /* chat */
+  #log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+  .msg{max-width:80%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-wrap:break-word}
+  .msg.you{align-self:flex-end;background:var(--you);border-bottom-right-radius:3px}
+  .msg.bot{align-self:flex-start;background:var(--bot);border-bottom-left-radius:3px}
+  .msg .k{font:10px ui-monospace,monospace;opacity:.6;display:block;margin-top:3px}
+  form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--panel)}
+  #in{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font:14px inherit;outline:none}
+  #in:focus{border-color:var(--accent2)}
+  button{background:var(--accent);color:#06231f;border:0;border-radius:10px;padding:0 16px;font-weight:650;cursor:pointer}
+  /* feed */
+  .feedwrap{flex:1;display:flex;flex-direction:column;min-height:0}
+  #mem{padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel2);max-height:34%;overflow:auto}
+  #mem .row{display:flex;justify-content:space-between;gap:10px;font:12px ui-monospace,monospace;padding:2px 0;border-bottom:1px dashed #222a3a}
+  #mem .row .key{color:var(--dim)} #mem .row .val{color:var(--accent);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+  #feed{flex:1;overflow:auto;padding:8px 0;font:12px ui-monospace,Menlo,Consolas,monospace}
+  .ev{display:grid;grid-template-columns:64px 1fr;gap:8px;padding:2px 16px;align-items:baseline;border-left:3px solid transparent}
+  .ev:hover{background:#10141e}
+  .ev .tag{font-weight:700;font-size:10px;letter-spacing:.5px;text-align:right;opacity:.95}
+  .ev .body{color:#c7cfde;word-break:break-word}
+  .ev .body .t{color:#5b657a;font-size:10px;margin-left:6px}
+  .new{animation:flash .6s ease}
+  @keyframes flash{from{background:#1d2536}to{background:transparent}}
+  footer{padding:6px 16px;border-top:1px solid var(--line);color:var(--dim);font-size:11px;background:var(--panel);display:flex;gap:16px;flex-wrap:wrap}
+  @media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.pane.chat{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>neuron&#8209;<b>db</b> · live collection PoC</h1>
+  <span class="pill">session <span id="sid">…</span></span>
+  <span class="pill"><span id="net" class="dot off"></span><span id="netlbl">in&#8209;page store</span></span>
+  <span class="pill">backend: <span id="backend">detecting…</span></span>
+</header>
+
+<main>
+  <section class="pane chat">
+    <h2>chat <span class="counts"><b id="cFacts">0</b> facts remembered</span></h2>
+    <div id="log"></div>
+    <form id="f" autocomplete="off">
+      <input id="in" placeholder="tell it something, or ask — e.g. 'my name is Sam' then 'what is my name?'">
+      <button>send</button>
+    </form>
+  </section>
+
+  <section class="pane">
+    <h2>what neuron&#8209;db is collecting <span class="counts"><b id="cEv">0</b> events · <b id="cBytes">0</b> stored</span></h2>
+    <div class="feedwrap">
+      <div id="mem"></div>
+      <div id="feed"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>everything you do on this page is captured live → right pane. nothing leaves your machine.</span>
+  <span id="clock"></span>
+</footer>
+
+<script>
+"use strict";
+//==================================================================================
+// CONFIG — point at a running `serve` for the REAL Rust backend; else in-page mirror.
+//==================================================================================
+const SERVER = "http://localhost:8088";   // run: serve neurons.db 8088   (CORS is on)
+let ONLINE = false;
+
+//==================================================================================
+// session identity — a random id on join
+//==================================================================================
+const SID = "anon-" + Math.random().toString(36).slice(2, 8);
+const SCOPE = "user:" + SID;
+document.getElementById("sid").textContent = SID;
+
+//==================================================================================
+// tiny neuron-db-style associative store (the in-page mirror / source of truth for UI)
+//==================================================================================
+const STOP = new Set("a an the is are am was were be been being do does did have has had my me i you your yours it its to of and or in on at that this what whats where who when how which as for with from will would can could should".split(" "));
+const facts = []; // {scope, text, cues:Set, value, ts}
+const words = s => s.toLowerCase().replace(/[^\w\s']/g," ").split(/\s+/).filter(Boolean);
+const content = s => words(s).filter(w => !STOP.has(w) && w.length>1);
+function valueOf(text){
+  const orig = text.split(/\s+/);
+  const c = content(text);
+  if(!c.length) return text.trim();
+  // surprising token: prefer a number, then the LAST content word (shown in original case)
+  const num = c.find(w=>/\d/.test(w));
+  const pick = num || c[c.length-1];
+  const o = orig.find(w => w.toLowerCase().replace(/[^\w']/g,"")===pick);
+  return (o||pick).replace(/[^\w\-:/.@']/g,"");
+}
+function memObserve(text){
+  const c = new Set(content(text));
+  if(!c.size) return 0;
+  facts.push({scope:SCOPE, text, cues:c, value:valueOf(text), ts:Date.now()});
+  return 1;
+}
+function memRecall(query){
+  const q = new Set(content(query));
+  if(!q.size) return null;
+  let best=null, bk=-1;
+  for(let i=facts.length-1;i>=0;i--){ // newest first
+    const f=facts[i]; let ov=0; q.forEach(w=>{ if(f.cues.has(w)) ov++; });
+    if(ov>bk){ bk=ov; best=f; }
+  }
+  if(!best||bk<1) return null;
+  return {value:best.value, fact:best.text, coverage: bk/q.size};
+}
+
+//==================================================================================
+// store API — uses the real server when ONLINE, else the mirror. Both feed the UI.
+//==================================================================================
+async function srv(path, body){
+  const r = await fetch(SERVER+path, {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body)});
+  return r.json();
+}
+async function storeFact(text, {silent=false, kind="store"}={}){
+  let wrote=1;
+  if(ONLINE){ try{ const r=await srv("/v1/"+encodeURIComponent(SCOPE), {message:text}); wrote=r.wrote??1; }catch(e){ ONLINE=false; setNet(); } }
+  if(!ONLINE) wrote = memObserve(text);
+  else memObserve(text); // keep mirror in sync for the Memory panel
+  stored += new Blob([text]).size;
+  if(!silent) feed(kind, text);
+  renderMem(); updateCounts();
+  return wrote;
+}
+async function askFact(query){
+  if(ONLINE){ try{ const r=await srv("/v1/"+encodeURIComponent(SCOPE)+"/get",{query}); if(r.value!=null) return {value:r.value, fact:"(neuron-db)", coverage:1}; }catch(e){ ONLINE=false; setNet(); } }
+  return memRecall(query);
+}
+
+//==================================================================================
+// right pane — live feed + memory panel
+//==================================================================================
+const feedEl = document.getElementById("feed");
+let evCount=0, stored=0;
+const COLOR = {mouse:"--t-mouse",click:"--t-click",scroll:"--t-scroll",key:"--t-key",store:"--t-store",recall:"--t-recall",chat:"--t-chat",session:"--t-session",event:"--t-event"};
+function feed(type, msg){
+  evCount++;
+  const row=document.createElement("div");
+  row.className="ev new";
+  row.style.borderLeftColor=`var(${COLOR[type]||"--t-event"})`;
+  const time=new Date().toLocaleTimeString([], {hour12:false});
+  row.innerHTML=`<span class="tag" style="color:var(${COLOR[type]||"--t-event"})">${type}</span>`+
+                `<span class="body">${escapeHtml(msg)}<span class="t">${time}</span></span>`;
+  feedEl.prepend(row);
+  while(feedEl.childNodes.length>400) feedEl.removeChild(feedEl.lastChild);
+  updateCounts();
+}
+const escapeHtml = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function updateCounts(){
+  document.getElementById("cEv").textContent=evCount;
+  document.getElementById("cBytes").textContent=stored<1024?stored+" B":(stored/1024).toFixed(1)+" KB";
+  document.getElementById("cFacts").textContent=facts.length;
+}
+function renderMem(){
+  // newest distinct facts as key→value-ish lines
+  const seen=new Set(), rows=[];
+  for(let i=facts.length-1;i>=0 && rows.length<14;i--){
+    const f=facts[i]; const key=[...f.cues].slice(0,3).join(" ");
+    if(seen.has(key)) continue; seen.add(key);
+    rows.push(`<div class="row"><span class="key">${escapeHtml(key)}</span><span class="val">${escapeHtml(f.value)}</span></div>`);
+  }
+  document.getElementById("mem").innerHTML = `<div class="row" style="border:0"><span class="key" style="color:var(--t-session)">neuron-db memory (${facts.length})</span><span class="val"></span></div>` + rows.join("");
+}
+
+//==================================================================================
+// chat
+//==================================================================================
+const log=document.getElementById("log");
+function bubble(text, who, kind){
+  const d=document.createElement("div"); d.className="msg "+who;
+  d.innerHTML=escapeHtml(text)+(kind?`<span class="k">${kind}</span>`:"");
+  log.appendChild(d); log.scrollTop=log.scrollHeight;
+}
+function isQuestion(s){ return s.includes("?") || /^(what|whats|where|who|when|how|which|is|are|do|does|did|can)\b/i.test(s.trim()); }
+async function botReply(text){
+  // simple math
+  const m = text.match(/(-?\d+)\s*([+\-*/])\s*(-?\d+)/);
+  if(m){ const a=+m[1], b=+m[3]; const r={"+":a+b,"-":a-b,"*":a*b,"/":b?a/b:NaN}[m[2]]; return {reply:`${a} ${m[2]} ${b} = ${r}`, kind:"math"}; }
+  if(isQuestion(text)){
+    const hit = await askFact(text);
+    feed("recall", `q:"${text}" → ${hit?`"${hit.value}" (${Math.round(hit.coverage*100)}%)`:"(nothing yet)"}`);
+    if(hit && hit.coverage>=0.34) return {reply:`${hit.value}`, kind:`recall · ${Math.round(hit.coverage*100)}% match`};
+    return {reply:"i don't know that yet — tell me and i'll remember.", kind:"idk"};
+  }
+  await storeFact(text, {kind:"store"});
+  return {reply:`got it — i'll remember that.`, kind:"stored to neuron-db"};
+}
+document.getElementById("f").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const v=document.getElementById("in").value.trim(); if(!v) return;
+  document.getElementById("in").value="";
+  bubble(v,"you"); feed("chat", "user: "+v);
+  const {reply, kind} = await botReply(v);
+  bubble(reply,"bot",kind);
+});
+
+//==================================================================================
+// TELEMETRY — record everything the browser will give us, live into the feed,
+// and roll it up into facts neuron-db holds (the Memory panel + recallable).
+//==================================================================================
+const agg = {clicks:0, keys:0, moves:0, scrollMax:0, dist:0, focusChanges:0, tabHides:0, copies:0, rightClicks:0};
+let lastXY=null, lastMoveFeed=0, lastMove=Date.now(), idle=false, t0=Date.now();
+
+function storeAgg(){ // persist the live rollups as recallable facts (deduped by re-stating)
+  storeFact(`the click count is ${agg.clicks}`, {silent:true});
+  storeFact(`the keystroke count is ${agg.keys}`, {silent:true});
+  storeFact(`the max scroll depth is ${agg.scrollMax} percent`, {silent:true});
+  storeFact(`the time on page is ${Math.round((Date.now()-t0)/1000)} seconds`, {silent:true});
+  storeFact(`the mouse distance is ${Math.round(agg.dist)} pixels`, {silent:true});
+}
+
+addEventListener("mousemove", e=>{
+  agg.moves++;
+  if(lastXY) agg.dist += Math.hypot(e.clientX-lastXY[0], e.clientY-lastXY[1]);
+  lastXY=[e.clientX,e.clientY]; lastMove=Date.now();
+  if(idle){ idle=false; feed("event","← active again"); }
+  const now=Date.now(); if(now-lastMoveFeed>110){ lastMoveFeed=now; feed("mouse", `move x=${e.clientX} y=${e.clientY}  Δ=${Math.round(agg.dist)}px`); }
+});
+addEventListener("click", e=>{ agg.clicks++; feed("click", `(${e.clientX},${e.clientY}) on <${(e.target.tagName||"?").toLowerCase()}${e.target.id?"#"+e.target.id:""}> "${(e.target.textContent||"").trim().slice(0,24)}"`); });
+addEventListener("dblclick", ()=>feed("click","double-click"));
+addEventListener("contextmenu", ()=>{ agg.rightClicks++; feed("click","right-click (context menu)"); });
+addEventListener("scroll", ()=>{
+  const h=document.documentElement; const max=(h.scrollHeight-h.clientHeight)||1;
+  const pct=Math.min(100, Math.round((h.scrollTop/max)*100)); agg.scrollMax=Math.max(agg.scrollMax,pct);
+  feed("scroll", `y=${h.scrollTop}px  depth=${pct}%  (max ${agg.scrollMax}%)`);
+}, {passive:true});
+addEventListener("keydown", e=>{
+  agg.keys++;
+  const inField = e.target===document.getElementById("in");
+  feed("key", `${inField?"[chat] ":""}key="${e.key}"${e.ctrlKey?" +ctrl":""}${e.metaKey?" +meta":""}`);
+});
+addEventListener("copy", ()=>{ agg.copies++; feed("event","copy"); });
+addEventListener("paste", ()=>feed("event","paste"));
+addEventListener("cut", ()=>feed("event","cut"));
+addEventListener("resize", ()=>feed("event",`viewport ${innerWidth}×${innerHeight}`));
+addEventListener("focus", ()=>{ agg.focusChanges++; feed("event","window focus"); }, true);
+addEventListener("blur", ()=>{ agg.focusChanges++; feed("event","window blur"); }, true);
+document.addEventListener("visibilitychange", ()=>{ if(document.hidden) agg.tabHides++; feed("event", document.hidden?"tab hidden (switched away)":"tab visible"); });
+addEventListener("online", ()=>feed("event","network online"));
+addEventListener("offline", ()=>feed("event","network offline"));
+addEventListener("pointerleave", ()=>feed("event","pointer left window"));
+addEventListener("beforeunload", ()=>{ storeAgg(); });
+
+// idle detection
+setInterval(()=>{ if(!idle && Date.now()-lastMove>3000){ idle=true; feed("event","idle (3s no input)"); } }, 1000);
+// time + rollups ticker
+setInterval(()=>{
+  document.getElementById("clock").textContent = `on page ${Math.round((Date.now()-t0)/1000)}s · ${agg.clicks} clicks · ${agg.keys} keys · ${agg.moves} moves · ${Math.round(agg.dist)}px`;
+  storeAgg(); renderMem();
+}, 3000);
+
+//==================================================================================
+// session profile — collected on join and stored as facts
+//==================================================================================
+async function profile(){
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const conn = navigator.connection?.effectiveType;
+  const items = [
+    ["the session id is "+SID],
+    ["the joined time is "+new Date().toLocaleTimeString()],
+    ["the language is "+navigator.language],
+    ["the timezone is "+tz],
+    ["the screen size is "+screen.width+"x"+screen.height],
+    ["the viewport is "+innerWidth+"x"+innerHeight],
+    ["the platform is "+(navigator.platform||"unknown")],
+    ["the referrer is "+(document.referrer||"direct")],
+    conn?["the connection is "+conn]:null,
+  ].filter(Boolean);
+  feed("session", `new session ${SID} · ${navigator.language} · ${tz} · ${screen.width}×${screen.height}`);
+  for(const [t] of items){ await storeFact(t, {silent:true}); }
+  feed("session", `${items.length} profile facts stored in neuron-db`);
+  renderMem();
+}
+
+//==================================================================================
+// boot: detect the real backend, then collect
+//==================================================================================
+function setNet(){
+  document.getElementById("net").className = "dot "+(ONLINE?"on":"off");
+  document.getElementById("netlbl").textContent = ONLINE?"neuron-db server":"in-page store";
+  document.getElementById("backend").textContent = ONLINE?SERVER:"in-page mirror (start `serve` for the real backend)";
+}
+(async function boot(){
+  try{
+    const r = await fetch(SERVER+"/", {method:"GET"});
+    if(r.ok){ const j=await r.json(); ONLINE = !!j.service; }
+  }catch(e){ ONLINE=false; }
+  setNet();
+  feed("event", ONLINE?`connected to neuron-db at ${SERVER}`:`no server found — using in-page mirror (start the db to switch)`);
+  // keep trying to reach the real backend; flip live the moment `serve` comes up
+  setInterval(async ()=>{
+    if(ONLINE) return;
+    try{ const r=await fetch(SERVER+"/"); if(r.ok){ const j=await r.json(); if(j.service){ ONLINE=true; setNet(); feed("event","connected to neuron-db — now writing to the real backend"); } } }catch(e){}
+  }, 4000);
+  await profile();
+  bubble(`hi! you joined as ${SID}. tell me facts ("my name is Sam", "my plan is pro") and ask them back. everything this page collects streams into the right pane and into neuron-db.`, "bot");
+  document.getElementById("in").focus();
+})();
+</script>
+</body>
+</html>
