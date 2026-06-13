@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuron-db"
-version = "0.5.0"
+version = "0.6.0"
 description = "Memory you talk to, in a single SQLite file. Write facts in plain language, query by meaning, no model or embeddings required."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -21,6 +21,7 @@ dependencies = []
 
 [project.optional-dependencies]
 crypto = ["cryptography>=42"]
+model  = ["numpy>=1.21", "tokenizers>=0.13"]
 
 [project.urls]
 Homepage = "https://github.com/gary23w/neuron-db"
