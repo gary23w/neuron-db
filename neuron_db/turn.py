@@ -1,7 +1,7 @@
-"""Conversation routing over a Neuron. Deterministic by default: a statement is
-stored and acknowledged, a question is answered from memory or with an honest
-"i don't know right now." Nothing is generated -- neuron-db is a memory, not a
-chatbot. (The hosted neuron-cloud build adds an optional model for replies.)
+"""Conversation routing over a Neuron. Deterministic: a statement is stored and
+acknowledged, a question is answered from memory or with an honest "i don't know".
+Native arithmetic for +,-,*,/. (The trained gary-neuron adder model is a separate
+project and is NOT used here -- neuron-db is model-free by design.)
 """
 from __future__ import annotations
 import re
@@ -15,7 +15,7 @@ THANKS = re.compile(r"^(thanks|thank you|thx|ty)\b", re.I)
 BYE = re.compile(r"^(bye+|goodbye|later|gtg|good ?night)\b", re.I)
 HOWRU = re.compile(r"how('s| is| are)? (it going|you( doing)?|things)", re.I)
 SELFQ = re.compile(r"real\s+person|human|alive|robot|an?\s+ai\b|sentient|a\s+machine", re.I)
-MATH = re.compile(r"(\d{1,9})\s*(?:\+|plus)\s*(\d{1,9})", re.I)
+MATH = re.compile(r"(-?\d{1,12})\s*([+\-*/])\s*(-?\d{1,12})")
 GREETS = ["hey. tell me things; i'll remember them.", "hi. what should i remember?",
           "ready. give me facts, ask them back later.", "memory online. go ahead."]
 CHATR = ["noted.", "okay.", "got it.", "if it matters, say it like a fact -- i'll keep it."]
@@ -42,13 +42,18 @@ def turn(n: Neuron, u: str) -> dict:
     if BYE.match(u): return _r("later. i'll remember.", "smalltalk")
     if questionish and HOWRU.search(u): return _r("running fine -- all of it yours.", "smalltalk")
     if COMMAND.match(u) and not (uw & {"my", "i", "im", "mine"}):
-        return _r("i can't do that -- i remember facts and add numbers.", "smalltalk")
+        return _r("i can't do that -- i remember facts and do arithmetic.", "smalltalk")
 
-    mm = re.sub(r"\bplus\b", "+", u, flags=re.I)
+    # native arithmetic: + - * /  (word forms too)
+    mm = u
+    for word, sym in (("plus", "+"), ("minus", "-"), ("times", "*"), ("divided by", "/")):
+        mm = re.sub(r"\b" + word + r"\b", sym, mm, flags=re.I)
     m = MATH.search(mm)
     if m and not re.search(r"=\s*-?\d", mm):
-        a, b = int(m.group(1)), int(m.group(2))
-        return _r(f"{a} + {b} = {a + b}", "math")
+        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+        r = {"+": a + b, "-": a - b, "*": a * b, "/": (round(a / b, 6) if b else None)}.get(op)
+        if r is not None:
+            return _r(f"{a} {op} {b} = {r}", "math")
 
     if questionish:
         cw = _content(u)
@@ -64,16 +69,18 @@ def turn(n: Neuron, u: str) -> dict:
             if conf and not hit["echo"]: return _r(f"{v}.", "recall")
             if hit["echo"] or len(hit["fact"].split()) > 6:
                 q = hit["fact"].strip()
-                return _r(f'what i remember: "{q if len(q) <= 140 else q[:137] + "…"}"', "recall")
+                return _r(f'what i remember: "{q if len(q) <= 140 else q[:137] + chr(8230)}"', "recall")
             return _r(f"{v}.", "recall")
-        if cw: return _r(IDK, "idk")
+        if cw:
+            return _r(IDK, "idk")
 
     wrote = n.observe(u)
     if wrote:
-        v = wrote[-1]["v"]
-        r = f"noted -- {len(wrote)} facts." if len(wrote) > 1 else [f"got it -- {v}.", f"noted -- {v}.", f"okay -- {v}."][n.fact_count % 3]
+        val = wrote[-1]["v"]
+        r = f"noted -- {len(wrote)} facts." if len(wrote) > 1 else [f"got it -- {val}.", f"noted -- {val}.", f"okay -- {val}."][n.fact_count % 3]
         return {"reply": r, "kind": "ack", "wrote": len(wrote)}
     return _r(CHATR[len(u) % len(CHATR)], "smalltalk")
 
 
-def _r(reply: str, kind: str) -> dict: return {"reply": reply, "kind": kind, "wrote": 0}
+def _r(reply: str, kind: str) -> dict:
+    return {"reply": reply, "kind": kind, "wrote": 0}
