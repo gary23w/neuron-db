@@ -35,3 +35,9 @@ fn val(n:&mut Neuron,q:&str)->Option<String>{ n.recall(q).map(|r| r.value) }
     let blob=n.dump(); let mut n2=Neuron::load(&blob,500);
     assert_eq!(val(&mut n2,"what is my name?").as_deref(), Some("Marisol"));
     assert_eq!(val(&mut n2,"what is the door code?").as_deref(), Some("4452")); }
+
+#[test] fn number_before_noun(){ let mut n=Neuron::new(500);
+    n.observe("the room holds 50 chairs, 8 tables and 200 guests");
+    assert_eq!(val(&mut n,"how many guests?").as_deref(), Some("200"));
+    assert_eq!(val(&mut n,"how many chairs?").as_deref(), Some("50"));
+    assert_eq!(val(&mut n,"how many tables?").as_deref(), Some("8")); }

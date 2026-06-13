@@ -87,7 +87,7 @@ def _pick_value(ep, cue, want_num):
         if nums: pool=nums
     if not pool: return ep["v"],True
     if want_num and cue_pos and len(pool)>1:
-        pool=sorted(pool,key=lambda c: min(abs(pos_of(c)-p) for p in cue_pos))
+        pool=sorted(pool,key=lambda c: min((abs(pos_of(c)-p), 0 if pos_of(c)<=p else 1) for p in cue_pos))
     return pool[0],False
 class Neuron:
     def __init__(self, max_facts=500):

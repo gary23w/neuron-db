@@ -132,7 +132,7 @@ fn pick_value(ep: &Episode, cue: &HashSet<String>, want_num: bool) -> (String, b
     if want_num { let nums: Vec<String> = pool.iter().filter(|c| is_num(c)).cloned().collect(); if !nums.is_empty() { pool = nums; } }
     if pool.is_empty() { return (ep.v.clone(), true); }
     if want_num && !cue_pos.is_empty() && pool.len() > 1 {
-        pool.sort_by_key(|c| { let p = pos_of(c); cue_pos.iter().map(|&q| (p as i64 - q as i64).abs()).min().unwrap() });
+        pool.sort_by_key(|c| { let p = pos_of(c) as i64; cue_pos.iter().map(|&q| { let q=q as i64; ((p-q).abs(), if p<=q {0} else {1}) }).min().unwrap() });
     }
     (pool[0].clone(), false)
 }
