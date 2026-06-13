@@ -1,0 +1,18 @@
+[package]
+name = "neuron-core"
+version = "0.1.0"
+edition = "2021"
+description = "Associative memory core (the neuron) in pure Rust, std-only. Write facts in language, recall by cue."
+license = "MIT"
+
+[lib]
+name = "neuron_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bench.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
