@@ -99,6 +99,17 @@ NeuronRouter    chain shards past one neuron's size      (for scale)
 Not a Python app? Run `python -m neuron_db serve` and POST to one HTTP endpoint (see
 HTTP SERVER). You never need a model or an LLM for any of this.
 
+# IMPLEMENTATIONS
+
+The store and service tiers are now canonical in **Rust** (`rust/neuron-core/`): Neuron,
+PlasticNeuron, NeuronRouter, turn, NeuronDB (sqlite), SecureNeuronDB (aes-gcm), and the
+HTTP server, with the std-only core compiling to wasm. The **Python** package remains the
+reference implementation and the home of the model/training tier — the gary-neuron cortex
+bridge, `think()`, ChunkedReader, and the (numpy) training loop — which have no Rust
+equivalent yet. Both are kept at parity.
+
+A full pre-Rust Python snapshot is preserved on the `legacy-python` branch.
+
 # INSTALLATION
 
 ```
