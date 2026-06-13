@@ -8,6 +8,43 @@ knows — and that does not collide when the model writes many similar facts.
 The benchmarks (`BENCHMARKS.md`) set the constraint: neuron-db recalls distinct keys at
 100% and near-duplicate keys poorly. The harness is built around that fact.
 
+## 0. Where gary-neuron fits: the LLM's hippocampus
+
+Three parts, three roles, borrowed straight from how a brain splits the job:
+
+| part | brain analog | role |
+|---|---|---|
+| the LLM (GPT-class) | neocortex | reasoning and language; big, general, stateless per call |
+| **gary-neuron** (cortex + plastic hippocampus) | **hippocampus** | what to remember, what to recall, consolidation; small, trained, plastic |
+| neuron-db (PlasticNeuron + store) | engram store | durable substrate; cheap, scales to millions |
+
+The LLM never talks to the raw store. It talks through gary-neuron, which is a **memory
+co-processor** sitting between the LLM and the database:
+
+- **Write path** — the LLM produces an exchange; gary-neuron's encoder surprise-gates it
+  (it was trained to write the surprising token), and the salient facts land in neuron-db.
+  The LLM doesn't decide what's worth keeping; the hippocampus does.
+- **Read path** — the LLM asks a question (an MCP `memory.recall` call); neuron-db pulls a
+  small working set in microseconds; gary-neuron's cortex reads that bounded window — the
+  thing it was trained to emergence on — and returns the isolated value or the associative
+  completion, which is injected into the LLM's context as grounded evidence.
+- **Consolidation** — offline, gary-neuron replays buffered episodes into its own weights
+  (`/sleep`). It grows. The LLM is untouched and pays nothing for it.
+
+So the connection is: **the LLM is the reasoner; gary-neuron is its memory organ.** The MCP
+tools below are the wire — `memory.recall`/`memory.write` are implemented as
+store-retrieve-then-gary-neuron-read and gary-neuron-encode-then-store. The LLM just calls
+the tools; gary-neuron is the engine behind them.
+
+Why a trained model here instead of the LLM doing its own memory? Cost and fit. gary-neuron
+is ~1.1M params — it runs in-process at the edge in milliseconds and burns no LLM tokens or
+API calls per memory op, it's deterministic, and it does associative completion the
+symbolic store can't. Honest limit: it was trained on a ~2k-token everyday vocabulary in a
+`U:/G:` fact format, so it shines on normalized facts over a bounded window, not on
+arbitrary technical prose. The practical split: the symbolic store handles out-of-vocab
+exact recall; gary-neuron handles in-vocab associative recall and consolidation. This is
+literally the gary-neuron-chat architecture with the human user replaced by an LLM.
+
 ## 1. Where memory sits in the loop
 
 ```
@@ -88,46 +125,4 @@ should not need to learn a query language.
 | `memory.write` | `{scope, text}` or `{scope, key, value}` | `{stored, superseded}` |
 | `memory.forget` | `{scope, match}` | `{removed}` |
 
-Conventions that make it reliable in an agent loop:
-
-- **Recall returns evidence, not prose.** The model decides how to use `value`/`fact`;
-  the tool never editorializes. An empty result is a first-class answer.
-- **Confidence is surfaced.** Tier-1 exact = 1.0; tier-2 cue = coverage; tier-3 semantic =
-  similarity. The model can be told to ignore anything below a threshold.
-- **Writes are idempotent on key.** Re-writing the same key is a supersede, so retries and
-  duplicate tool calls don't bloat the neuron.
-- **Auth + scope are server-side.** The model passes a logical `scope`; the server maps it
-  to the real (possibly encrypted) neuron with the right key. The model never holds keys.
-
-### RAG vs this
-
-Classic RAG chunks documents, embeds them, and pulls text back for the model to read.
-This design returns **values and facts**, not chunks — tiers 1–2 need no embedding model
-at all, which is why retrieval is microseconds, not tens of milliseconds, and why it runs
-with no GPU and no vector database. The optional semantic tier is RAG-style, but it is the
-fallback, not the foundation. For document-heavy use, tier 3 can front a normal vector
-store; the neuron stays the fast, exact, abstaining core.
-
-## 4. Reliability and safety
-
-- **Abstention over hallucination.** Every tier returns "no memory" rather than a guess;
-  the model is instructed to say it doesn't know rather than invent.
-- **Provenance.** Each recall carries the stored fact it came from, so the model (and a
-  human) can audit why an answer was given.
-- **Encrypted scopes.** Sensitive memory uses `SecureNeuronDB`; the harness holds the
-  per-scope key, the store holds ciphertext, and there is no bulk-export (see `THREATS.md`).
-- **Bounded growth.** `MAX_FACTS` per neuron plus the dedup pass keep recall sharp and
-  storage predictable; overflow is reported, not silently dropped.
-
-## 5. Build order
-
-1. **Rust core** (`rust` branch): the store, exact-key table, dump/load. (Started.)
-2. **Retriever**: tiers 1–2 with full-token disambiguation and the supersede/dedup policy.
-3. **MCP server**: the four tools over the core, with scope→neuron mapping and auth.
-4. **Semantic tier**: optional embedding fallback behind the same `recall` tool.
-5. **Harness adapters**: drop-in middleware for common agent frameworks (retrieve-before /
-   write-after hooks), plus the existing one-endpoint HTTP API for everything else.
-
-The throughline: keep the fast, exact, abstaining core doing the common case in
-microseconds, and add cleverness (semantic search) only at the edges where it earns its
-latency.
+Conventions th
