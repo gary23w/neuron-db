@@ -119,7 +119,9 @@ for an app backend.
 
 **PlasticNeuron** — a Neuron whose recall adapts: usage strength, lazy decay, Hebbian
 association, spreading activation, and `consolidate()`. The store tier of the plastic
-design.
+design. Recall can run as `recall_spreading()`, a neurotransmitter-style pass that releases
+activation at the cued facts, gates conflicting relations off, and spreads across synapses
+with reuptake decay, all in scalar microseconds. See **NEUROTRANSMITTER RECALL**.
 
 **NeuronRouter** — chains many neuron shards into one memory; auto-spills past a per-shard
 cap and fans recall out. Holds far more than one neuron with sharp recall.
@@ -183,6 +185,8 @@ observe / recall                as Neuron, but recall reinforces and re-ranks by
 reinforce(eid, amount=1.0)      strengthen a fact by id
 pin(eid)                        protect a fact from ever being pruned
 recall_related(query, k=3)      the hit PLUS its strongest associates (one-hop spreading)
+recall_spreading(query, hops=2, k=10)   neurotransmitter recall: excitatory cue release,
+                                inhibitory relation gating, multi-hop spread with reuptake
 consolidate(prune_below=0.05) -> {merged, pruned, facts}   "sleep": merge dups, prune decayed
 ```
 
@@ -252,6 +256,39 @@ v.get("alice", "alice-secret", "what is the wifi password?")   # "hunter2"
 v.get("alice", "WRONG",        "what is the wifi password?")   # None
 ```
 
+# NEUROTRANSMITTER RECALL
+
+The brain does not run a forward pass to remember. A cue releases transmitter at the
+neurons it matches, activation spreads across synapses, fades with distance as the
+transmitter is taken back up, and the neurons left most active are the memory.
+`recall_spreading()` models that directly:
+
+- **Excitatory release.** A cue fires the facts it matches, graded by how well it matches
+  and how strong that synapse already is.
+- **Inhibitory gate.** A relation conflict suppresses release, so a dog-name cue does not
+  fire a brother-name memory.
+- **Spread and reuptake.** Activation travels to linked facts and loses a fixed fraction
+  each hop, so it falls off with distance and only the strongest few synapses of a neuron
+  fire.
+
+Because it is multi-hop, it surfaces facts that share no word with the query but are wired
+to one that does. Because it is scalar arithmetic over a sparse graph, a selective query
+runs in microseconds and a worst-case full scan over 2,000 facts still finishes far under a
+millisecond. It is a pure read and changes nothing in the store.
+
+```
+n = PlasticNeuron(half_life=1e9)
+n.observe("the phoenix project is owned by Dana")
+n.observe("the rollout ships in the third quarter")
+# co-activate so they wire together, then a phoenix cue reaches the rollout fact:
+for _ in range(4): n.recall("who owns phoenix?"); n.recall("when does the rollout ship?")
+n.recall_spreading("who owns phoenix?")     # returns Dana's fact AND the wired rollout fact
+```
+
+The point this makes about latency: the synapse layer here is microseconds. The slow part
+of an LLM-memory stack is the model that composes language on top, not the recall. Route
+retrieval through the synapses and call the model only when you need it to write a sentence.
+
 # WHY SCALAR
 
 The defining design decision: a fact's *memory state* is a few **scalars** — a strength
@@ -290,6 +327,30 @@ fast, cheap, interpretable scalar tiers handle exact and cue recall plus all the
 earns its latency. You pay for vectors only when you actually need meaning-matching, never
 for the everyday lookup-and-adapt path.
 
+# STORAGE CAPACITY
+
+Because a fact's retrieval state is stems and scalars rather than a dense embedding,
+neuron-db holds far more facts per byte than the vector stores usually used for LLM memory.
+Measured over 20,000 plain facts, the serialized footprint is 48 bytes per fact, about 22.4
+million facts per GiB. Sized for the same job (store a fact and retrieve it by content):
+
+```
+store                                   bytes/item   items/GiB    vs neuron-db
+neuron-db (serialized)                          48   22,351,461        1.0x
+vector, binary quant, 1536-d (lossy)           259    4,145,097        5.4x
+vector, int8 quant, 1536-d                    1603      669,816       33.4x
+vector, f32, 768-d                            3139      342,061       65.3x
+vector, f32, 1536-d                           6211      172,876      129.3x
+pgvector / Qdrant, f32 1536-d + HNSW          9283      115,667      193.2x
+vector, f32, 3072-d (OpenAI large)           12355       86,907      257.2x
+```
+
+So neuron-db fits roughly 33x to 257x more facts in the same disk than a float32 vector
+store, about 130x at the common 1536-dim default, and still about 5x more than a
+binary-quantized index that has already lost most of its accuracy. The trade is real:
+neuron-db does cue and association recall, not cosine-similarity semantic search. Full
+method, per-product detail, and caveats are in `docs/STORAGE.md`.
+
 # PERFORMANCE
 
 Dev sandbox, Python 3.10, single core. Reproduce: `python tests/bench_full.py`,
@@ -323,6 +384,7 @@ adaptation   reinforced fact overtakes recency after 2 uses; strength climbs 1->
 forgetting   strength 0.99 -> 0.06 over 0..200 idle ticks (half_life=50); 4.7e-302 at hl=1
              ...and STILL recallable: decay changes ranking, never deletes
 association  co-activation link grows 0.5 -> 8.0 over 5 rounds; spreading surfaces it
+neurotransmit recall_spreading reaches a 2-hop fact sharing no cue word; selective query in us
 sleep        20,000 duplicate facts consolidate to 1, recall preserved
 ```
 
@@ -356,8 +418,9 @@ neuron_db/db.py         NeuronDB (SQLite, a database of neurons)
 neuron_db/router.py     NeuronRouter (chained shards)
 neuron_db/secure.py     SecureNeuronDB (encrypted)
 neuron_db/server.py     one-endpoint HTTP server
-tests/                  45 unit tests + bench_full.py + test_stress.py
+tests/                  50+ unit tests + bench_full.py + test_stress.py
 docs/PLASTICITY.md      the two-tier plastic design + decay semantics
+docs/STORAGE.md         storage density vs commercial vector stores (measured)
 docs/MEMORY_HARNESS.md  mounting as an LLM's memory; where gary-neuron fits
 rust/neuron-core/       the Rust port (on the `rust` branch / merged to main)
 ```
@@ -370,7 +433,7 @@ NEURON_DB_KEY    if set, the HTTP server requires Authorization: Bearer <key>
 
 # SEE ALSO
 
-`docs/PLASTICITY.md`, `docs/MEMORY_HARNESS.md`, `BENCHMARKS.md`, `THREATS.md`,
+`docs/PLASTICITY.md`, `docs/STORAGE.md`, `docs/MEMORY_HARNESS.md`, `BENCHMARKS.md`, `THREATS.md`,
 `rust/neuron-core/README.md`.
 
 # AUTHOR

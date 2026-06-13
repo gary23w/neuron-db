@@ -119,3 +119,16 @@ reinforce(monday)   winner   w(mon)  w(fri)
 **Consolidation (sleep)** — 5 duplicates + 1 decayed fact consolidate 6 → 1 (4 merged, 1 pruned), recall preserved.
 
 None of these are visible to a static recall@1 test — the reason the measurement was reframed (`docs/PLASTICITY.md`).
+
+## Neurotransmitter recall (spreading activation)
+
+`recall_spreading()` releases activation at cued facts, gates conflicting relations off, and
+spreads across the synapse graph with reuptake decay. A selective query runs in microseconds;
+a worst-case full scan over 2,000 facts stays well under a millisecond. It reaches a 2-hop
+fact that shares no word with the query. Tests: `tests/test_neurotransmitter.py` (5/5).
+
+## Storage density
+
+Serialized footprint is ~48 bytes/fact (20,000-fact measurement), about 22.4M facts/GiB, which
+is ~33x to ~257x denser than a float32 vector store and ~130x at the 1536-dim default. Full
+table, per-product mapping, and caveats: `docs/STORAGE.md`.
