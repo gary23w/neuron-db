@@ -16,6 +16,13 @@ Located in `rust/neuron-core/examples/`:
 | `sharded_scale` | `NeuronRouter` holding 5k facts with fan-out recall | `cargo run --example sharded_scale` |
 | `encrypted_secrets` | `SecureNeuronDB` — encrypted values, per-scope secret | `cargo run --example encrypted_secrets --features secure` |
 
+## Live demo (`examples/demo/`)
+
+A two-pane proof of concept: a memory chatbot on the left, and a live feed of **everything
+neuron-db is collecting** from the browser on the right (mouse/clicks/scroll/keys/session).
+Open `examples/demo/index.html`, or run `examples/demo/run.sh` / `start-demo.bat` to back it
+with the real local server. See [demo/README.md](demo/README.md).
+
 ## HTTP clients (`examples/http/`)
 
 For talking to a running `serve` instance from any language:
