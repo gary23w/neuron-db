@@ -52,9 +52,12 @@ class GaryNeuronBridge:
         hit = store.recall(query)
         return [hit["fact"]] if hit else []
 
-    def think(self, store, query: str, k: int = 3) -> str:
-        facts = self.working_set(store, query, k=k)
+    def generate(self, facts, query: str) -> str:
+        """Run the cortex over an EXPLICIT working set (already narrowed)."""
         prompt = "".join(f"U: {f}\nG: noted.\n" for f in facts) + f"U: {query}\nG:"
+        return self._gen(prompt)
+
+    def _gen(self, prompt: str) -> str:
         ids = self.tok.encode(prompt).ids[-self.CFG["BLK"]:]
         out = []
         for _ in range(self.max_new):
@@ -68,3 +71,6 @@ class GaryNeuronBridge:
                 break
             ids.append(nx); out.append(nx)
         return self.tok.decode(out).strip()
+
+    def think(self, store, query: str, k: int = 3) -> str:
+        return self.generate(self.working_set(store, query, k=k), query)
