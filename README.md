@@ -98,3 +98,10 @@ re-parse cost is paid once, not per call.
 
 | operation | latency |
 |---|---|
+
+## Benchmarks, branches & roadmap
+
+- **Capability numbers** (creation rate, recall latency, the honest stem-collision boundary): [`BENCHMARKS.md`](BENCHMARKS.md)
+- **Memory-bank design** (mount neuron-db as an LLM's memory; 3-tier exact/cue/semantic retrieval; MCP tools): [`docs/MEMORY_HARNESS.md`](docs/MEMORY_HARNESS.md)
+- **`rust` branch** — the faster reimplementation in progress (`rust/neuron-core`, built + tested)
+- **`python-prototype` branch** — this Python build, preserved
