@@ -26,5 +26,19 @@ ck("think() returns {answer,source,model}", set(r)=={"answer","source","model"},
 ck("source matches model availability", (r["source"]=="cortex")==db.model_enabled, f"enabled={db.model_enabled} source={r['source']}")
 db.close()
 
+# model=True but the model fails to load (bad dir, offline) -> must degrade to the store,
+# not raise, and cache the failure so it does not retry on every call.
+os.environ["HF_HUB_OFFLINE"]="1"; os.environ["TRANSFORMERS_OFFLINE"]="1"
+db=NeuronDB(tempfile.mktemp(suffix=".db"), model=True, model_dir="/no/such/model/dir")
+db.observe("u:3","the deploy region is us-west-2")
+ck("failed model load does not enable cortex", db.model_enabled is False)
+r=db.think("u:3","what is the deploy region?")
+ck("think() falls back to store when model fails", r["model"] is False and r["source"]=="store" and r["answer"]=="us-west-2", str(r))
+try:
+    db.think("u:3","what is the deploy region?"); ck("repeated think() after failure does not crash", True)
+except Exception as e:
+    ck("repeated think() after failure does not crash", False, str(e))
+db.close()
+
 print(f"\n{P}/{P+F} passed")
 sys.exit(0 if F==0 else 1)
