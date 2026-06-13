@@ -65,33 +65,36 @@ curl -X POST localhost:8088/v1/alice -d '{"message":"what is my name?"}'   # -> 
 
 Set `NEURON_DB_KEY` to require `Authorization: Bearer <key>`.
 
-## How a neuron works
+### Exact values, not prose
 
-| step | what happens |
-|---|---|
-| **write** | the most surprising content word of a statement becomes its value; names, ages, relations (dog, sister, boss) and coreference ("her name is Mochi") are recognized |
-| **read** | a question's words become a stemmed cue; the best fact is found under relation-binding; the value nearest the asked-about word is returned |
-| **abstain** | no match → `i don't know right now.` |
+`POST /v1/{neuron}/get {"query":"..."}` returns the value itself — `{"value":"hunter2"}`
+or `{"value":null}` — with no wrapper text and no punctuation. (The `turn` endpoint is the
+conversational one; `get` is the machine one.)
 
-A neuron persists as just its raw facts plus one flag each — about **30 bytes per
-fact** — and the whole index is recomputed on load, so improving the recall logic
-never requires a data migration. See [`docs/DESIGN.md`](docs/DESIGN.md).
+### Encrypted neurons (for secrets)
 
-## Why "database"
+For sensitive data, use `SecureNeuronDB`: the value is encrypted and the database never
+stores the key. You pass a per-neuron secret on each call; the database keeps only
+ciphertext and keyed hashes.
 
-The store is pure logic, so it drops into anything: this repo is the SQLite build;
-the same engine runs per-row in Postgres (a `pgrx` extension exposing `neuron_observe()`
-/ `neuron_recall()`), in SQLite as a user-defined function, or per-object at the edge
-(see the hosted **neuron-cloud** variant, which adds an optional language model for
-conversational replies). A neuron is a new kind of column: written in language,
-queried by meaning, and impossible to dump.
-
-## Tests
-
-```bash
-python tests/test_neuron_db.py        # 10/10, no pytest required
+```python
+from neuron_db.secure import SecureNeuronDB
+v = SecureNeuronDB("vault.db")
+v.put("alice", "alice-secret", "wifi password", "hunter2")
+v.get("alice", "alice-secret", "what is the wifi password?")   # -> "hunter2"
+v.get("alice", "WRONG-secret", "what is the wifi password?")   # -> None
+v.get("bob",   "alice-secret", "wifi password")                # -> None (key bound to neuron id)
 ```
 
-## License
+A stolen database file is opaque — no values, cues, or keys. Changing the neuron id in a
+request reads nothing without that neuron's secret. AES-256-GCM with `pip install
+neuron-db[crypto]`, sound stdlib fallback otherwise. Full model and limits in
+[`THREATS.md`](THREATS.md).
 
-MIT — see [`LICENSE`](LICENSE). Built by [gary23w](https://github.com/gary23w).
+### Performance
+
+Recall is sub-linear (a stem→fact index) and hot neurons are cached in memory, so the
+re-parse cost is paid once, not per call.
+
+| operation | latency |
+|---|---|
