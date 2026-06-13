@@ -54,6 +54,7 @@ class PlasticNeuron(Neuron):
     def recall(self, query) -> Optional[dict]:
         cue = _stem(_content(query)) if isinstance(query, str) else _stem(set(query))
         if not cue: return None
+        qraw = _content(query) if isinstance(query, str) else set(query)
         pet_query = bool(cue & _stem({"pet", "animal"}))
         name_query = ("name" in cue) and not (cue & REL_S)
         if self._index is None or self._index_len != len(self.episodes): self._build_index()
@@ -61,7 +62,7 @@ class PlasticNeuron(Neuron):
         for s in cue: cand.update(self._index.get(s, ()))
         if pet_query:
             for s in PETS: cand.update(self._index.get(s, ()))
-        best = None; bk = (-1, -1.0, -1, -1, 0, -1)
+        best = None; bk = (-1, -1, -1.0, -1, -1, 0, -1)
         for i in sorted(cand):
             e = self.episodes[i]
             es = set(e["s"]); ov = len(cue & es); es_pet = bool(es & PETS)
@@ -72,7 +73,8 @@ class PlasticNeuron(Neuron):
             eid = e.get("_id", -1)
             selfp = 1 if (name_query and e.get("self")) else 0
             spec = -len(es - cue - STOPVAL_S)
-            sc = (ov, self._eff(eid), selfp, 1 if e.get("h", "") in cue else 0, spec, i)
+            exact = len(qraw & set(e.get("raw", ())))
+            sc = (exact, ov, self._eff(eid), selfp, 1 if e.get("h", "") in cue else 0, spec, i)
             if sc > bk: bk = sc; best = e
         if best is None: return None
         bes = set(best["s"]); cov = len(cue & bes) / max(1, len(cue))
@@ -85,7 +87,7 @@ class PlasticNeuron(Neuron):
                 self._link(eid, prev, 0.5)
             self._recent.append(eid); self._recent = self._recent[-32:]
             self.tick += 1
-        return {"fact": best["t"], "value": val, "coverage": cov, "overlap": bk[0], "echo": echo, "strength": round(self._eff(eid), 3)}
+        return {"fact": best["t"], "value": val, "coverage": cov, "overlap": bk[1], "echo": echo, "strength": round(self._eff(eid), 3)}
 
     def recall_related(self, query, k: int = 3) -> list:
         hit = self.recall(query)

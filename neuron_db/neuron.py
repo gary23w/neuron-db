@@ -72,7 +72,21 @@ def _encode(text, entity):
     for w in u.split():
         x=_w1(w)
         if x and x not in STOP and x not in ADV: head=next(iter(_stem({x}))); break
-    return {"t":text,"v":keep[0],"c":keep,"s":sorted(_stem(cont)|_stem(inject)),"h":(next(iter(_stem(inject))) if inject else head),"self":self_name and not inject}
+    return {"t":text,"v":keep[0],"c":keep,"s":sorted(_stem(cont)|_stem(inject)),"raw":sorted(cont|inject),"h":(next(iter(_stem(inject))) if inject else head),"self":self_name and not inject}
+def _expand_value(text, val):
+    # upgrade a single-token value to a full Capitalized phrase ("Search Console")
+    if any(c.isdigit() for c in val): return val
+    toks=text.split(); vl=_clip(val).lower()
+    idx=next((i for i,w in enumerate(toks) if _clip(w).lower()==vl), None)
+    if idx is None: return val
+    cap=lambda w: _clip(w)[:1].isupper()
+    if not cap(toks[idx]): return val
+    blocked=lambda w: _clip(w).lower() in STOP or _clip(w).lower() in STOPVAL
+    lo=hi=idx
+    while lo>0 and cap(toks[lo-1]) and not blocked(toks[lo-1]): lo-=1
+    while hi+1<len(toks) and cap(toks[hi+1]) and not blocked(toks[hi+1]): hi+=1
+    return " ".join(_clip(w) for w in toks[lo:hi+1]) if hi>lo else val
+
 def _pick_value(ep, cue, want_num):
     words=ep["t"].split(); cand=ep.get("c",[ep["v"]])
     cue_pos=[i for i,w in enumerate(words) if _stem({_w1(w)})&cue]
@@ -85,10 +99,10 @@ def _pick_value(ep, cue, want_num):
     if want_num:
         nums=[c for c in pool if _isnum(c)]
         if nums: pool=nums
-    if not pool: return ep["v"],True
+    if not pool: return _expand_value(ep["t"], ep["v"]),True
     if want_num and cue_pos and len(pool)>1:
         pool=sorted(pool,key=lambda c: min((abs(pos_of(c)-p), 0 if pos_of(c)<=p else 1) for p in cue_pos))
-    return pool[0],False
+    return _expand_value(ep["t"], pool[0]),False
 class Neuron:
     def __init__(self, max_facts=500):
         self.episodes=[]; self.last_entity=None; self.max_facts=max_facts
@@ -116,6 +130,7 @@ class Neuron:
     def recall(self, query):
         cue=_stem(_content(query)) if isinstance(query,str) else _stem(set(query))
         if not cue: return None
+        qraw=_content(query) if isinstance(query,str) else set(query)
         pet_query=bool(cue&_stem({"pet","animal"}))
         name_query=("name" in cue) and not (cue&REL_S)
         if self._index is None or self._index_len!=len(self.episodes): self._build_index()
@@ -123,7 +138,7 @@ class Neuron:
         for s in cue: cand.update(self._index.get(s,()))
         if pet_query:
             for s in PETS: cand.update(self._index.get(s,()))
-        best=None; bk=(-1,-1,-1,0,-1)
+        best=None; bk=(-1,-1,-1,-1,0,-1)
         for i in sorted(cand):
             e=self.episodes[i]
             es=set(e["s"]); ov=len(cue&es); es_pet=bool(es&PETS)
@@ -133,13 +148,14 @@ class Neuron:
             if (cue&REL_S)-es and not (pet_query and es_pet): continue
             selfp=1 if (name_query and e.get("self")) else 0
             spec=-len(es-cue-STOPVAL_S)
-            sc=(ov,selfp,1 if e.get("h","") in cue else 0,spec,i)
+            exact=len(qraw & set(e.get("raw",())))
+            sc=(exact,ov,selfp,1 if e.get("h","") in cue else 0,spec,i)
             if sc>bk: bk=sc; best=e
         if best is None: return None
         bes=set(best["s"]); cov=len(cue&bes)/max(1,len(cue))
         if pet_query and (bes&PETS): cov=1.0
         val,echo=_pick_value(best,cue,bool(cue&_stem({"many","much","number"})))
-        return {"fact":best["t"],"value":val,"coverage":cov,"overlap":bk[0],"echo":echo}
+        return {"fact":best["t"],"value":val,"coverage":cov,"overlap":bk[1],"echo":echo}
     def recall_many(self, query, k=20):
         cue=_stem(_content(query)) if isinstance(query,str) else _stem(set(query))
         if not cue: return []

@@ -399,13 +399,14 @@ probeable with the right secret. Full model: `THREATS.md`.
 
 # CAVEATS
 
-- **Near-duplicate keys collide.** Recall matches on 6-char stems, so keys that differ only
-  past that prefix (`project17` vs `project170`) are indistinguishable and the newest wins.
-  Distinct keys recall at ~100%; for many similar keys use explicit values or sharding. This
-  is the engine's defining boundary, measured in `BENCHMARKS.md`.
-- **Single-token values.** Recall returns one token; a multi-word answer ("Search Console")
-  is quoted rather than clipped.
-- **Decay is opt-in and ranking-only** (`PlasticNeuron`); plain `NeuronDB` never forgets.
+- **Near-duplicate keys are disambiguated.** Candidate gathering still uses 6-char stems
+  (so fuzzy recall keeps working), but ranking now applies an exact full-token tier first, so
+  `project170` beats the `project17` stem collision when the query names it exactly. Stem
+  matching remains the fallback when no exact token matches.
+- **Multi-word values come back whole.** A run of consecutive capitalized tokens
+  ("Search Console") is returned as one value rather than a single clipped token. Lowercase
+  multi-word answers still return their head token.
+- **Decay is opt-in and ranking-only** (`PlasticNeuron`); plain `NeuronDB` never forgets. This is by design: a durable store should not silently drop data.
 - **The plastic store re-weights; it does not learn.** It cannot invent a fact you never
   stored. Genuine "getting smarter" is offline sleep-consolidation into model weights.
 
@@ -413,7 +414,7 @@ probeable with the right secret. Full model: `THREATS.md`.
 
 ```
 neuron_db/neuron.py     the associative store + recall
-neuron_db/plastic.py    PlasticNeuron (scalar plasticity)
+neuron_db/plastic.py    PlasticNeuron (scalar plasticity + neurotransmitter recall)
 neuron_db/db.py         NeuronDB (SQLite, a database of neurons)
 neuron_db/router.py     NeuronRouter (chained shards)
 neuron_db/secure.py     SecureNeuronDB (encrypted)
@@ -422,7 +423,7 @@ tests/                  50+ unit tests + bench_full.py + test_stress.py
 docs/PLASTICITY.md      the two-tier plastic design + decay semantics
 docs/STORAGE.md         storage density vs commercial vector stores (measured)
 docs/MEMORY_HARNESS.md  mounting as an LLM's memory; where gary-neuron fits
-rust/neuron-core/       the Rust port (on the `rust` branch / merged to main)
+rust/neuron-core/       the Rust port: core store + plastic.rs (PlasticNeuron) + cortex/wasm
 ```
 
 # ENVIRONMENT
