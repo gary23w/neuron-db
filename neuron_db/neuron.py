@@ -155,7 +155,7 @@ class Neuron:
         bes=set(best["s"]); cov=len(cue&bes)/max(1,len(cue))
         if pet_query and (bes&PETS): cov=1.0
         val,echo=_pick_value(best,cue,bool(cue&_stem({"many","much","number"})))
-        return {"fact":best["t"],"value":val,"coverage":cov,"overlap":bk[1],"echo":echo}
+        return {"fact":best["t"],"value":val,"coverage":cov,"overlap":bk[1],"exact":bk[0],"echo":echo}
     def recall_many(self, query, k=20):
         cue=_stem(_content(query)) if isinstance(query,str) else _stem(set(query))
         if not cue: return []

@@ -426,7 +426,7 @@ tests/                  50+ unit tests + bench_full.py + test_stress.py
 docs/PLASTICITY.md      the two-tier plastic design + decay semantics
 docs/STORAGE.md         storage density vs commercial vector stores (measured)
 docs/MEMORY_HARNESS.md  mounting as an LLM's memory; where gary-neuron fits
-rust/neuron-core/       the Rust port: core store + plastic.rs (PlasticNeuron) + cortex/wasm
+rust/neuron-core/       the Rust port: store + plastic.rs + router.rs + turn.rs + cortex/wasm
 ```
 
 # ENVIRONMENT

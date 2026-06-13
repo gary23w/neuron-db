@@ -69,7 +69,7 @@ fn surprise(w: &str, i: usize) -> f64 {
 pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub head: String, pub self_flag: bool, pub id: i64 }
 
 #[derive(Clone, Debug)]
-pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub echo: bool }
+pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
 
 fn sentences(u: &str, cap: usize) -> Vec<String> {
     let mut parts = Vec::new(); let mut cur = String::new();
@@ -222,7 +222,7 @@ impl Neuron {
         if pet_query && e.s.iter().any(|s| pets().contains(s)) { cov = 1.0; }
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(e, &cue, want_num);
-        Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, echo })
+        Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, exact: bk.0 as usize, echo })
     }
 
     /// minimal persistence: "<flag>\t<text>" per line; index rebuilt on load
@@ -255,6 +255,8 @@ impl Neuron {
 // ---- inference tier: the emergence cortex, bundled (optional to use) ----
 
 pub mod plastic;
+pub mod router;
+pub mod turn;
 pub mod cortex;
 pub mod bpe;
 pub mod model;
