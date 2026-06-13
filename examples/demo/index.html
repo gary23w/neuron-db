@@ -108,7 +108,7 @@ document.getElementById("sid").textContent = SID;
 const STOP = new Set("a an the is are am was were be been being do does did have has had my me i you your yours it its to of and or in on at that this what whats where who when how which as for with from will would can could should".split(" "));
 const facts = []; // {scope, text, cues:Set, value, ts}
 const words = s => s.toLowerCase().replace(/[^\w\s']/g," ").split(/\s+/).filter(Boolean);
-const content = s => words(s).filter(w => !STOP.has(w) && w.length>1);
+const content = s => words(s).filter(w => !STOP.has(w) && (w.length>1 || /\d/.test(w)));
 function valueOf(text){
   const orig = text.split(/\s+/);
   const c = content(text);
@@ -328,6 +328,4 @@ function setNet(){
   bubble(`hi! you joined as ${SID}. tell me facts ("my name is Sam", "my plan is pro") and ask them back. everything this page collects streams into the right pane and into neuron-db.`, "bot");
   document.getElementById("in").focus();
 })();
-</script>
-</body>
-</html>
+</script
