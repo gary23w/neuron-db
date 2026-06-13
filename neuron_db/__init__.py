@@ -5,5 +5,5 @@ from .turn import turn
 from .secure import SecureNeuron, SecureNeuronDB
 from .router import NeuronRouter
 from .plastic import PlasticNeuron
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = ["Neuron", "NeuronDB", "turn", "SecureNeuron", "SecureNeuronDB", "NeuronRouter", "PlasticNeuron", "__version__"]

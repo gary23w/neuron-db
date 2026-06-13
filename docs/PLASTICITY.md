@@ -111,3 +111,28 @@ split, and it is why a plastic, thinking, growing memory can stay fast.
 - **Next:** the model-tier adapter — feed `recall_related` working sets to the gary-neuron
   cortex (numpy locally / TS in neuron-cloud) and wire `/sleep` consolidation back into both
   the weights and the store.
+
+## Decay: where it lives and what it can (and can't) do
+
+Can your data silently vanish? No. Guarantees, tested in `tests/test_plastic_limits.py`:
+
+- **Decay is a store-tier feature added in `PlasticNeuron`** — not inherited from the gary-neuron hippocampus. In the original model the episodic store was permanent; only the hippocampus was transient (fast weights, reset per conversation).
+- **Decay only changes recall ranking.** A heavily decayed fact (effective strength ~0) is still returned by `recall` — it just loses ties to fresher facts. Decay never deletes.
+- **Only `consolidate(prune_below=...)` deletes**, explicit/opt-in, and it **protects `self` facts plus anything you `pin()`**.
+- **Plain `Neuron` / `NeuronDB` do not decay at all** — the default for a database that must never forget. `PlasticNeuron(half_life=None)` keeps plasticity with decay off.
+
+So "factual decay" is opt-in, ranking-only, and reversible by pinning — not a leak.
+
+## Do you need the "neocortex" (an LLM)?
+
+No. The three-tier brain picture is only for the *memory-for-an-LLM-agent* case. For a plain app or website database, **your app is the neocortex** — it decides what to store and ask; neuron-db is just the database (no LLM, no model, no dependencies — see `examples/app_backend.py`). Use `NeuronDB` for durable storage, or `PlasticNeuron` for usage-weighted ranking and associations. The LLM and the gary-neuron hippocampus are optional layers added only when you want the store to *reason* or *consolidate*.
+
+## Does the hippocampus "get smarter"? — the honest answer
+
+Three different things; only one is learning:
+
+- **`PlasticNeuron` re-weights.** Use strengthens, disuse decays, co-use associates — it changes *which* stored fact wins a cue, but never invents a fact you didn't store (`test_plasticity_does_not_invent_unstored_facts`) and never alters a stored value (`test_reinforcement_does_not_change_the_value`). Adaptation, not learning; no generalization.
+- **The trained hippocampus adapts within a conversation** (fast weights) then resets — also not permanent learning.
+- **Only sleep consolidation into the cortex weights is true "getting smarter"** — offline gradient training (`/sleep`), not a runtime effect.
+
+The memory gets better-*tuned* to your usage at runtime, cheaply and safely; it gets genuinely *smarter* only when experience is consolidated into the model's weights offline.

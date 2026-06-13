@@ -1,54 +1,47 @@
-"""PlasticNeuron -- the store tier of a plastic memory: a neuron whose recall changes
-with use, forms associations, and forgets, using only cheap O(1) scalar updates. No
-neural net runs here; this is the substrate that decides WHAT enters the working set.
-
-The thinking tier (the trained gary-neuron cortex + plastic hippocampus) runs on top of
-the small working set this returns -- see docs/PLASTICITY.md. Plasticity is split so the
-expensive neural part only ever sees a bounded window, never the whole store.
-
-Mechanisms (all O(1) or O(neighbors), no background sweeps):
-  * strength       each fact carries a weight, bumped on recall (Hebbian "use it")
-  * decay          weight = w * 0.5 ** (age / half_life), computed LAZILY at read time
-  * association    facts recalled close together get linked (fire together, wire together)
-  * spreading      recall can return the hit PLUS its strongest associates (one hop)
-  * consolidate    off-hot-path: merge duplicate-stem facts, prune decayed-to-nothing
-"""
+"""PlasticNeuron -- the store tier of a plastic memory: recall changes with use, forms
+associations, and forgets, via cheap O(1) scalar updates. No neural net runs here.
+Decay only changes recall RANKING; it never deletes a fact. Only consolidate() removes
+anything, and it protects pinned + self facts. Plain Neuron/NeuronDB do not decay."""
 from __future__ import annotations
 from typing import Optional
-from .neuron import (Neuron, _content, _stem, _pick_value, REL_S, PETS, STOPVAL_S, _encode, ENT, LEADIN, _words, COMMAND, _sents)
+from .neuron import (Neuron, _content, _stem, _pick_value, REL_S, PETS, STOPVAL_S)
 
 
 class PlasticNeuron(Neuron):
-    def __init__(self, max_facts: int = 500, half_life: float = 200.0, link_window: int = 3):
+    def __init__(self, max_facts: int = 500, half_life=200.0, link_window: int = 3):
         super().__init__(max_facts)
-        self.half_life = half_life          # in ticks; smaller = forgets faster
-        self.link_window = link_window      # how many recent recalls a new recall links back to
+        # half_life in ticks; None/0/inf => NO decay (permanent strength).
+        self.half_life = half_life
+        self.link_window = link_window
         self.tick = 0
-        self._w: dict[int, float] = {}      # episode id -> strength
-        self._t: dict[int, int] = {}        # episode id -> last-touched tick
-        self._links: dict[int, dict[int, float]] = {}  # id -> {id: weight}
-        self._recent: list[int] = []        # recently activated ids (for co-activation linking)
+        self._w: dict = {}
+        self._t: dict = {}
+        self._links: dict = {}
+        self._recent: list = []
+        self._pinned: set = set()
         self._next_id = 0
 
-    # ----- write -----
     def observe(self, text: str, entity: Optional[str] = None) -> list:
-        wrote = super().observe(text, entity)   # returns the newly-appended episode dicts
+        wrote = super().observe(text, entity)
         new_ids = []
-        for e in wrote:                          # same dict objects that live in self.episodes
+        for e in wrote:
             e["_id"] = self._next_id; self._next_id += 1
             self._w[e["_id"]] = 1.0; self._t[e["_id"]] = self.tick
             new_ids.append(e["_id"])
-        # facts stated together are structurally associated
         for i in range(len(new_ids)):
             for j in range(i + 1, len(new_ids)):
                 self._link(new_ids[i], new_ids[j], 1.0)
         self.tick += 1
         return wrote
 
-    # ----- plastic helpers -----
     def _eff(self, eid: int) -> float:
+        w = self._w.get(eid, 1.0)
+        if not self.half_life or self.half_life == float("inf"):
+            return w
         age = self.tick - self._t.get(eid, self.tick)
-        return self._w.get(eid, 1.0) * (0.5 ** (age / self.half_life))
+        return w * (0.5 ** (age / self.half_life))
+
+    def pin(self, eid: int): self._pinned.add(eid)
 
     def _link(self, a: int, b: int, d: float):
         if a == b: return
@@ -58,14 +51,13 @@ class PlasticNeuron(Neuron):
     def reinforce(self, eid: int, amount: float = 1.0):
         self._w[eid] = self._eff(eid) + amount; self._t[eid] = self.tick
 
-    # ----- read: same matching as Neuron, but ties broken by effective strength -----
     def recall(self, query) -> Optional[dict]:
         cue = _stem(_content(query)) if isinstance(query, str) else _stem(set(query))
         if not cue: return None
         pet_query = bool(cue & _stem({"pet", "animal"}))
         name_query = ("name" in cue) and not (cue & REL_S)
         if self._index is None or self._index_len != len(self.episodes): self._build_index()
-        cand: set = set()
+        cand = set()
         for s in cue: cand.update(self._index.get(s, ()))
         if pet_query:
             for s in PETS: cand.update(self._index.get(s, ()))
@@ -80,16 +72,12 @@ class PlasticNeuron(Neuron):
             eid = e.get("_id", -1)
             selfp = 1 if (name_query and e.get("self")) else 0
             spec = -len(es - cue - STOPVAL_S)
-            # overlap first (a clearly better match still wins), THEN learned strength,
-            # then the original tie-breakers. This is the adaptive bit: a frequently-used
-            # fact beats a merely-recent one on an otherwise-equal cue.
             sc = (ov, self._eff(eid), selfp, 1 if e.get("h", "") in cue else 0, spec, i)
             if sc > bk: bk = sc; best = e
         if best is None: return None
         bes = set(best["s"]); cov = len(cue & bes) / max(1, len(cue))
         if pet_query and (bes & PETS): cov = 1.0
         val, echo = _pick_value(best, cue, bool(cue & _stem({"many", "much", "number"})))
-        # plastic side effects: reinforce the hit, wire it to recently-activated facts
         eid = best.get("_id", -1)
         if eid >= 0:
             self.reinforce(eid)
@@ -100,7 +88,6 @@ class PlasticNeuron(Neuron):
         return {"fact": best["t"], "value": val, "coverage": cov, "overlap": bk[0], "echo": echo, "strength": round(self._eff(eid), 3)}
 
     def recall_related(self, query, k: int = 3) -> list:
-        """The hit plus its strongest associates -- one-hop spreading activation."""
         hit = self.recall(query)
         if hit is None: return []
         out = [hit]
@@ -112,12 +99,9 @@ class PlasticNeuron(Neuron):
             if e: out.append({"fact": e["t"], "value": e["v"], "link": round(w, 2), "strength": round(self._eff(nid), 3)})
         return out
 
-    # ----- consolidation ("sleep"): off the hot path -----
     def consolidate(self, prune_below: float = 0.05) -> dict:
         merged = 0; pruned = 0
-        # merge facts with identical stem-sets, keeping the strongest, summing strength
-        by_key: dict[tuple, dict] = {}
-        keep = []
+        by_key = {}; keep = []
         for e in self.episodes:
             key = tuple(e["s"])
             if key in by_key:
@@ -128,10 +112,9 @@ class PlasticNeuron(Neuron):
                 merged += 1
             else:
                 by_key[key] = e; keep.append(e)
-        # prune facts whose effective strength has decayed away
         survivors = []
         for e in keep:
-            if self._eff(e["_id"]) >= prune_below or e.get("self"):
+            if self._eff(e["_id"]) >= prune_below or e.get("self") or e["_id"] in self._pinned:
                 survivors.append(e)
             else:
                 pruned += 1; self._w.pop(e["_id"], None); self._t.pop(e["_id"], None); self._links.pop(e["_id"], None)
