@@ -66,7 +66,7 @@ fn surprise(w: &str, i: usize) -> f64 {
 }
 
 #[derive(Clone, Debug)]
-pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub head: String, pub self_flag: bool }
+pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub head: String, pub self_flag: bool, pub id: i64 }
 
 #[derive(Clone, Debug)]
 pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub echo: bool }
@@ -115,9 +115,27 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     let _ = entity;
     let s_set: HashSet<String> = stems_s(&cont);
     let mut s: Vec<String> = s_set.into_iter().collect(); s.sort();
-    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, head, self_flag: self_name })
+    let mut raw: Vec<String> = cont.into_iter().collect(); raw.sort(); raw.dedup();
+    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, head, self_flag: self_name, id: -1 })
 }
 fn w_clone(raw: &str) -> String { clip(raw) }
+
+fn expand_value(text: &str, val: &str) -> String {
+    // upgrade a single-token value to a full Capitalized phrase ("Search Console")
+    if val.chars().any(|c| c.is_ascii_digit()) { return val.to_string(); }
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    let vl = clip(val).to_lowercase();
+    let mut idx = None;
+    for (i,w) in toks.iter().enumerate() { if clip(w).to_lowercase()==vl { idx=Some(i); break; } }
+    let i = match idx { Some(i)=>i, None=>return val.to_string() };
+    let is_cap = |w:&str| clip(w).chars().next().map_or(false,|c| c.is_uppercase());
+    if !is_cap(toks[i]) { return val.to_string(); }
+    let blocked = |w:&str| { let wl = clip(w).to_lowercase(); stop().contains(wl.as_str()) || stopval().contains(wl.as_str()) };
+    let (mut lo, mut hi) = (i, i);
+    while lo>0 && is_cap(toks[lo-1]) && !blocked(toks[lo-1]) { lo-=1; }
+    while hi+1<toks.len() && is_cap(toks[hi+1]) && !blocked(toks[hi+1]) { hi+=1; }
+    if hi>lo { toks[lo..=hi].iter().map(|w| clip(w)).collect::<Vec<_>>().join(" ") } else { val.to_string() }
+}
 
 fn pick_value(ep: &Episode, cue: &HashSet<String>, want_num: bool) -> (String, bool) {
     let words: Vec<&str> = ep.t.split_whitespace().collect();
@@ -130,11 +148,11 @@ fn pick_value(ep: &Episode, cue: &HashSet<String>, want_num: bool) -> (String, b
     };
     let mut pool: Vec<String> = ep.c.iter().filter(|c| { let st = stem1(&c.to_lowercase()); !cue.contains(&st) }).cloned().collect();
     if want_num { let nums: Vec<String> = pool.iter().filter(|c| is_num(c)).cloned().collect(); if !nums.is_empty() { pool = nums; } }
-    if pool.is_empty() { return (ep.v.clone(), true); }
+    if pool.is_empty() { return (expand_value(&ep.t, &ep.v), true); }
     if want_num && !cue_pos.is_empty() && pool.len() > 1 {
         pool.sort_by_key(|c| { let p = pos_of(c) as i64; cue_pos.iter().map(|&q| { let q=q as i64; ((p-q).abs(), if p<=q {0} else {1}) }).min().unwrap() });
     }
-    (pool[0].clone(), false)
+    (expand_value(&ep.t, &pool[0]), false)
 }
 
 pub struct Neuron {
@@ -168,6 +186,7 @@ impl Neuron {
     pub fn recall(&mut self, query: &str) -> Option<Recall> {
         let cue: HashSet<String> = stems_s(&content(query));
         if cue.is_empty() { return None; }
+        let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let name_query = cue.contains("name") && cue.intersection(rel_s()).count()==0;
         if self.index.is_none() || self.index_len != self.episodes.len() { self.build_index(); }
@@ -177,7 +196,7 @@ impl Neuron {
         if pet_query { for s in pets() { if let Some(v) = idx.get(s) { cand.extend(v); } } }
         let mut order: Vec<usize> = cand.into_iter().collect(); order.sort();
         let mut best: Option<usize> = None;
-        let mut bk: (i64,i64,i64,i64,i64) = (-1,-1,-1,0,-1);
+        let mut bk: (i64,i64,i64,i64,i64,i64) = (-1,-1,-1,-1,0,-1);
         for i in order {
             let e = &self.episodes[i];
             let es: HashSet<&String> = e.s.iter().collect();
@@ -189,10 +208,11 @@ impl Neuron {
             if unbound_es && !(pet_query && es_pet) { continue; }
             let unbound_cue = cue.iter().any(|s| rel_s().contains(s) && !es.contains(s));
             if unbound_cue && !(pet_query && es_pet) { continue; }
+            let exact_ov = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
             let selfp = if name_query && e.self_flag { 1 } else { 0 };
             let subj = if cue.contains(&e.head) { 1 } else { 0 };
             let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
-            let sc = (ov as i64, selfp, subj, spec, i as i64);
+            let sc = (exact_ov, ov as i64, selfp, subj, spec, i as i64);
             if sc > bk { bk = sc; best = Some(i); }
         }
         let bi = best?;
@@ -202,7 +222,7 @@ impl Neuron {
         if pet_query && e.s.iter().any(|s| pets().contains(s)) { cov = 1.0; }
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(e, &cue, want_num);
-        Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.0 as usize, echo })
+        Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, echo })
     }
 
     /// minimal persistence: "<flag>\t<text>" per line; index rebuilt on load
@@ -219,9 +239,22 @@ impl Neuron {
         n
     }
     pub fn fact_count(&self) -> usize { self.episodes.len() }
+    pub(crate) fn invalidate_index(&mut self) { self.index = None; }
+
+    /// Candidate episode indices for a cue (ensures the index is current). Used by PlasticNeuron.
+    pub(crate) fn candidates(&mut self, cue: &HashSet<String>, pet_query: bool) -> Vec<usize> {
+        if self.index.is_none() || self.index_len != self.episodes.len() { self.build_index(); }
+        let idx = self.index.as_ref().unwrap();
+        let mut cand: HashSet<usize> = HashSet::new();
+        for s in cue { if let Some(v) = idx.get(s) { cand.extend(v); } }
+        if pet_query { for s in pets() { if let Some(v) = idx.get(s) { cand.extend(v); } } }
+        let mut order: Vec<usize> = cand.into_iter().collect(); order.sort(); order
+    }
 }
 
 // ---- inference tier: the emergence cortex, bundled (optional to use) ----
+
+pub mod plastic;
 pub mod cortex;
 pub mod bpe;
 pub mod model;
