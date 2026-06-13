@@ -29,6 +29,11 @@ base64   = { version = "0.22", optional = true }
 getrandom = { version = "0.2", optional = true }
 
 [[bin]]
+name = "neuron"
+path = "src/cli.rs"
+required-features = ["sqlite"]
+
+[[bin]]
 name = "serve"
 path = "src/serve_bin.rs"
 required-features = ["server"]
