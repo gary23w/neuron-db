@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+*.token
+.github_token
+.cloudflare_token
+.DS_Store
+.pytest_cache/
