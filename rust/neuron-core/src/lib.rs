@@ -257,6 +257,9 @@ impl Neuron {
 pub mod plastic;
 pub mod router;
 pub mod turn;
+#[cfg(feature = "sqlite")] pub mod db;
+#[cfg(feature = "secure")] pub mod secure;
+#[cfg(feature = "server")] pub mod server;
 pub mod cortex;
 pub mod bpe;
 pub mod model;

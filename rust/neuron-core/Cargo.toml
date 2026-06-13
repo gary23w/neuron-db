@@ -14,6 +14,25 @@ path = "src/lib.rs"
 name = "bench"
 path = "src/bench.rs"
 
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:getrandom"]
+server = ["sqlite"]
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+aes-gcm  = { version = "0.10", optional = true }
+sha2     = { version = "0.10", optional = true }
+hmac     = { version = "0.12", optional = true }
+base64   = { version = "0.22", optional = true }
+getrandom = { version = "0.2", optional = true }
+
+[[bin]]
+name = "serve"
+path = "src/serve_bin.rs"
+required-features = ["server"]
+
 [profile.release]
 opt-level = 3
 lto = true
