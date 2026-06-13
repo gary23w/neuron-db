@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>neuron-db memo</title>
+<!-- A tiny website that remembers notes per user via the neuron-db HTTP server.
+     Serve neuron-db with CORS on (it already sends access-control-allow-origin: *)
+     and open this file. Set BASE to your server. -->
+<style>body{font:15px system-ui;max-width:40rem;margin:2rem auto}input{width:100%;padding:.5rem;margin:.25rem 0}button{padding:.5rem 1rem}#out{white-space:pre-wrap;background:#f4f4f4;padding:1rem;border-radius:8px}</style>
+<h1>neuron-db memo</h1>
+<input id="user" value="user:web" placeholder="scope / user id">
+<input id="fact" placeholder="tell it something: 'my plan is pro'">
+<button onclick="remember()">Remember</button>
+<input id="q" placeholder="ask it: 'what is my plan?'">
+<button onclick="ask()">Ask</button>
+<div id="out"></div>
+<script>
+const BASE = "http://localhost:8088";
+const out = (o) => document.getElementById("out").textContent = JSON.stringify(o, null, 2);
+const scope = () => encodeURIComponent(document.getElementById("user").value);
+async function remember() {
+  const r = await fetch(`${BASE}/v1/${scope()}`, {
+    method: "POST", headers: {"content-type":"application/json"},
+    body: JSON.stringify({ message: document.getElementById("fact").value })
+  });
+  out(await r.json());
+}
+async function ask() {
+  const r = await fetch(`${BASE}/v1/${scope()}/get`, {
+    method: "POST", headers: {"content-type":"application/json"},
+    body: JSON.stringify({ query: document.getElementById("q").value })
+  });
+  out(await r.json());
+}
+</script>
