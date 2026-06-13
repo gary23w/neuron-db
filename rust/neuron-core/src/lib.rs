@@ -225,3 +225,5 @@ impl Neuron {
 pub mod cortex;
 pub mod bpe;
 pub mod model;
+
+pub mod wasm;
