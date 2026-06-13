@@ -115,7 +115,9 @@ Requires Python >= 3.9. No third-party dependencies for the core.
 **Neuron** — one associative memory, in memory. Permanent (no decay).
 
 **NeuronDB** — a database of neurons in one SQLite file; durable; never decays. The default
-for an app backend.
+for an app backend. The gary-neuron cortex is enabled by default and lazy-loads on the first
+`think()` call; `get()`/`recall()` stay the pure microsecond store path, and `think()` falls
+back to the store value when no model is present. Pass `model=False` to disable.
 
 **PlasticNeuron** — a Neuron whose recall adapts: usage strength, lazy decay, Hebbian
 association, spreading activation, and `consolidate()`. The store tier of the plastic
@@ -171,8 +173,9 @@ fact_count
 
 ```
 turn(id, message) -> {reply, kind, wrote, facts}    conversational: store or answer
-get(id, query)    -> value | None                   exact value, no prose
+get(id, query)    -> value | None                   exact value, no prose (store, microseconds)
 recall(id, query) -> {..} | None
+think(id, query)  -> {answer, source, model}        compose an answer with the cortex (auto-loaded)
 forget(id, match=None) -> {forgot, remaining}
 stats(id) -> {facts, max_facts, created, updated, turns}
 neurons() -> [id]

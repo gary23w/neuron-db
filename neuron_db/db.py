@@ -6,8 +6,9 @@ from .neuron import Neuron
 from .turn import turn as _turn
 SCHEMA = "CREATE TABLE IF NOT EXISTS neurons (id TEXT PRIMARY KEY, facts TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0);"
 class NeuronDB:
-    def __init__(self, path="neurons.db", max_facts=500, cache_size=256):
+    def __init__(self, path="neurons.db", max_facts=500, cache_size=256, model=True, model_dir=None):
         self.path=path; self.max_facts=max_facts
+        self._model=model; self._model_dir=model_dir; self._bridge=None; self._bridge_tried=False
         self.conn=sqlite3.connect(path, check_same_thread=False)
         try: self.conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.DatabaseError: pass
@@ -50,6 +51,33 @@ class NeuronDB:
             n,meta=self._load(nid); before=n.fact_count
             n.episodes=[e for e in n.episodes if match.lower() not in e["t"].lower()] if match else []
             self._save(nid,n,meta); return {"forgot":before-n.fact_count,"remaining":n.fact_count}
+    def _ensure_bridge(self):
+        """Lazily load the gary-neuron cortex the first time think() is called. Cortex is
+        ON by default; if the model or its deps are unavailable we fall back to the store
+        and never try again (so think() degrades gracefully instead of erroring)."""
+        if self._bridge is not None or not self._model or self._bridge_tried:
+            return self._bridge
+        self._bridge_tried=True
+        try:
+            from .bridge import GaryNeuronBridge
+            self._bridge=GaryNeuronBridge(model_dir=self._model_dir)
+        except Exception:
+            self._bridge=None; self._model=False
+        return self._bridge
+    @property
+    def model_enabled(self):
+        return self._ensure_bridge() is not None
+    def think(self, nid, query, k=3):
+        """Answer by composing language with the cortex over the bounded working set the
+        store selects. Cortex is enabled by default; with no model present this returns the
+        store's recalled value instead. get()/recall() stay pure store (microseconds)."""
+        with self._lock:
+            n,_=self._load(nid)
+        b=self._ensure_bridge()
+        if b is None:
+            hit=n.recall(query)
+            return {"answer": hit["value"] if hit else None, "source": "store", "model": False}
+        return {"answer": b.think(n, query, k=k), "source": "cortex", "model": True}
     def stats(self, nid):
         with self._lock:
             n,meta=self._load(nid); return {"facts":n.fact_count,"max_facts":self.max_facts,**meta}
