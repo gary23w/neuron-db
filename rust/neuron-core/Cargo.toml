@@ -16,3 +16,7 @@ path = "src/bench.rs"
 [profile.release]
 opt-level = 3
 lto = true
+
+[[bin]]
+name = "think"
+path = "src/think.rs"

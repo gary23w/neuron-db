@@ -145,11 +145,9 @@ brain = GaryNeuronBridge()
 brain.think(store, "when do we launch?")     # store retrieves the working set; cortex answers
 ```
 
-**It reads a LOCAL directory — no network, no Cloudflare, no automatic download.** The
-bridge loads whatever checkout you point `NEURON_MODEL_DIR` at. Note: as of now the
-emergence-trained weights are NOT published anywhere (not on HuggingFace, and neuron-cloud
-is not deployed) — they live on the machine that trained them. Publish them, or point the
-bridge at your local checkout.
+**The emergence model is published and bundled.**
+- On HuggingFace: [`gary23w/gary-neuron-emergent`](https://huggingface.co/gary23w/gary-neuron-emergent) (step 33597, 384-ctx). The Python bridge auto-downloads it if you `pip install huggingface_hub numpy tokenizers`, or set `NEURON_MODEL_DIR` to a local checkout.
+- In this repo: `rust/neuron-core/model/` (int8, ~1.2 MB) is baked into the Rust binary via `include_bytes!`, so `cargo run --bin think` runs the model with no files and no network.
 
 The store hands the model only a small working set (the bounded window in the diagram); the
 model never touches the whole database. Without the bridge, neuron-db is a complete, fast,

@@ -1,34 +1,33 @@
-"""The model bridge is optional and import-safe. These tests run WITHOUT the model
-(neuron-db ships model-free); the full generation path is exercised only when
-NEURON_MODEL_DIR points at a gary-neuron-chat checkout.
-Run: python tests/test_bridge.py
-"""
+"""The model bridge is optional and import-safe. Core works with no model at all.
+Run: python tests/test_bridge.py"""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
 def test_import_is_safe_without_model():
-    # importing the bridge never forces numpy or the model
     from neuron_db.bridge import GaryNeuronBridge
     assert GaryNeuronBridge is not None
-
-
-def test_clear_error_when_model_absent():
-    from neuron_db.bridge import GaryNeuronBridge
-    try:
-        GaryNeuronBridge(model_dir="/no/such/model/dir")
-        assert False, "should have raised"
-    except RuntimeError as e:
-        assert "model-free by design" in str(e)
-
+    assert GaryNeuronBridge.HF_REPO == "gary23w/gary-neuron-emergent"
 
 def test_core_works_without_bridge():
-    # the whole database is usable with no model at all
     from neuron_db import NeuronDB
     db = NeuronDB(":memory:")
     db.turn("u", "the launch is on Friday")
     assert db.get("u", "when is the launch?") == "Friday"
 
+def test_bridge_resolves_or_errors_cleanly():
+    # With huggingface_hub present the bridge auto-downloads the published model, so we don't
+    # construct it here (no network in a unit test). Without hf_hub and no local dir, it must
+    # raise the documented RuntimeError rather than some opaque crash.
+    from neuron_db.bridge import GaryNeuronBridge
+    try:
+        import huggingface_hub  # noqa
+        return  # reachable -> fine; integration path tested elsewhere
+    except ImportError:
+        pass
+    try:
+        GaryNeuronBridge(model_dir="/no/such/dir"); assert False, "should raise"
+    except RuntimeError as e:
+        assert "model-free by design" in str(e)
 
 if __name__ == "__main__":
     fns = [x for k, x in sorted(globals().items()) if k.startswith("test_")]
