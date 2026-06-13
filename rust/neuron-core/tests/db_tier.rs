@@ -43,3 +43,14 @@ fn forget_and_stats() {
     assert_eq!(forgot, 1); assert_eq!(remaining, 1);
     assert_eq!(db.get("u", "what is the vault code?").as_deref(), Some("9920"));
 }
+
+#[test]
+fn batch_observe_and_recall_many() {
+    let db = NeuronDB::open(&tmp(), 10_000);
+    let facts: Vec<String> = (0..500).map(|i| format!("the metric{} reading is v{}", i, i)).collect();
+    assert_eq!(db.observe_many("s", &facts), 500);
+    assert_eq!(db.get("s", "what is the metric314 reading?").as_deref(), Some("v314"));
+    db.observe("u", "my plan is pro"); db.observe("u", "my city is Halifax");
+    let hits = db.recall_many("u", "my plan and city", 3);
+    assert!(hits.len() >= 2, "top-k should return multiple facts");
+}
