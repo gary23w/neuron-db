@@ -71,6 +71,34 @@ The cost contract that makes this work: the neural tier (hippocampus) only ever 
 the bounded working set the store hands it — never over the whole database. So plasticity
 and "thinking" stay fast no matter how large the store grows.
 
+# GETTING STARTED
+
+You have an app and you want it to remember things. neuron-db is the database.
+
+```
+pip install -e .                       # or just import from the repo (stdlib only)
+from neuron_db import NeuronDB
+db = NeuronDB("app.db")                # one file; one "neuron" per user/scope
+
+db.turn("user:42", "my plan is pro")           # write a fact in plain language
+db.turn("user:42", "the trial ends on March 3")
+db.get("user:42", "what is my plan?")          # -> "pro"      (exact value, no prose)
+db.get("user:42", "when does the trial end?")  # -> "March 3"
+```
+
+Your app decides what to store and what to ask; the database remembers and answers.
+Pick the class for the job:
+
+```
+NeuronDB        durable app storage, never forgets    <- start here
+PlasticNeuron   memory that adapts / ranks by use       (optional)
+SecureNeuronDB  encrypted values, key never stored      (for secrets)
+NeuronRouter    chain shards past one neuron's size      (for scale)
+```
+
+Not a Python app? Run `python -m neuron_db serve` and POST to one HTTP endpoint (see
+HTTP SERVER). You never need a model or an LLM for any of this.
+
 # INSTALLATION
 
 ```
@@ -98,6 +126,34 @@ cap and fans recall out. Holds far more than one neuron with sharp recall.
 
 **SecureNeuronDB** — encrypted neurons: AES-256-GCM values + keyed-hash index, per-neuron
 secret never stored. A stolen file is opaque. See **SECURITY**.
+
+# WHERE IS THE MODEL?
+
+There isn't one in this repo — by design. neuron-db is the *store*: it remembers and
+recalls with no model, no embeddings, no GPU. The trained gary-neuron brain (the
+"hippocampus / neocortex" tiers in the diagram) is OPTIONAL and lives in its own project
+(`gary-neuron-chat`; the cortex is also ported to TypeScript in `neuron-cloud`).
+
+To let the store *generate / reason* over what it recalls, connect the model with
+`neuron_db.bridge` — it loads the cortex from a checkout, it does not bundle weights here:
+
+```
+pip install neuron-db[model]                 # numpy + tokenizers
+export NEURON_MODEL_DIR=/path/to/gary-neuron-chat
+from neuron_db.bridge import GaryNeuronBridge
+brain = GaryNeuronBridge()
+brain.think(store, "when do we launch?")     # store retrieves the working set; cortex answers
+```
+
+**It reads a LOCAL directory — no network, no Cloudflare, no automatic download.** The
+bridge loads whatever checkout you point `NEURON_MODEL_DIR` at. Note: as of now the
+emergence-trained weights are NOT published anywhere (not on HuggingFace, and neuron-cloud
+is not deployed) — they live on the machine that trained them. Publish them, or point the
+bridge at your local checkout.
+
+The store hands the model only a small working set (the bounded window in the diagram); the
+model never touches the whole database. Without the bridge, neuron-db is a complete, fast,
+model-free database on its own.
 
 # API
 
