@@ -20,6 +20,7 @@ sqlite = ["dep:rusqlite"]
 secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:getrandom"]
 server = ["sqlite"]
 mcp = ["sqlite"]
+semantic = []
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
@@ -79,3 +80,7 @@ required-features = ["sqlite"]
 [[example]]
 name = "llm_memory_bench"
 required-features = ["sqlite"]
+
+[[example]]
+name = "book_ingest"
+required-features = ["sqlite", "semantic"]
