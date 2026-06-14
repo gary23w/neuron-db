@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neuron-db · storage density</title>
+<style>
+  :root{--bg:#0a0c12;--panel:#0f1216;--panel2:#15191f;--line:#20262e;--line2:#2b333d;--ink:#eef1f4;--mid:#9aa4b0;--dim:#6b7480;--faint:#5b6478;--accent:#5eead4;--accent2:#7c9cff;--green:#34d399;--amber:#f5b454;--red:#fb7185;--mono:ui-monospace,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+  .mono{font-family:var(--mono)}
+  header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+  header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
+  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}
+  main{flex:1;overflow:auto;padding:22px;max-width:920px;margin:0 auto;width:100%}
+  .control{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:20px}
+  .control .top{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .control .lbl{font:11.5px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.08em}
+  .control .big{font:680 30px var(--mono);color:var(--accent)}
+  .control .big small{font-size:14px;color:var(--mid);font-weight:400}
+  input[type=range]{width:100%;accent-color:var(--accent);margin-top:6px}
+  .ticks{display:flex;justify-content:space-between;font:10.5px var(--mono);color:var(--faint);margin-top:4px}
+  .rows{display:flex;flex-direction:column;gap:12px}
+  .r{display:grid;grid-template-columns:170px 1fr 150px;gap:14px;align-items:center}
+  .r .name{font-size:13px}.r .name b{display:block;color:var(--ink)}.r .name span{font:11px var(--mono);color:var(--dim)}
+  .r .track{height:30px;background:#0b0e16;border:1px solid var(--line);border-radius:6px;overflow:hidden;position:relative}
+  .r .fill{height:100%;transition:width .5s cubic-bezier(.2,.7,.2,1);display:flex;align-items:center;justify-content:flex-end;padding-right:8px;font:11.5px var(--mono);color:#04211c;white-space:nowrap}
+  .r .size{font:13px var(--mono);text-align:right}
+  .r .size b{color:var(--ink)}.r .size span{color:var(--red);font-size:11.5px}
+  .r.hero .name b{color:var(--accent)} .r.hero .fill{background:var(--accent)} .r.hero .size b{color:var(--accent)}
+  .vfill{background:linear-gradient(90deg,#39455e,#2b3447)}
+  .summary{margin-top:22px;background:#0e1218;border:1px solid var(--line2);border-left:2px solid var(--accent);border-radius:8px;padding:16px 18px;font-size:14px;color:var(--mid)}
+  .summary b{color:var(--ink)} .summary .hl{color:var(--accent);font-weight:680}
+  .note{font:11.5px var(--mono);color:var(--faint);margin-top:16px;line-height:1.7}
+  .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .foot a{color:var(--dim)}
+  @media(max-width:680px){.r{grid-template-columns:96px 1fr;}.r .size{grid-column:2;text-align:left}}
+</style></head>
+<body>
+<header>
+  <h1>📦 neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· storage density vs vector databases</span></h1>
+  <span class="pill">~48 B/fact · 22.4M facts/GiB</span>
+</header>
+<main>
+  <div class="control">
+    <div class="top"><span class="lbl">memories to store</span><span class="big" id="countBig">10,000,000</span></div>
+    <input type="range" id="slider" min="3" max="9" step="0.01" value="7">
+    <div class="ticks"><span>1K</span><span>10K</span><span>100K</span><span>1M</span><span>10M</span><span>100M</span><span>1B</span></div>
+  </div>
+  <div class="rows" id="rows"></div>
+  <div class="summary" id="summary"></div>
+  <div class="note">Figures from <span class="mono">docs/STORAGE.md</span>: bytes/item = embedding (dim×4 for f32) + ~28 B row metadata; HNSW adds ~45%. neuron-db stores text + stem index + scalar plasticity, no embedding. This is a storage-density comparison for associative memory, not a claim that neuron-db replaces semantic search.</div>
+</main>
+<div class="foot"><span>same job: hold a short fact and retrieve it by content</span><a href="https://github.com/gary23w/neuron-db/blob/main/docs/STORAGE.md" target="_blank" rel="noopener">STORAGE.md ↗</a></div>
+<script>
+(function(){
+"use strict";
+// bytes per item (from STORAGE.md)
+var STORES=[
+  {n:'neuron-db',     d:'exact-stem assoc. + plastic', b:48,   hero:true},
+  {n:'Vector · int8 1536-d', d:'semantic ANN', b:1603},
+  {n:'Vector · f32 1536-d',  d:'semantic',     b:6211},
+  {n:'pgvector + HNSW',      d:'f32 1536-d ANN',b:9283},
+  {n:'OpenAI 3072-d',        d:'semantic ANN',  b:12355}
+];
+function fmtCount(n){
+  if(n>=1e9)return (n/1e9).toFixed(n>=1e10?0:1).replace(/\.0$/,'')+'B';
+  if(n>=1e6)return (n/1e6).toFixed(n>=1e7?0:1).replace(/\.0$/,'')+'M';
+  if(n>=1e3)return (n/1e3).toFixed(n>=1e4?0:1).replace(/\.0$/,'')+'K';
+  return ''+Math.round(n);
+}
+function fmtBytes(n){
+  var u=['B','KB','MB','GB','TB','PB'],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}
+  return (n>=100?Math.round(n):n.toFixed(n>=10?1:2))+' '+u[i];
+}
+var rows=document.getElementById('rows');
+STORES.forEach(function(s,i){
+  var r=document.createElement('div'); r.className='r'+(s.hero?' hero':'');
+  r.innerHTML='<div class="name"><b>'+s.n+'</b><span>'+s.d+'</span></div>'+
+    '<div class="track"><div class="fill'+(s.hero?'':' vfill')+'" id="fill'+i+'"></div></div>'+
+    '<div class="size" id="size'+i+'"></div>';
+  rows.appendChild(r);
+});
+function update(){
+  var count=Math.round(Math.pow(10, +document.getElementById('slider').value));
+  document.getElementById('countBig').textContent=count.toLocaleString();
+  var base=STORES[0].b*count;
+  var maxBytes=STORES[STORES.length-1].b*count;
+  STORES.forEach(function(s,i){
+    var bytes=s.b*count, mult=s.b/STORES[0].b;
+    document.getElementById('fill'+i).style.width=Math.max(bytes/maxBytes*100,1.5)+'%';
+    document.getElementById('fill'+i).textContent = mult>1.5 ? mult.toFixed(mult>=100?0:1)+'×' : '';
+    document.getElementById('size'+i).innerHTML='<b>'+fmtBytes(bytes)+'</b>'+(s.hero?' <span style="color:var(--green)">baseline</span>':' <span>'+mult.toFixed(mult>=100?0:1)+'× heavier</span>');
+  });
+  var pg=STORES[3].b/STORES[0].b;
+  document.getElementById('summary').innerHTML='To store <b>'+count.toLocaleString()+'</b> memories, neuron-db needs <span class="hl">'+fmtBytes(base)+'</span>. '+
+    'A production pgvector + HNSW store needs <b>'+fmtBytes(STORES[3].b*count)+'</b> — <span class="hl">'+pg.toFixed(0)+'× more disk</span> for the same facts, with O(1) updates and microsecond recall on the neuron-db side.';
+}
+document.getElementById('slider').addEventListener('input',update);
+update();
+})();
+</script>
+</body></html>
