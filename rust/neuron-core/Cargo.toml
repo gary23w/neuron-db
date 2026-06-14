@@ -19,7 +19,7 @@ default = []
 sqlite = ["dep:rusqlite"]
 secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:getrandom"]
 server = ["sqlite"]
-mcp = ["sqlite"]
+mcp = ["sqlite", "semantic"]   # the MCP server ships with semantic-ranked recall by default
 semantic = []
 
 [dependencies]

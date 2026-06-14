@@ -105,6 +105,29 @@ Vector DBs also buy things neuron-db does not have, including fuzzy semantic mat
 cross-lingual recall, and similarity ranking. This is a storage-density comparison for
 associative memory, not a claim that neuron-db replaces a vector DB everywhere.
 
+## The semantic layer, and what int8 costs
+
+The numbers above are the keyed associative store. When you build with `semantic` (e.g. for
+block recall in the MCP server) a second structure appears: one shared semantic space of 256-d
+context vectors, plus a lazy per-fact embedding cache for fuzzy ranking. This is the only part
+of neuron-db that spends real bytes on coordinates, so it is int8-quantized.
+
+Measured on 100 documents / 4,000 facts (`examples/doc_storage_space.rs`):
+
+| component | f32 | int8 | note |
+|---|--:|--:|---|
+| SQLite store (text) | 1.80 MB | 1.80 MB | ~450 B/fact, linear |
+| semantic space (context vectors) | 9.79 MB | ~2.5 MB | shared, vocabulary-bound (9,087 words) |
+| embedding cache (recalled facts) | 4.79 MB | 1.59 MB | lazy; ~400 B/recalled fact |
+| **total resident** | **16.4 MB** | **5.91 MB** | **2.8x smaller** after `compact()` |
+
+The cache is int8 always. The context vectors are kept f32 during training (so accuracy is
+unaffected) and `compact_semantic()` quantizes them to int8 for read-mostly serving — the
+train-then-serve pattern; a later `observe` transparently re-expands. Recall quality is
+unchanged across all semantic tests. Crucially the space is shared and grows with *vocabulary*,
+not document count, so adding documents barely moves it. Per query only the top-k block crosses
+to the LLM (~1.3 KB measured), independent of corpus size.
+
 ## Bottom line
 
 If your LLM memory is a large, growing pile of small facts that you mostly retrieve by name

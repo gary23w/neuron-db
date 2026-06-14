@@ -44,14 +44,17 @@ then recalling it costs ~10 µs/turn even at that size (incremental indexing). F
 **[docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md)** · scale + raw metrics:
 **[docs/guide/BENCHMARKS.md](docs/guide/BENCHMARKS.md)**.
 
-**Mount it in one line.** `neuron-mcp` is a native std-only stdio MCP server — point any MCP
-client (Claude Desktop/Code, Cursor) at the binary and your model gets `remember` / `recall`
-/ `recall_chain` as tools. No Node, no Python, no HTTP process. See
-**[docs/guide/MEMORY_HARNESS.md](docs/guide/MEMORY_HARNESS.md)** and **[examples/mcp-chat/](examples/mcp-chat/)**.
+**Mount it in one line.** `neuron-mcp` is a native stdio MCP server with semantic-ranked recall
+built in — point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets
+`remember` / `recall` / `recall_chain` as tools. No Node, no Python, no HTTP process. The binary
+prints its own paste-ready client config, so setup is two commands:
 
 ```sh
-cargo build --release --features mcp --bin neuron-mcp
+cargo install --path rust/neuron-core --features mcp   # builds + installs neuron-mcp
+neuron-mcp --config                                    # prints config for Claude Desktop / Cursor / Claude Code
 ```
+
+See **[docs/guide/DEPLOY.md](docs/guide/DEPLOY.md)**, **[docs/guide/MEMORY_HARNESS.md](docs/guide/MEMORY_HARNESS.md)**, and **[examples/mcp-chat/](examples/mcp-chat/)**.
 
 ## What it is
 

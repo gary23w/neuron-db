@@ -51,6 +51,10 @@ impl NeuronDB {
     pub fn semantic_neighbors(&self, word: &str, k: usize) -> Vec<(String, f32)> {
         self.sem.lock().unwrap().nearest(word, k)
     }
+    /// Compact the semantic space to int8 for read-mostly serving (~4x smaller; recall intact,
+    /// a later observe transparently re-expands it).
+    #[cfg(feature = "semantic")]
+    pub fn compact_semantic(&self) { self.sem.lock().unwrap().compact(); }
 
     /// Ensure `nid` is in the cache (load from sqlite on miss; evict LRU when over cap).
     fn ensure(inner: &mut Inner, nid: &str, max_facts: usize, cap: usize) {
@@ -79,9 +83,8 @@ impl NeuronDB {
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
-            // re-stating an identical fact shouldn't pile up duplicates (the model often calls
-            // remember again across turns). Exact-text dedup on the single-observe path; the
-            // batch path (observe_many) stays un-deduped so bulk ingest stays O(n).
+            // exact-text dedup on the single-observe path (a model re-stating a fact across turns);
+            // the batch path stays un-deduped so bulk ingest stays O(n).
             if e.n.episodes.iter().any(|ep| ep.t == text) { return 0; }
             w = e.n.observe(text);
             Self::persist(conn, nid, e);
@@ -137,11 +140,9 @@ impl NeuronDB {
             _ => None,
         }
     }
-    /// Hybrid block recall: rank the scope's facts by SEMANTIC similarity to the query (via the
-    /// cached space) with a lexical-overlap boost, and return the top-k. Unlike plain recall this
-    /// engages the semantic layer for EVERY query (not only on a lexical miss), so a broad or
-    /// narrative question ("tell me about the O'Malley story") returns topically-coherent facts
-    /// instead of scattered keyword matches that bleed across unrelated documents.
+    /// Hybrid block recall: rank a scope's facts by semantic similarity (cached space) plus a
+    /// lexical-overlap boost, returning the top-k. Engages the semantic layer for EVERY query, so
+    /// broad/narrative questions return topically-coherent facts instead of scattered keyword hits.
     #[cfg(feature = "semantic")]
     pub fn recall_blended(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
         let facts: Vec<(String, String)> = {

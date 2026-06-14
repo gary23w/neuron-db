@@ -1,12 +1,12 @@
-//! How much space does the per-document storage pattern actually use? (The chat-lab stores each
-//! pasted document in its own scope and trains the shared semantic space on it.) This ingests N
-//! synthetic documents, then breaks the footprint into the THREE places space goes:
-//!   1. SQLite store    — the sentence text (cheap, ~text size)
-//!   2. semantic space  — context vectors, SHARED across docs, ~1 KB per vocabulary word
-//!   3. embedding cache — fuzzy-recall vectors, lazily ~1 KB per fact that gets recalled
+//! Space breakdown of the per-document storage pattern (each pasted document in its own scope,
+//! one shared semantic space). Ingests N synthetic documents and splits the footprint three ways:
+//!   1. SQLite store    — the sentence text (~text size, linear)
+//!   2. semantic space  — context vectors, SHARED across docs, vocabulary-bound
+//!   3. embedding cache — int8 fuzzy-recall vectors, lazily ~400 B per recalled fact
+//! Then compact_semantic() int8-quantizes the space to show the read-mostly serving footprint.
 //! Run: cargo run --release --features "sqlite semantic" --example doc_storage_space
 use neuron_core::db::NeuronDB;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn tmp() -> String {
     let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -31,17 +31,38 @@ fn main() {
     let sents = 40usize;
     println!("== per-document storage footprint: {} documents x {} sentences ==\n", ndocs, sents);
 
+    let docs: Vec<Vec<String>> = (0..ndocs).map(|d| document(d, sents)).collect();
+    let in_bytes: usize = docs.iter().flatten().map(|s| s.len()).sum();   // raw text crossing into the db
+
+    let t0 = Instant::now();
     let mut facts = 0usize;
-    for d in 0..ndocs {
-        facts += db.observe_many(&format!("doc{}", d), &document(d, sents)); // own scope; trains the shared space
+    for (d, doc) in docs.iter().enumerate() {
+        facts += db.observe_many(&format!("doc{}", d), doc);             // own scope; trains the shared space
     }
+    let ingest = t0.elapsed();
+
     let db_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
         + std::fs::metadata(format!("{}-wal", path)).map(|m| m.len()).unwrap_or(0);
     let (vocab, tokens, sem_pre) = db.semantic_stats();              // cache still empty here
 
     // worst case for the cache: recall once from every document (caches that doc's fact vectors)
-    for d in 0..ndocs { let _ = db.recall_blended(&format!("doc{}", d), "how does the service handle the request payload", 10); }
+    let q = "how does the service handle the request payload";
+    let t1 = Instant::now();
+    let mut out_bytes = 0usize;
+    for d in 0..ndocs {
+        let hits = db.recall_blended(&format!("doc{}", d), q, 10);
+        out_bytes += hits.iter().map(|h| h.fact.len() + h.value.len()).sum::<usize>(); // block sent to the LLM
+    }
+    let recall = t1.elapsed();
     let (_, _, sem_post) = db.semantic_stats();                      // now includes the embedding cache
+
+    println!("throughput & transfer (large-block ingest, after int8):");
+    println!("  ingest ... {:>6.1} MB/s   {:>8.0} facts/s   ({:.2} MB of text in {} ms)",
+             in_bytes as f64 / 1e6 / ingest.as_secs_f64(), facts as f64 / ingest.as_secs_f64(),
+             in_bytes as f64 / 1e6, ingest.as_millis());
+    println!("  recall ... {:>6.1} us/query   {:>6.0} B/query transferred to the LLM   (top-10 block)",
+             recall.as_micros() as f64 / ndocs as f64, out_bytes as f64 / ndocs as f64);
+    println!();
     let cache_bytes = sem_post.saturating_sub(sem_pre);
     let total = db_bytes + sem_post as u64;
 
@@ -57,11 +78,19 @@ fn main() {
     println!("   TOTAL resident .... {:>7.2} MB   {:>6.1} KB/doc   {:>5.0} B/fact",
              total as f64 / 1e6, total as f64 / ndocs as f64 / 1e3, total as f64 / facts.max(1) as f64);
 
+    // production "serve" mode: int8-compact the context vectors (a later observe re-expands)
+    db.compact_semantic();
+    let (_, _, sem_compact) = db.semantic_stats();
+    let total_compact = db_bytes + sem_compact as u64;
+    println!("\nafter compact_semantic() (int8 context vectors, read-mostly serving):");
+    println!("   semantic + cache .. {:>7.2} MB  (was {:.2} MB)", sem_compact as f64 / 1e6, sem_post as f64 / 1e6);
+    println!("   TOTAL resident .... {:>7.2} MB  (was {:.2} MB)   {:>6.1} KB/doc",
+             total_compact as f64 / 1e6, total as f64 / 1e6, total_compact as f64 / ndocs as f64 / 1e3);
+
     println!("\nwhere the space goes:");
-    println!("  - the STORE is text — ~300 B/fact, linear, cheap; per-doc scopes add ~nothing vs one scope.");
-    println!("  - the SEMANTIC SPACE is the big cost: ~{} B/word, shared, grows with VOCABULARY not doc count.", 256 * 4);
-    println!("  - the EMBEDDING CACHE is ~1 KB per recalled fact (lazy; drop with clear_cache()).");
-    println!("  mitigations: int8-quantize the space (4x), lower DIM, or persist+evict the space/cache.");
+    println!("  - the STORE is text: ~450 B/fact, linear; per-doc scopes cost ~nothing vs one scope.");
+    println!("  - the SEMANTIC SPACE (context vectors) is the big cost; int8 via compact() cuts it ~4x.");
+    println!("  - the EMBEDDING CACHE is int8, ~400 B per recalled fact (lazy; clear_cache() to drop).");
     rm(&path);
     println!("\n== done ==");
 }

@@ -80,7 +80,8 @@ pub struct SemanticSpace {
     ctx: HashMap<String, Vec<f32>>,   // word -> dense context vector
     cnt: HashMap<String, u32>,        // word -> occurrence count (for picking top words)
     tokens_seen: u64,
-    emb_cache: HashMap<String, (Vec<f32>, u64)>, // fact text -> (unit embedding, tokens_seen when cached)
+    emb_cache: HashMap<String, (Vec<i8>, f32, u64)>, // fact -> (int8 unit embedding, scale, epoch)
+    ctx_q: HashMap<String, (Vec<i8>, f32)>,          // int8 context vectors after compact() (serving mode)
 }
 impl Default for SemanticSpace { fn default() -> Self { Self::new() } }
 
@@ -95,18 +96,17 @@ pub struct Projection {
 }
 
 impl SemanticSpace {
-    pub fn new() -> Self { SemanticSpace { ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new() } }
-    pub fn vocab(&self) -> usize { self.ctx.len() }
+    pub fn new() -> Self { SemanticSpace { ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new(), ctx_q: HashMap::new() } }
+    pub fn vocab(&self) -> usize { self.ctx.len() + self.ctx_q.len() }
     pub fn count(&self, w: &str) -> u32 { self.cnt.get(w).copied().unwrap_or(0) }
     pub fn tokens(&self) -> u64 { self.tokens_seen }
     pub fn dim(&self) -> usize { DIM }
-    /// approximate resident bytes of the space (DIM f32 per word + key), incl. the fact
-    /// embedding cache (DIM f32 per cached fact) that powers fast fuzzy recall.
+    /// Approximate resident bytes: the f32 context vectors plus the int8 embedding cache.
     pub fn bytes(&self) -> usize {
         self.ctx.iter().map(|(k, _)| k.len() + DIM * 4 + 48).sum::<usize>()
-            + self.emb_cache.iter().map(|(k, _)| k.len() + DIM * 4 + 48).sum::<usize>()
+            + self.ctx_q.iter().map(|(k, _)| k.len() + DIM + 16).sum::<usize>()
+            + self.emb_cache.iter().map(|(k, _)| k.len() + DIM + 16).sum::<usize>()
     }
-    /// number of fact embeddings currently cached (the fast-fuzzy-recall index).
     pub fn cached_embeddings(&self) -> usize { self.emb_cache.len() }
 
     /// add the sparse random index vector of `word` into `target`
@@ -120,8 +120,22 @@ impl SemanticSpace {
         }
     }
 
+    /// Compact the context vectors to int8 for read-mostly serving (~4x smaller). Recall still
+    /// works (embed dequantizes inline); a later train() transparently re-expands to f32.
+    pub fn compact(&mut self) {
+        for (w, v) in self.ctx.drain().collect::<Vec<_>>() {
+            self.ctx_q.insert(w, Self::quantize(&v));
+        }
+    }
+    fn expand(&mut self) {
+        for (w, (q, s)) in self.ctx_q.drain().collect::<Vec<_>>() {
+            self.ctx.insert(w, q.iter().map(|x| *x as f32 * s).collect());
+        }
+    }
+
     /// Learn from a span of text: each word accumulates the index vectors of its neighbours.
     pub fn train(&mut self, text: &str) {
+        if !self.ctx_q.is_empty() { self.expand(); } // resume full-precision training if compacted
         let toks = tokenize(text);
         self.tokens_seen += toks.len() as u64;
         for i in 0..toks.len() {
@@ -201,6 +215,15 @@ impl SemanticSpace {
 
     fn norm(v: &[f32]) -> f32 { v.iter().map(|x| x * x).sum::<f32>().sqrt() }
 
+    /// Symmetric int8 quantization of a vector: one f32 scale per vector, values in [-127, 127].
+    /// Cuts a cached embedding from DIM*4 bytes to DIM+4, with negligible cosine-ranking loss.
+    fn quantize(v: &[f32]) -> (Vec<i8>, f32) {
+        let max = v.iter().fold(0f32, |m, x| m.max(x.abs()));
+        if max == 0.0 { return (vec![0i8; v.len()], 0.0); }
+        let scale = max / 127.0;
+        (v.iter().map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8).collect(), scale)
+    }
+
     /// Embed text into the space: the L2-normalized sum of its known words' context vectors
     /// (each normalized first so frequent words don't dominate). None if no word is known.
     pub fn embed(&self, text: &str) -> Option<Vec<f32>> {
@@ -210,6 +233,10 @@ impl SemanticSpace {
             if let Some(cv) = self.ctx.get(&t) {
                 let n = Self::norm(cv);
                 if n > 0.0 { for d in 0..DIM { acc[d] += cv[d] / n; } any = true; }
+            } else if let Some((q, s)) = self.ctx_q.get(&t) {
+                let mut nrm = 0f32; for x in q { let f = *x as f32 * s; nrm += f * f; }
+                let nrm = nrm.sqrt();
+                if nrm > 0.0 { for d in 0..DIM { acc[d] += (q[d] as f32 * s) / nrm; } any = true; }
             }
         }
         if !any { return None; }
@@ -235,32 +262,34 @@ impl SemanticSpace {
         scored
     }
 
-    /// Precompute + cache the embedding of a fact (call at ingest). This is what turns the
-    /// fuzzy-recall path from O(N) re-embeddings per query into O(N) dot products: each fact's
-    /// vector is computed once and scored thereafter. Cheap at write time; ~DIM*4 bytes/fact.
+    /// Precompute and cache a fact's int8 embedding so later fuzzy recall is dot products, not
+    /// re-embeddings. Cheap at write time.
     pub fn cache_embed(&mut self, text: &str) {
-        if let Some(e) = self.embed(text) { self.emb_cache.insert(text.to_string(), (e, self.tokens_seen)); }
+        if let Some(e) = self.embed(text) {
+            let (q, s) = Self::quantize(&e);
+            self.emb_cache.insert(text.to_string(), (q, s, self.tokens_seen));
+        }
     }
-    /// Drop the embedding cache (e.g. after a large retrain) so it rebuilds against the new space.
+    /// Drop the embedding cache so it rebuilds against the current space.
     pub fn clear_cache(&mut self) { self.emb_cache.clear(); }
 
-    /// Rank candidates by cosine to the query, reusing cached candidate embeddings. The query is
-    /// always embedded fresh; a candidate is re-embedded only if it's uncached or the space has
-    /// more than doubled since it was cached (a cheap drift bound). After warm-up this is O(N)
-    /// dot products instead of O(N) embeddings — the "fast fuzzy recall" path.
+    /// Rank candidates by cosine to the query, reusing cached int8 embeddings. The query is
+    /// embedded fresh each call; a candidate is re-embedded only if uncached or the space has
+    /// more than doubled since (a cheap drift bound). After warm-up this is O(N) dot products.
     pub fn rank_cached(&mut self, query: &str, cands: &[String]) -> Vec<(usize, f32)> {
         let q = match self.embed(query) { Some(q) => q, None => return Vec::new() };
         let ts = self.tokens_seen;
-        // pass 1 (&mut): ensure every candidate has a fresh-enough cached embedding
         for c in cands {
-            let need = match self.emb_cache.get(c) { Some((_, ep)) => ts >= ep.saturating_mul(2), None => true };
-            if need { if let Some(e) = self.embed(c) { self.emb_cache.insert(c.clone(), (e, ts)); } }
+            let need = match self.emb_cache.get(c) { Some((_, _, ep)) => ts >= ep.saturating_mul(2), None => true };
+            if need {
+                if let Some(e) = self.embed(c) { let (qz, s) = Self::quantize(&e); self.emb_cache.insert(c.clone(), (qz, s, ts)); }
+            }
         }
-        // pass 2 (read-only): score against the cached vectors, no per-fact re-embed, no clones
         let mut scored: Vec<(usize, f32)> = Vec::with_capacity(cands.len());
         for (i, c) in cands.iter().enumerate() {
-            if let Some((e, _)) = self.emb_cache.get(c) {
-                scored.push((i, e.iter().zip(&q).map(|(p, r)| p * r).sum::<f32>()));
+            if let Some((e, s, _)) = self.emb_cache.get(c) {
+                let dot = e.iter().zip(&q).map(|(c8, qf)| *c8 as f32 * qf).sum::<f32>() * s;
+                scored.push((i, dot));
             }
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
