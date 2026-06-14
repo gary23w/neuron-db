@@ -315,6 +315,7 @@ pub mod turn;
 #[cfg(feature = "sqlite")] pub mod db;
 #[cfg(feature = "secure")] pub mod secure;
 #[cfg(feature = "server")] pub mod server;
+#[cfg(feature = "mcp")] pub mod mcp;
 pub mod cortex;
 pub mod bpe;
 pub mod model;

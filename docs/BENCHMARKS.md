@@ -33,6 +33,7 @@ cargo test --features sqlite --test db_comprehensive
 cargo run --release --bin bench                                  # in-memory core
 cargo run --release --features sqlite --example db_bench         # NeuronDB micro-benchmark
 cargo run --release --features sqlite --example scenario_bench   # user-testing benchmark
+cargo run --release --features sqlite --example llm_memory_bench # LLM-memory needle-in-haystack
 ```
 
 > **Build tip:** point `CARGO_TARGET_DIR` at a path outside any cloud-synced folder.
@@ -205,6 +206,28 @@ Takeaway: for the intended per-user memory workload, NeuronDB is **100% accurate
 across direct lookups, alias paraphrases, numeric extraction, and abstention, at
 **single-digit-microsecond p50** latency. (Before the §3.3 fix, the stemming probe
 scored 0%.)
+
+### 5.4 LLM-memory: needle-in-a-haystack (`llm_memory_bench` example, release)
+
+The use case is external LLM memory: the store holds far more than fits in a context
+window, and each turn injects only the top-k relevant facts. So the test plants 50
+known needles among a growing haystack of distractors and measures whether recall
+still finds them.
+
+```
+haystack | single-recall | top-8 block | needle p50/p95   | broad cue (worst case, O(N))
+  1,000  | 50/50  100%   | 50/50  100% | 16.4 / 17.4 us    |    247 us
+  5,000  | 50/50  100%   | 50/50  100% | 16.5 / 17.5 us    |  1,224 us
+ 20,000  | 50/50  100%   | 50/50  100% | 16.5 / 17.5 us    |  5,162 us
+ 50,000  | 50/50  100%   | 50/50  100% | 16.7 / 17.4 us    | 14,348 us
+```
+
+Takeaway: with 50 needles hidden among up to **50,000 facts**, both single recall and
+the top-8 injectable block stay **100% accurate**, and needle latency is **flat at
+~16 µs** — independent of store size. The LLM only ever sees the top-k block, never the
+haystack, which is what lets external memory sidestep the context-window limit. The
+"broad cue" column (a word shared by every fact) is the one O(N) failure mode; give
+each memory a distinct subject to avoid it.
 
 ---
 
