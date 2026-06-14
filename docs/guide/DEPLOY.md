@@ -1,7 +1,9 @@
 # Deploying neuron-db
 
-neuron-db is a Rust crate plus two binaries (`neuron` CLI, `serve` HTTP server). The store
-is embedded SQLite, so "deploying" is just running a binary next to a data volume.
+neuron-db is a Rust crate plus three binaries (`neuron` CLI, `serve` HTTP server, `neuron-mcp`
+MCP server). The store is embedded SQLite, so "deploying" is just running a binary next to a
+data volume. None of the tiers below require an LLM — the CLI and HTTP server are a complete
+standalone memory database on their own.
 
 ## Build from source
 
@@ -26,6 +28,8 @@ cargo install --path rust/neuron-core --features "sqlite secure server"
 | `sqlite` | `NeuronDB`, the `neuron` CLI | rusqlite (bundled sqlite) |
 | `secure` | `SecureNeuronDB`, `secure-*` CLI | aes-gcm, sha2, hmac, base64, getrandom |
 | `server` | HTTP server, `serve` binary | — (std TcpListener) |
+| `semantic` | semantic-ranked recall (`recall_blended`), int8 space | — (std-only) |
+| `mcp` | `neuron-mcp` MCP server (pulls in `semantic`) | rusqlite |
 
 The default build has zero dependencies and compiles to `wasm32-unknown-unknown` for the
 edge/worker target — the native tiers above are opt-in so they never touch that build.
@@ -77,6 +81,39 @@ neuron --db /data/neurons.db get   user:42 "what plan?"
 ```
 
 See `docs/guide/API.md` for the full command and endpoint reference.
+
+## Deploy as LLM memory (MCP)
+
+`neuron-mcp` gives any MCP client (Claude Desktop, Claude Code, Cursor, …) a persistent
+`recall → inject → remember` memory loop over stdio. It ships with semantic-ranked recall by
+default, so recall is topically coherent out of the box — no harness or extra wiring required.
+
+Build it, then let it write its own client config:
+
+```sh
+cargo install --path rust/neuron-core --features mcp   # installs `neuron-mcp` onto PATH
+neuron-mcp --config                                    # prints paste-ready config for THIS machine
+```
+
+`--config` fills in the binary's absolute path and the db location for you. Paste the JSON into
+your client's config file (Claude Desktop: `claude_desktop_config.json`; Cursor: `~/.cursor/mcp.json`),
+or for Claude Code run the one-liner it prints:
+
+```sh
+claude mcp add neuron --env NEURON_MCP_DB=neuron.db -- /path/to/neuron-mcp
+```
+
+Restart the client and the `recall` / `remember` / `forget` / `stats` tools appear. Environment:
+
+| var | meaning | default |
+|---|---|---|
+| `NEURON_MCP_DB` | database file path | `neuron.db` |
+| `NEURON_MAX_FACTS` | per-scope fact cap | unbounded |
+| `NEURON_MCP_LOG` | `1` logs per-call synapse timing to stderr | off |
+
+The DB is the same SQLite file the CLI and server use, so you can inspect a model's memory with
+`neuron --db neuron.db list` while it runs. For the passive auto-capture / document-register
+harness patterns layered on top of this server, see `docs/guide/MEMORY_HARNESS.md`.
 
 ## Backups
 
