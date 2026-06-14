@@ -195,5 +195,5 @@ access at the layer that fits:
 ## Durability & concurrency
 
 `NeuronDB` is one SQLite file in WAL mode behind a process-wide lock, so concurrent threads
-are safe (writes serialize). Each write persists the scope immediately. See `docs/DEPLOY.md`
+are safe (writes serialize). Each write persists the scope immediately. See `docs/guide/DEPLOY.md`
 for running it as a service.

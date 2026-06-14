@@ -43,7 +43,7 @@ instantiates it once per isolate, and calls three C-ABI exports:
 ## Honest notes
 
 - This Worker is **stateless per request** (facts come in the request body). For a durable,
-  multi-tenant store, back it with a Durable Object per neuron (see `docs/MEMORY_HARNESS.md`)
+  multi-tenant store, back it with a Durable Object per neuron (see `docs/guide/MEMORY_HARNESS.md`)
   and persist `Neuron::dump()` in DO storage between calls.
 - A real deploy needs your Cloudflare account; it was verified in a local WASM VM here, not
   on Cloudflare's edge.

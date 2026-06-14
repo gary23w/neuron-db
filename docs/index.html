@@ -499,8 +499,8 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="kicker">Tiers &amp; capabilities</div>
-      <h2 class="title">One core, six tiers. Add only what you need.</h2>
-      <p>Every tier shares the same associative store. Plasticity, sharding, durability, encryption, and the network server are opt-in Cargo features, so the default build stays std-only and wasm-clean.</p>
+      <h2 class="title">One core, every tier opt-in. Add only what you need.</h2>
+      <p>Every tier shares the same associative store. Plasticity, sharding, durability, encryption, a network server, embedding-free semantic recall, and an MCP mount are opt-in Cargo features, so the default build stays std-only and wasm-clean.</p>
     </div>
     <div class="grid cols-3">
       <div class="card reveal">
@@ -538,6 +538,18 @@
         <h3>HTTP server <span class="tagm" style="color:#f5b454;border-color:rgba(245,180,84,.3)">server</span></h3>
         <p>One endpoint per scope from a std <span class="mono">TcpListener</span>: turn, get, recall, batch observe, top-k memory block, forget, metrics. Optional <span class="mono">Bearer</span> auth via <span class="mono">NEURON_DB_KEY</span>.</p>
         <div class="feat-code">POST /v1/{scope}        {message} → turn<br>POST /v1/{scope}/recall_many {query,k}</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg"><circle cx="6" cy="8" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="15" cy="18" r="2"/><circle cx="8" cy="16" r="1.5"/><path d="M8 8.3l8-1.6M16.6 7.4l-1.4 8.8M7.6 14.3 14 17.2"/></svg></div>
+        <h3>SemanticSpace <span class="tagm">semantic</span></h3>
+        <p>Embedding-free <b>fuzzy recall</b>. A corpus-distributional space (Random Indexing, 256-dim, std-only, no model) grounds meaning in co-occurrence, so open-vocabulary paraphrase resolves — <span class="mono">"the thing I use to get online"</span> finds the wifi fact. Lexical recall stays the fast path; this is the fallback.</p>
+        <div class="feat-code">db.train_semantic(corpus);<br>recall("a gigantic sea creature") → "…Leviathan…"</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg" style="stroke:#7c9cff"><rect x="3" y="9" width="7" height="6" rx="1.5"/><rect x="14" y="4.5" width="7" height="6" rx="1.5"/><rect x="14" y="13.5" width="7" height="6" rx="1.5"/><path d="M10 12h2M12 7.5h2M12 16.5h2M12 7.5v9"/></svg></div>
+        <h3>neuron-mcp <span class="tagm" style="color:#7c9cff;border-color:rgba(124,156,255,.3)">mcp</span></h3>
+        <p>A native std-only <b>stdio MCP server</b>. Point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets <span class="mono">remember</span> / <span class="mono">recall</span> / <span class="mono">recall_chain</span> / <span class="mono">forget</span> / <span class="mono">stats</span> as tools — no Node, no Python, no HTTP process.</p>
+        <div class="feat-code">cargo build --release --features mcp --bin neuron-mcp</div>
       </div>
     </div>
   </div>
@@ -646,7 +658,7 @@
     <div class="sec-head reveal">
       <div class="kicker">Benchmarks</div>
       <h2 class="title">Measured, and bounded honestly.</h2>
-      <p>From the legacy-python reference and the Rust core (release, LTO), single core. Numbers are indicative, reproducible with <span class="mono">python tests/bench.py</span> and <span class="mono">cargo run --release --bin bench</span>. The honest failure mode is published too.</p>
+      <p>From the Rust core (release, single core); the original Python prototype is archived on the <span class="mono">legacy-python</span> branch. Numbers are indicative, reproducible with <span class="mono">cargo run --release --bin bench</span>. The honest failure mode is published too.</p>
     </div>
 
     <div class="tabs reveal" role="tablist">
@@ -655,19 +667,20 @@
       <button class="tab" data-bm="overtime">10k-turn session</button>
       <button class="tab" data-bm="plastic">Plasticity effects</button>
       <button class="tab" data-bm="accuracy">Accuracy &amp; limits</button>
+      <button class="tab" data-bm="semantic">Semantic &amp; books</button>
     </div>
 
     <div class="panel-bm active" data-bm="speed">
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Path · neurons/sec (3 facts each)</th><th class="num-cell">throughput</th></tr></thead>
         <tbody>
-          <tr><td>Python, SQLite-backed (<span class="mono">NeuronDB.turn</span>, durable)</td><td class="num-cell">~1,200</td></tr>
-          <tr><td>Python, pure in-memory <span class="mono">Neuron</span></td><td class="num-cell">~30,000</td></tr>
-          <tr><td><b>Rust core, in-memory</b></td><td class="num-cell winner">~215,000</td></tr>
+          <tr><td><b>Rust core, in-memory</b> (<span class="mono">Neuron</span>)</td><td class="num-cell winner">~215,000</td></tr>
+          <tr><td>legacy-python, in-memory <span class="mono">Neuron</span> <span class="dim">(archived)</span></td><td class="num-cell">~30,000</td></tr>
+          <tr><td>legacy-python, SQLite-backed <span class="mono">NeuronDB.turn</span> <span class="dim">(archived)</span></td><td class="num-cell">~1,200</td></tr>
         </tbody>
       </table></div>
       <table class="tbl" style="margin-top:16px">
-        <thead><tr><th>Operation (Python, single core)</th><th class="num-cell">result</th></tr></thead>
+        <thead><tr><th>Operation <span class="dim">(legacy-python reference, archived)</span></th><th class="num-cell">result</th></tr></thead>
         <tbody>
           <tr><td>write throughput (<span class="mono">observe</span>)</td><td class="num-cell">~55,000 facts/s</td></tr>
           <tr><td>secure put (AES-GCM + keyed index)</td><td class="num-cell">~390 /s</td></tr>
@@ -681,7 +694,7 @@
 
     <div class="panel-bm" data-bm="latency">
       <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>Facts in neuron</th><th class="num-cell">Python (indexed)</th><th class="num-cell">Rust core</th></tr></thead>
+        <thead><tr><th>Facts in neuron</th><th class="num-cell">legacy-python (ref)</th><th class="num-cell">Rust core</th></tr></thead>
         <tbody>
           <tr><td>100</td><td class="num-cell">~66 µs</td><td class="num-cell">·</td></tr>
           <tr><td>500</td><td class="num-cell">~245-380 µs</td><td class="num-cell winner">~50 µs</td></tr>
@@ -717,7 +730,7 @@
           <tr><td><b class="pink">Consolidation</b></td><td>5 duplicates + 1 decayed fact consolidate <span class="mono">6 → 1</span> (4 merged, 1 pruned), recall preserved.</td></tr>
         </tbody>
       </table></div>
-      <p class="bm-note">None of these are visible to a static recall@1 test, which is exactly why plasticity is measured as a sequence of uses over time. Tests: <span class="mono">test_plastic.py</span> 6/6, <span class="mono">test_neurotransmitter.py</span> 5/5.</p>
+      <p class="bm-note">None of these are visible to a static recall@1 test, which is exactly why plasticity is measured as a sequence of uses over time. Tests: <span class="mono">cargo test</span> over <span class="mono">tests/plastic.rs</span> (Rust); the original Python suites are archived on <span class="mono">legacy-python</span>.</p>
     </div>
 
     <div class="panel-bm" data-bm="accuracy">
@@ -729,6 +742,20 @@
         </tbody>
       </table></div>
       <p class="bm-note">Recall accuracy depends on whether keys are <b>lexically distinct</b>, not how many facts a neuron holds. The stemmer truncates to 6 characters, so keys differing only past that prefix collapse and the most-recent collider wins. Real-world keys (names, relations, attributes) are distinct and recall cleanly at 400+. Near-duplicate keys are <i>the</i> failure mode, and the memory-harness design addresses them with explicit keys, full-token disambiguation, and a dedup/supersede policy.</p>
+    </div>
+
+    <div class="panel-bm" data-bm="semantic">
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>The book test — ingest whole books (<span class="mono">--features semantic</span>)</th><th class="num-cell">result</th></tr></thead>
+        <tbody>
+          <tr><td>corpus ingested (5 Project Gutenberg books)</td><td class="num-cell">598,684 words → 29,123 facts</td></tr>
+          <tr><td>store on disk (SQLite)</td><td class="num-cell">~8.7 MB <span class="dim">(~298 B/sentence)</span></td></tr>
+          <tr><td>semantic space (23,919-word vocab, 256-dim)</td><td class="num-cell">~25.8 MB</td></tr>
+          <tr><td><b>lexical recall over 29k facts, one scope</b></td><td class="num-cell winner">single-digit ms</td></tr>
+          <tr><td>semantic fallback (paraphrase, O(N) today)</td><td class="num-cell">~tens of ms</td></tr>
+        </tbody>
+      </table></div>
+      <p class="bm-note">Ingesting whole books builds a queryable knowledge base <i>and</i> a distributional semantic space that learns meaning from the text alone (<span class="mono">whale → ship · sea · sperm</span>), with <b>zero shared words</b> between a paraphrased query and the passage it recalls. Lexical recall stays in milliseconds at book scale; the fuzzy fallback is O(N), and the next win is an embedding cache + ANN index. Full write-up: <a class="doc-open" data-doc="SEMANTIC.md" href="#">SEMANTIC.md →</a>.</p>
     </div>
   </div>
 </section>
@@ -751,7 +778,7 @@
         <div class="drow"><div class="dl">pgvector / Qdrant f32 + HNSW</div><div><div class="bar vec" style="width:5.5%"></div></div><div class="dv">193.2×</div></div>
         <div class="drow"><div class="dl">Vector DB · f32 3072-d (OpenAI large)</div><div><div class="bar vec" style="width:4%"></div></div><div class="dv">257.2×</div></div>
       </div>
-      <p class="dim" style="font-size:13px;margin-top:18px">Bars show relative facts-per-GiB (neuron-db = 100%). The right column reads as "neuron-db fits this many more facts in the same disk." Even against binary quantization, which throws away most recall accuracy, neuron-db is still ~5× denser. The trade is real: this is cue-and-association recall with scalar plasticity, <b>not</b> cosine-similarity semantic search. It's scalar-first by design; add a vector tier only for the queries that truly need meaning matching.</p>
+      <p class="dim" style="font-size:13px;margin-top:18px">Bars show relative facts-per-GiB (neuron-db = 100%). The right column reads as "neuron-db fits this many more facts in the same disk." Even against binary quantization, which throws away most recall accuracy, neuron-db is still ~5× denser. The trade is real: this is cue-and-association recall with scalar plasticity, <b>not</b> cosine-similarity semantic search. It's scalar-first by design, with an optional embedding-free semantic tier for paraphrase; reach for a dense vector tier only when ranked similarity search or cross-lingual recall is the core requirement.</p>
     </div>
   </div>
 </section>
@@ -771,6 +798,7 @@
         <button data-qs="http"><span class="n">04</span> HTTP server</button>
         <button data-qs="docker"><span class="n">05</span> Docker</button>
         <button data-qs="secure"><span class="n">06</span> Encrypted tier</button>
+        <button data-qs="mcp"><span class="n">07</span> MCP server</button>
       </div>
       <div>
         <div class="qs-panel active" data-qs="build">
@@ -880,6 +908,25 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
 </code></pre>
           </div>
         </div>
+
+        <div class="qs-panel" data-qs="mcp">
+          <h3>MCP: mount it as an LLM's long-term memory</h3>
+          <p>Build the std-only stdio server and point any MCP client at it. The model gets <span class="mono">remember</span> / <span class="mono">recall</span> / <span class="mono">recall_chain</span> as tools; recall stays microseconds whether the user has 10 facts or 10 million.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">mcp</span></div>
+<pre><code><span class="tok-c"># build the native stdio MCP server (no Node, no Python)</span>
+<span class="tok-p">cargo</span> build <span class="tok-f">--release</span> <span class="tok-f">--features</span> mcp <span class="tok-f">--bin</span> neuron-mcp
+
+<span class="tok-c"># point a client at it — e.g. a Claude Desktop mcpServers entry</span>
+{
+  <span class="tok-s">"neuron-db"</span>: {
+    <span class="tok-s">"command"</span>: <span class="tok-s">"/path/to/neuron-mcp"</span>,
+    <span class="tok-s">"env"</span>: { <span class="tok-s">"NEURON_MCP_DB"</span>: <span class="tok-s">"/data/memory.db"</span> }
+  }
+}
+</code></pre>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -901,12 +948,13 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
           <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>No model, no GPU, no index to maintain.</b> Microsecond recall and O(1) updates with nothing to re-embed or re-index.</span></li>
           <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>Runs anywhere.</b> A 1 MB wasm worker at the edge, a static binary on a box, embedded in your Rust app, or a Postgres extension.</span></li>
           <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>Adapts from use.</b> The plastic tier learns what matters and forgets what doesn't, without a training step.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>Fuzzy recall without a model.</b> The optional semantic tier grounds meaning in a corpus (Random Indexing) so paraphrase resolves embedding-free — no vector DB, no GPU.</span></li>
         </ul>
       </div>
       <div class="col reveal">
         <h3><span class="amber">⚠</span> Reach for vectors when</h3>
         <ul>
-          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>You need fuzzy semantic match.</b> <span class="mono">"the thing I use to get online"</span> won't match <span class="mono">"wifi password"</span> without an embedding.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>You need zero-shot semantic match.</b> The built-in semantic tier resolves paraphrase like <span class="mono">"the thing I use to get online" → wifi</span> embedding-free — but only after it has seen related text. For semantic match with no corpus to learn from, a pretrained embedding still wins.</span></li>
           <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>Cross-lingual recall</b> or similarity ranking is the core requirement.</span></li>
           <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>Near-duplicate keys.</b> Ten "meeting on {date}" entries collide on stems; use explicit keys and the dedup/supersede harness, or a vector tier.</span></li>
           <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>ACID rows and joins.</b> neuron-db is an associative memory, not a relational database.</span></li>
@@ -1117,18 +1165,18 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
   function selectDoc(d, btn){
     docList.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b===btn); });
     docTitle.textContent = d.file;
-    docRaw.href = d.file;
+    docRaw.href = 'guide/' + d.file;
     modalSide.classList.remove('show');
     if(cache[d.file]){ render(d, cache[d.file]); return; }
     docContent.classList.add('loading');
     docContent.innerHTML = '<div class="md"><p class="dim">Loading '+d.file+'…</p></div>';
-    fetch(d.file).then(function(r){ if(!r.ok) throw new Error(r.status); return r.text(); })
+    fetch('guide/' + d.file).then(function(r){ if(!r.ok) throw new Error(r.status); return r.text(); })
       .then(function(txt){ cache[d.file] = txt; render(d, txt); })
       .catch(function(err){
         docContent.classList.remove('loading');
         docContent.innerHTML = '<div class="md"><h2>Couldn’t load '+d.file+'</h2>'+
           '<p class="dim">'+(location.protocol==='file:' ? 'The docs viewer fetches markdown over HTTP, so it works on the deployed GitHub Pages site, not from a local <span class="mono">file://</span> open.' : 'Error: '+err.message)+'</p>'+
-          '<p><a href="https://github.com/gary23w/neuron-db/blob/main/docs/'+d.file+'" target="_blank" rel="noopener">Open '+d.file+' on GitHub ↗</a></p></div>';
+          '<p><a href="https://github.com/gary23w/neuron-db/blob/main/docs/guide/'+d.file+'" target="_blank" rel="noopener">Open '+d.file+' on GitHub ↗</a></p></div>';
       });
   }
 

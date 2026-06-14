@@ -12,7 +12,7 @@ Three questions, answered with measurements:
 2. **How much does that cost** the LLM?
 3. Is neuron-db a **measurable improvement** over the markdown-dump memory?
 
-Harness: `examples/mcp_chat/bench_compare.py` (model: `gpt-4o-mini`). Token counts are exact
+Harness: `examples/mcp-chat/bench_compare.py` (model: `gpt-4o-mini`). Token counts are exact
 (OpenAI `usage`); accuracy is objective (ground truth computed from the graph).
 
 ---
@@ -204,5 +204,5 @@ A measurement note: multi-word values (`"in design"`) isolate to their salient t
 ```sh
 cargo build --release --features mcp --bin neuron-mcp
 export OPENAI_API_KEY=sk-...
-python examples/mcp_chat/bench_compare.py --sizes 300,1500,6000
+python examples/mcp-chat/bench_compare.py --sizes 300,1500,6000
 ```

@@ -13,17 +13,23 @@ scalars, and that fits inside the same bytes as the text.
 This page shows the measurement, the comparison, and the caveats, so the number holds up
 when someone pushes on it.
 
-## Measurement (reproducible)
+## Measurement
 
-```
-python - <<'PY'
+The 48-bytes/fact figure below was measured on the original **legacy-python** prototype
+(now removed; preserved on the `legacy-python` branch), which exposed a `dump()` serializer:
+
+```python
+# legacy-python (removed) — preserved on the legacy-python branch
 from neuron_db.plastic import PlasticNeuron
 n = PlasticNeuron(half_life=1e9, max_facts=10**9)
 for i in range(20000):
     n.observe(f"the server{i} holds value alpha{i}")
 print(len(n.dump().encode()) / 20000, "bytes/fact serialized")
-PY
 ```
+
+In the current Rust crate the equivalent store is `neuron_core::plastic::PlasticNeuron`
+(see `rust/neuron-core/examples/plastic_adaptive.rs`); it persists facts more tightly than
+the prototype, so 48 bytes/fact is the conservative upper bound here.
 
 We loaded 20,000 plain-language facts (average source sentence 39 bytes) into a
 `PlasticNeuron`, ran recall so the strength, timestamp, and link state actually exists, then

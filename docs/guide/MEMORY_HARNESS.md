@@ -116,8 +116,8 @@ can't fail on an external service.
 ## 3. The MCP server
 
 A thin MCP server over the Rust core exposes a small set of tools — an LLM should not need
-to learn a query language. This is **implemented** as `neuron-mcp` (`src/mcp.rs`,
-`src/mcp_bin.rs`), a native std-only stdio JSON-RPC 2.0 server embedding `NeuronDB`. No Node
+to learn a query language. This is **implemented** as `neuron-mcp` (`rust/neuron-core/src/mcp.rs`,
+`rust/neuron-core/src/mcp_bin.rs`), a native std-only stdio JSON-RPC 2.0 server embedding `NeuronDB`. No Node
 or Python runtime, no separate HTTP process — one binary the client launches.
 
 | tool | input | returns (MCP text content) |
