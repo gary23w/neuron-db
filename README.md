@@ -1,14 +1,51 @@
 # neuron-db
 
-An associative memory you can run anywhere. Write facts in plain language, recall them by
-meaning. No tables, no schema, no embeddings, no model required. The core is pure Rust with
-zero dependencies and compiles to WebAssembly; durable storage, encryption, and an HTTP
-server are opt-in features.
+An associative memory you can run anywhere — and the flat-cost **long-term memory for an
+LLM**. Write facts in plain language, recall them by meaning, and **link neurons across
+arbitrarily deep chains at no extra model cost**. No tables, no schema, no embeddings, no
+model required. The core is pure Rust with zero dependencies and compiles to WebAssembly;
+durable storage, encryption, an HTTP server, and an MCP server are opt-in features.
 
 ```sh
 ./build.sh
 neuron --db app.db turn me 'my plan is pro'
 neuron --db app.db get  me 'what plan am i on?'      # -> pro
+```
+
+▶ **[Watch the synapse fire in 3D](https://gary23w.github.io/neuron-db/demos/synapse-3d.html)** — the real Rust core, in your browser.
+
+## LLM memory: link infinite neurons, at flat cost
+
+An LLM's context window is small; neuron-db is the memory that lives *outside* it. A
+relational question — *"the timezone of the manager of the owner of Aurora"* — normally
+makes the model recall a fact, wait, recall the next, wait… N hops = N+1 model calls.
+**`recall_chain`** collapses that: the model sends one path, and the synapse walks the
+whole chain server-side, each hop a microsecond recall. **Depth is paid in microseconds,
+not model turns.**
+
+Measured live against the memory most LLMs use today (a markdown file of all facts dumped
+into context every turn), `gpt-4o-mini`, a 700-fact user:
+
+| | neuron-db | markdown-dump |
+|---|---|---|
+| multi-hop accuracy (1/2/3 hops) | **100%** | 83–100% |
+| context cost / turn | **~1.1k tokens (flat)** | 2.7k → 67k (linear) |
+| cost at 6,000 facts | **$0.19 / 1k-q** | $10.06 / 1k-q |
+| model calls per answer, any depth | **2** | 1 |
+| needle recall to 50k facts | **100% · ~16 µs** | context-bound |
+
+The markdown-dump reinjects the whole memory every turn and eventually overruns the window;
+neuron-db injects only what it recalled — flat cost, no ceiling, matching or beating
+accuracy. Full numbers: **[docs/COMPARISON.md](docs/COMPARISON.md)** · how fast recall fires:
+**[docs/SYNAPSE.md](docs/SYNAPSE.md)**.
+
+**Mount it in one line.** `neuron-mcp` is a native std-only stdio MCP server — point any MCP
+client (Claude Desktop/Code, Cursor) at the binary and your model gets `remember` / `recall`
+/ `recall_chain` as tools. No Node, no Python, no HTTP process. See
+**[docs/MEMORY_HARNESS.md](docs/MEMORY_HARNESS.md)** and **[examples/mcp_chat/](examples/mcp_chat/)**.
+
+```sh
+cargo build --release --features mcp --bin neuron-mcp
 ```
 
 ## What it is
@@ -36,6 +73,7 @@ db.forget("user:42", Some("plan"));         // delete by substring
 - **`NeuronDB`** — durable database of scopes in one SQLite file (`--features sqlite`).
 - **`SecureNeuronDB`** — AES-256-GCM values, per-scope secret never stored (`--features secure`).
 - **HTTP server + `serve` binary** — one endpoint per scope (`--features server`).
+- **`neuron-mcp`** — stdio MCP server so any LLM mounts neuron-db as memory (`--features mcp`).
 
 ## Why it's interesting
 
@@ -47,8 +85,11 @@ db.forget("user:42", Some("plan"));         // delete by substring
 - **Adaptive.** The plastic tier learns from use with O(1) scalar updates — no re-embedding,
   no re-indexing.
 
-The trade: it does cue and association recall, not semantic similarity. `"the thing I use to
-get online"` won't match `"wifi password"` without an embedding. It's scalar-first by design.
+The trade: it's scalar-first, lexical recall — not learned semantic similarity. It bridges
+morphology (`owner`/`owned`/`owns`) and a curated synonym ontology (`reports to`↔`manager`,
+`lives in`↔`city`) for free, but open-vocabulary paraphrase (`"the thing I use to get
+online"` → `"wifi password"`) would still want an embedding tier. In exchange you get
+microsecond recall, ~130× the density of a vector store, and no model on the hot path.
 
 ## Build
 
@@ -83,6 +124,9 @@ or an **[existing API](examples/guides/EXISTING_API.md)**.
 
 ## Docs
 
+- [docs/SYNAPSE.md](docs/SYNAPSE.md) — how fast recall fires for an LLM, measured
+- [docs/COMPARISON.md](docs/COMPARISON.md) — multi-hop + neuron-db vs the markdown-dump memory
+- [docs/MEMORY_HARNESS.md](docs/MEMORY_HARNESS.md) — mount as LLM memory; the MCP server & tools
 - [docs/API.md](docs/API.md) — data model and every operation (library / CLI / HTTP)
 - [docs/DEPLOY.md](docs/DEPLOY.md) — build, install, Docker, env, backups
 - [docs/STORAGE.md](docs/STORAGE.md) — storage density vs vector databases
