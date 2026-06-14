@@ -34,7 +34,9 @@ fn irr(w: &str) -> &str {
 fn w1(w: &str) -> String {
     let t: &str = w.trim_matches(|c: char| "?.!,;:'\"’><)([]}{".contains(c));
     let t = t.to_lowercase();
-    if t.ends_with("'s") || t.ends_with("\u{2019}s") { t[..t.len()-2].to_string() } else { t }
+    // strip a possessive suffix char-safely; t[..t.len()-2] panics when the apostrophe
+    // is a multibyte curly quote (\u{2019}, 3 bytes) rather than ASCII '.
+    if let Some(s) = t.strip_suffix("'s").or_else(|| t.strip_suffix("\u{2019}s")) { s.to_string() } else { t }
 }
 fn words(s: &str) -> HashSet<String> { s.split_whitespace().map(w1).filter(|x| !x.is_empty()).collect() }
 fn content(s: &str) -> HashSet<String> { words(s).into_iter().filter(|w| !stop().contains(w.as_str())).collect() }
@@ -42,7 +44,13 @@ fn stem1(w: &str) -> String {
     let mut w = irr(w).to_string();
     if w.len() >= 5 && w.ends_with("ies") { w = format!("{}y", &w[..w.len()-3]); }
     else if w.len() >= 4 && w.ends_with('s') && !w.ends_with("ss") { w.pop(); }
-    if w.len() >= 8 { w[..6].to_string() } else if w.len() >= 4 { w[..4].to_string() } else { w }
+    // truncate by CHARS, not bytes: a byte slice (w[..6]) panics on multibyte UTF-8.
+    // Keep mid-length words at 5 chars (not 4) so 5-6 char words don't collapse onto a
+    // shorter word's stem ("planet"/"plant"/"plane" no longer all become "plan").
+    let n = w.chars().count();
+    if n >= 8 { w.chars().take(6).collect() }
+    else if n >= 5 { w.chars().take(5).collect() }
+    else { w }
 }
 fn stems<'a, I: IntoIterator<Item = &'a String>>(it: I) -> HashSet<String> { it.into_iter().map(|w| stem1(w)).collect() }
 fn stems_s(it: &HashSet<String>) -> HashSet<String> { it.iter().map(|w| stem1(w)).collect() }
