@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neuron-db · emergence cortex</title>
+<style>
+  :root{--bg:#0a0c12;--panel:#0f1216;--panel2:#15191f;--line:#20262e;--line2:#2b333d;--ink:#eef1f4;--mid:#9aa4b0;--dim:#6b7480;--faint:#5b6478;--accent:#5eead4;--accent2:#7c9cff;--pink:#f472b6;--green:#34d399;--amber:#f5b454;--red:#fb7185;--mono:ui-monospace,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+  .mono{font-family:var(--mono)}
+  header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+  header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
+  .pills{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .pill{font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}.pill b{color:var(--accent)}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}.dot.on{background:var(--green);box-shadow:0 0 7px var(--green)}.dot.off{background:var(--amber)}.dot.err{background:var(--red)}
+  main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
+  .pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
+  .pane:last-child{border-right:none}
+  .pane h2{margin:0;padding:11px 16px;font:11.5px var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--dim);border-bottom:1px solid var(--line);flex:none}
+  .scroll{flex:1;overflow:auto;padding:16px}
+  .hint{font-size:12.5px;color:var(--dim);line-height:1.6;margin-bottom:14px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;padding:5px 11px;color:var(--mid);cursor:pointer}
+  .chip:hover,.chip.sel{color:var(--accent);border-color:var(--accent)}
+  .ctx{font:13px var(--mono);background:#0b0e16;border:1px solid var(--line);border-radius:10px;padding:14px;line-height:1.85;white-space:pre-wrap;word-break:break-word}
+  .ctx .u{color:var(--accent2)}.ctx .g{color:var(--faint)}
+  .ctx mark{background:rgba(94,234,212,.16);color:var(--accent);padding:0 2px;border-radius:3px;transition:background .2s}
+  .ctx mark.hot{background:var(--accent);color:#04211c}
+  .ctx .cursor{color:var(--pink)}
+  textarea{width:100%;min-height:84px;background:var(--panel);border:1px solid var(--line2);border-radius:10px;color:var(--ink);font:13px var(--mono);padding:11px;outline:none;resize:vertical}
+  textarea:focus{border-color:var(--accent)}
+  .qrow{display:flex;gap:9px;margin-top:11px}
+  .qrow input{flex:1;background:var(--panel);border:1px solid var(--line2);border-radius:10px;color:var(--ink);font:13px var(--mono);padding:10px 12px;outline:none}
+  .qrow input:focus{border-color:var(--accent)}
+  button{background:var(--accent);color:#04211c;border:none;border-radius:10px;font:680 14px var(--sans);padding:0 18px;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .gen{font:15px var(--mono);min-height:30px;line-height:1.7;margin-top:4px}
+  .gen .out{color:var(--accent);font-weight:600}
+  .gen .blink{color:var(--pink);animation:bl 1s steps(1) infinite}@keyframes bl{50%{opacity:0}}
+  .stat{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px;font:11.5px var(--mono);color:var(--dim)}
+  .stat b{color:var(--ink)}
+  .lab{font:11px var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 7px}
+  .arch{font:11.5px var(--mono);color:var(--mid);background:#0b0e16;border:1px solid var(--line);border-radius:10px;padding:12px 14px;line-height:1.7}
+  .arch b{color:var(--accent)}
+  .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .foot a{color:var(--dim)}
+  @media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:auto auto}.pane{border-right:none;border-bottom:1px solid var(--line)}}
+</style></head>
+<body>
+<header>
+  <h1>🧠 neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· emergence cortex — copy-from-context</span></h1>
+  <div class="pills"><span class="pill"><span class="dot off" id="dot"></span><span id="state">loading core…</span></span><span class="pill">8L · E96 · 384ctx</span><span class="pill">numpy↔ts↔rust <b>0.0 MSE</b></span></div>
+</header>
+<main>
+  <section class="pane">
+    <h2>① the context window the cortex reads</h2>
+    <div class="scroll">
+      <div class="hint">The store recalls a small working set; it's formatted as the <span class="mono">U:/G:</span> dialogue the model was trained on, then the cortex reads that window and <b style="color:var(--mid)">copies the answer out of it</b>. Pick a scenario or edit the facts.</div>
+      <div class="chips" id="chips"></div>
+      <div class="lab">working-set facts (one per line)</div>
+      <textarea id="facts"></textarea>
+      <div class="qrow"><input id="q" placeholder="ask a question…"><button id="run" disabled>Run cortex ▸</button></div>
+      <div class="stat"><span>tokens in window: <b id="tok">0</b></span><span>generated: <b id="gtok">0</b></span><span>time: <b id="ms">—</b></span></div>
+    </div>
+  </section>
+  <section class="pane">
+    <h2>② the cortex prompt + generation</h2>
+    <div class="scroll">
+      <div class="ctx" id="ctx"><span class="g">pick a scenario and press Run.</span></div>
+      <div class="lab">G: (generated, token by token)</div>
+      <div class="gen" id="gen"><span class="g">—</span></div>
+      <div class="lab">what just happened</div>
+      <div class="arch" id="arch">The forward pass is pure Rust (std-only), compiled to WebAssembly, the model weights baked into the binary with <b>include_bytes!</b>. No files, no network, no GPU. The same pass matches the numpy and TypeScript ports to <b>0.0000 MSE</b>.</div>
+    </div>
+  </section>
+</main>
+<div class="foot"><span>the real Rust core + cortex, running in your browser via WebAssembly</span><a href="https://github.com/gary23w/neuron-db/tree/main/worker" target="_blank" rel="noopener">worker/ ↗</a></div>
+<script>
+(function(){
+"use strict";
+var EX=null, td=new TextDecoder(), te=new TextEncoder();
+function $(id){return document.getElementById(id);}
+function esc(s){return s.replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+var SCEN=[
+  {n:'wifi password', f:['the wifi password is vekam73','the office is on the 4th floor'], q:'what is the wifi password?'},
+  {n:'participants', f:['only the first 84,512 participants will receive badges','doors open at 9am'], q:'how many participants get badges?'},
+  {n:'api key', f:['the api key is zeta-9931','the region is us-west-2'], q:'what is the api key?'},
+  {n:'unknown (abstains)', f:['the plan is pro','the color is teal'], q:'what is the capital of mars?'}
+];
+function loadScen(s,btn){
+  $('facts').value=s.f.join('\n'); $('q').value=s.q;
+  document.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('sel',c===btn);});
+  buildCtx(false);
+}
+SCEN.forEach(function(s,i){var c=document.createElement('div');c.className='chip';c.textContent=s.n;c.addEventListener('click',function(){loadScen(s,c);});$('chips').appendChild(c);});
+
+function facts(){return $('facts').value.split('\n').map(function(x){return x.trim();}).filter(Boolean);}
+function buildCtx(withCursor){
+  var fz=facts(), q=$('q').value.trim();
+  var html='';
+  fz.forEach(function(f){html+='<span class="u">U:</span> '+esc(f)+'\n<span class="g">G: noted.</span>\n';});
+  html+='<span class="u">U:</span> '+esc(q)+'\n<span class="g">G:</span> ';
+  if(withCursor) html+='<span class="cursor">▌</span>';
+  $('ctx').innerHTML=html;
+  // rough token estimate
+  var approx=Math.round((fz.join(' ')+' '+q).length/3.3);
+  $('tok').textContent=approx;
+}
+function think(q,fz){
+  var input=[q].concat(fz).join("\n");
+  var b=te.encode(input);
+  var ptr=EX.alloc(b.length);
+  new Uint8Array(EX.memory.buffer,ptr,b.length).set(b);
+  var n=EX.run(ptr,b.length);
+  return td.decode(new Uint8Array(EX.memory.buffer,EX.answer_ptr(),n));
+}
+function highlight(ans){
+  // mark where the answer appears in the context (the value being copied)
+  var ctx=$('ctx'), html=ctx.innerHTML;
+  var safe=esc(ans).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  if(ans && new RegExp(safe).test(ctx.textContent)){
+    ctx.innerHTML=html.replace(new RegExp('('+safe+')'), '<mark class="hot">$1</mark>');
+    setTimeout(function(){var m=ctx.querySelector('mark');if(m)m.classList.remove('hot');},1200);
+  }
+}
+function run(){
+  if(!EX) return;
+  buildCtx(true);
+  var q=$('q').value.trim(), fz=facts();
+  var t0=performance.now();
+  var ans=think(q,fz);
+  var ms=performance.now()-t0;
+  $('ms').textContent=ms.toFixed(1)+' ms';
+  // stream the answer out token-ish by token-ish
+  var gen=$('gen'); gen.innerHTML='<span class="out"></span><span class="blink">▌</span>';
+  var span=gen.querySelector('.out');
+  var pieces=ans.split(/(\s+)/), i=0, shown='';
+  $('gtok').textContent=0;
+  (function step(){
+    if(i<pieces.length){
+      shown+=pieces[i]; span.textContent=shown;
+      $('gtok').textContent=Math.ceil((i+1)/2);
+      i++;
+      setTimeout(step, 70);
+    } else {
+      gen.innerHTML='<span class="out">'+esc(ans)+'</span>';
+      buildCtx(false); highlight(ans);
+    }
+  })();
+}
+$('run').addEventListener('click',run);
+$('facts').addEventListener('input',function(){buildCtx(false);});
+$('q').addEventListener('input',function(){buildCtx(false);});
+$('q').addEventListener('keydown',function(e){if(e.key==='Enter')run();});
+
+// load wasm
+(function(){
+  function boot(inst){EX=inst.exports;var c=EX.selftest();$('dot').className='dot on';$('state').textContent='core ready · selftest '+c;$('run').disabled=false;loadScen(SCEN[0],document.querySelector('.chip'));}
+  function fail(e){$('dot').className='dot err';$('state').textContent='core offline';$('arch').innerHTML='⚠ the WebAssembly core needs http(s). '+(location.protocol==='file:'?'Open this on the live site, or serve docs/ over http.':esc(String(e)));}
+  if(location.protocol==='file:'){fail('file://');loadScen(SCEN[0],document.querySelector('.chip'));return;}
+  var u='neuron_core.wasm';
+  (WebAssembly.instantiateStreaming?WebAssembly.instantiateStreaming(fetch(u),{}):Promise.reject())
+    .then(function(r){boot(r.instance);})
+    .catch(function(){fetch(u).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(function(r){boot(r.instance);}).catch(fail);});
+})();
+})();
+</script>
+</body></html>

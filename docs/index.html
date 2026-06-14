@@ -1,0 +1,1149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>neuron-db · an associative memory you can run anywhere</title>
+<meta name="description" content="neuron-db is a tiny, dependency-free associative memory in pure Rust. Write facts in plain language, recall them by meaning. ~130× denser than a vector store, microsecond recall, no model or GPU required, with an optional emergence cortex that thinks over what it recalls.">
+<meta name="author" content="gary23w">
+<meta name="theme-color" content="#0a0c12">
+<meta property="og:type" content="website">
+<meta property="og:title" content="neuron-db: an associative memory you can run anywhere">
+<meta property="og:description" content="Pure-Rust associative memory. Plain-language facts, microsecond recall, ~130× the density of a float32 vector store, plus an emergence cortex that thinks over what it recalls.">
+<meta property="og:url" content="https://gary23w.github.io/neuron-db/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='5' fill='%235eead4'/%3E%3Ccircle cx='6' cy='7' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='26' cy='9' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='7' cy='25' r='2.4' fill='%23f472b6'/%3E%3Ccircle cx='25' cy='24' r='2.4' fill='%2334d399'/%3E%3Cg stroke='%235eead4' stroke-width='1.1' opacity='.6'%3E%3Cline x1='16' y1='16' x2='6' y2='7'/%3E%3Cline x1='16' y1='16' x2='26' y2='9'/%3E%3Cline x1='16' y1='16' x2='7' y2='25'/%3E%3Cline x1='16' y1='16' x2='25' y2='24'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0a0c12; --bg2:#0c0e14; --panel:#12161f; --panel2:#1a2030; --panel3:#1f2738;
+    --line:#242c3d; --line2:#2f3a50;
+    --ink:#e9eef7; --mid:#aeb8cc; --dim:#7d869b; --faint:#5b6478;
+    --accent:#5eead4; --accent2:#7c9cff; --pink:#f472b6; --green:#34d399; --amber:#f5b454; --red:#fb7185;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --maxw:1120px; --radius:11px; --radius-sm:8px;
+    --shadow:0 1px 0 0 var(--line2), 0 18px 40px -28px rgba(0,0,0,.85);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden}
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{color:var(--accent)}
+  h1,h2,h3,h4{line-height:1.15;margin:0;letter-spacing:-.02em;font-weight:680}
+  p{margin:0 0 1em}
+  code,kbd,pre{font-family:var(--mono)}
+  ::selection{background:rgba(94,234,212,.26);color:#fff}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+  .accent{color:var(--accent)} .accent2{color:var(--accent2)} .pink{color:var(--pink)} .green{color:var(--green)} .amber{color:var(--amber)} .dim{color:var(--dim)}
+  .mono{font-family:var(--mono)}
+
+  /* ---------- nav ---------- */
+  header.nav{position:sticky;top:0;z-index:50;backdrop-filter:saturate(140%) blur(12px);background:rgba(10,12,18,.72);border-bottom:1px solid transparent;transition:border-color .3s,background .3s}
+  header.nav.scrolled{border-bottom-color:var(--line);background:rgba(10,12,18,.86)}
+  .nav-inner{max-width:var(--maxw);margin:0 auto;padding:13px 22px;display:flex;align-items:center;gap:18px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:730;font-size:17px;letter-spacing:-.01em;color:var(--ink)}
+  .brand svg{display:block}
+  .brand b{color:var(--accent);font-weight:730}
+  .nav-links{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .nav-links a.navlink{color:var(--mid);padding:7px 12px;border-radius:9px;font-size:14.5px;font-weight:530}
+  .nav-links a.navlink:hover{color:var(--ink);background:var(--panel2)}
+  .btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:9px 15px;font-size:14.5px;font-weight:620;cursor:pointer;border:1px solid var(--line2);background:var(--panel2);color:var(--ink);transition:transform .12s,border-color .2s,background .2s;white-space:nowrap}
+  .btn:hover{transform:translateY(-1px);border-color:var(--accent);color:var(--ink)}
+  .btn.primary{background:var(--accent);color:#04211c;border-color:transparent;font-weight:680}
+  .btn.primary:hover{background:#74f0dc;color:#04211c}
+  .btn.ghost{background:transparent}
+  .hamburger{display:none;margin-left:auto;background:var(--panel2);border:1px solid var(--line);border-radius:9px;width:40px;height:38px;align-items:center;justify-content:center;cursor:pointer}
+  .hamburger span{display:block;width:18px;height:2px;background:var(--ink);position:relative}
+  .hamburger span::before,.hamburger span::after{content:"";position:absolute;left:0;width:18px;height:2px;background:var(--ink)}
+  .hamburger span::before{top:-6px}.hamburger span::after{top:6px}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;overflow:hidden;padding:74px 0 56px;border-bottom:1px solid var(--line)}
+  .hero-bg{position:absolute;inset:0;z-index:0;pointer-events:none}
+  .hero-bg .glow{display:none}
+  .hero-bg .g1{width:520px;height:520px;background:radial-gradient(circle,rgba(94,234,212,.30),transparent 65%);top:-160px;right:-120px}
+  .hero-bg .g2{width:480px;height:480px;background:radial-gradient(circle,rgba(124,156,255,.26),transparent 65%);bottom:-200px;left:-140px}
+  .hero-bg .g3{width:360px;height:360px;background:radial-gradient(circle,rgba(244,114,182,.16),transparent 65%);top:40px;left:42%}
+  .hero-bg::after{content:"";position:absolute;inset:0;background:radial-gradient(900px 380px at 78% -8%,rgba(94,234,212,.10),transparent 70%)}
+  .hero-grid-overlay{position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:48px 48px;opacity:.22;mask-image:radial-gradient(ellipse 90% 80% at 30% 0%,#000,transparent 78%)}
+  .hero .wrap{position:relative;z-index:1}
+  .eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;color:var(--mid);background:#0d1117;border:1px solid var(--line2);padding:6px 12px;border-radius:6px;margin-bottom:22px}
+  .eyebrow .dotpulse{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(94,234,212,.6);animation:pulse 2.2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(94,234,212,.5)}70%{box-shadow:0 0 0 8px rgba(94,234,212,0)}100%{box-shadow:0 0 0 0 rgba(94,234,212,0)}}
+  .hero h1{font-size:clamp(34px,6vw,62px);font-weight:760;letter-spacing:-.035em;max-width:15ch}
+  .grad{color:var(--accent)}
+  .hero .lead{font-size:clamp(17px,2.3vw,21px);color:var(--mid);max-width:54ch;margin:22px 0 30px}
+  .hero .lead b{color:var(--ink);font-weight:620}
+  .cta{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+  .cta .btn{padding:12px 20px;font-size:15.5px}
+  .hero-terminal{margin-top:38px;max-width:720px}
+  .trust{margin-top:26px;display:flex;flex-wrap:wrap;gap:8px 10px}
+  .chip{font-family:var(--mono);font-size:12.5px;color:var(--mid);border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 12px}
+  .chip b{color:var(--accent)}
+
+  /* ---------- code / terminal ---------- */
+  .terminal{background:linear-gradient(180deg,#0d1019,#0b0e16);border:1px solid var(--line2);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  .terminal .bar{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);background:#0e1220}
+  .terminal .bar i{width:11px;height:11px;border-radius:50%;display:block}
+  .terminal .bar .r{background:#fb7185}.terminal .bar .y{background:#f5b454}.terminal .bar .g{background:#34d399}
+  .terminal .bar .ttl{margin-left:8px;font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .terminal pre{margin:0;padding:18px;overflow:auto;font-size:13.5px;line-height:1.75}
+  pre code{display:block;white-space:pre}
+  .tok-c{color:var(--faint);font-style:italic} /* comment */
+  .tok-p{color:var(--accent)}  /* prompt / command name */
+  .tok-f{color:var(--accent2)} /* flag */
+  .tok-s{color:var(--amber)}   /* string */
+  .tok-k{color:var(--pink)}    /* keyword */
+  .tok-n{color:#9be7d6}        /* literal value */
+  .tok-r{color:var(--green)}   /* result arrow */
+
+  /* ---------- sections ---------- */
+  section{padding:78px 0;position:relative}
+  section + section{border-top:1px solid var(--line)}
+  .sec-head{max-width:640px;margin-bottom:42px}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin-bottom:14px;display:flex;align-items:center;gap:10px}
+  .kicker::before{content:"";width:22px;height:1px;background:var(--accent);opacity:.7}
+  h2.title{font-size:clamp(26px,4vw,40px);font-weight:720;letter-spacing:-.03em}
+  .sec-head p{margin-top:16px;color:var(--mid);font-size:17px}
+
+  /* ---------- stats strip ---------- */
+  .stats{padding:30px 0;background:linear-gradient(180deg,#0c0f18,#0a0c12);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .stats-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+  .stat{padding:6px 10px;text-align:center;border-left:1px solid var(--line)}
+  .stat:first-child{border-left:none}
+  .stat .num{font-size:clamp(22px,3.2vw,31px);font-weight:680;letter-spacing:-.02em;font-family:var(--mono);color:var(--ink)}
+  .stat .num::before{content:"";display:inline-block;width:6px;height:6px;border-radius:1px;background:var(--accent);margin-right:8px;vertical-align:middle;transform:translateY(-2px)}
+  .stat .lbl{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.35}
+
+  /* ---------- generic grid cards ---------- */
+  .grid{display:grid;gap:18px}
+  .cols-3{grid-template-columns:repeat(3,1fr)}
+  .cols-2{grid-template-columns:repeat(2,1fr)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;position:relative;transition:transform .16s,border-color .2s;overflow:hidden}
+  .card::before{content:"";position:absolute;left:0;top:0;height:2px;width:0;background:var(--accent);transition:width .25s}
+  .card:hover::before{width:100%}
+  .card:hover{transform:translateY(-2px);border-color:var(--line2)}
+  .card .ic{width:38px;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#0b0e16;border:1px solid var(--line2);margin-bottom:15px}
+  .card h3{font-size:17.5px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .card h3 .tagm{font-family:var(--mono);font-size:11.5px;color:var(--accent);background:rgba(94,234,212,.08);border:1px solid var(--line2);border-radius:6px;padding:2px 7px;font-weight:600}
+  .card p{margin:10px 0 0;color:var(--mid);font-size:14.5px}
+  .card .feat-code{margin-top:14px;font-family:var(--mono);font-size:12.5px;color:var(--accent);background:#0b0e16;border:1px solid var(--line);border-radius:8px;padding:9px 11px;overflow:auto}
+  .card .ico-svg{stroke:var(--accent);fill:none;stroke-width:1.6}
+
+  /* ---------- what-it-is ---------- */
+  .split{display:grid;grid-template-columns:1.05fr .95fr;gap:34px;align-items:start}
+  .model-diagram{font-family:var(--mono);font-size:13px;background:#0b0e16;border:1px solid var(--line);border-radius:var(--radius);padding:20px;color:var(--mid);line-height:1.85;overflow:auto}
+  .model-diagram .sc{color:var(--accent2)} .model-diagram .fa{color:var(--ink)} .model-diagram .tree{color:var(--faint)}
+  table.tbl{width:100%;border-collapse:collapse;font-size:14.5px;overflow:hidden;border:1px solid var(--line);border-radius:var(--radius)}
+  table.tbl thead th{text-align:left;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding:12px 14px;background:#0e1220;border-bottom:1px solid var(--line)}
+  table.tbl td{padding:11px 14px;border-bottom:1px solid var(--line);color:var(--mid);vertical-align:top}
+  table.tbl tbody tr:last-child td{border-bottom:none}
+  table.tbl tbody tr:hover td{background:rgba(124,156,255,.04)}
+  table.tbl td .mono{color:var(--accent)}
+  table.tbl td b{color:var(--ink)}
+  .num-cell{font-family:var(--mono);text-align:right;white-space:nowrap}
+  .hl{color:var(--accent);font-weight:700}
+
+  /* ---------- cortex / thinking ---------- */
+  .brain{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:stretch}
+  .flow{font-family:var(--mono);font-size:12.5px;line-height:1.8;background:#0b0e16;border:1px solid var(--line);border-radius:var(--radius);padding:22px;color:var(--mid);overflow:auto}
+  .flow .layer{padding:9px 12px;border-radius:9px;margin:7px 0;border:1px solid var(--line)}
+  .flow .l-store{background:rgba(52,211,153,.06);border-color:rgba(52,211,153,.3)}
+  .flow .l-model{background:rgba(124,156,255,.06);border-color:rgba(124,156,255,.3)}
+  .flow .l-sleep{background:rgba(244,114,182,.06);border-color:rgba(244,114,182,.3)}
+  .flow .lt{font-weight:700;color:var(--ink)}
+  .flow .arrow{text-align:center;color:var(--faint);margin:2px 0}
+  .mech{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:560px){.mech{grid-template-columns:1fr}}
+  .mech .m{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:16px}
+  .mech .m h4{font-size:15px;display:flex;align-items:center;gap:9px}
+  .mech .m h4 .dot{width:9px;height:9px;border-radius:50%}
+  .mech .m p{margin:8px 0 0;font-size:13.5px;color:var(--mid)}
+  .mech .m .cost{font-family:var(--mono);font-size:11.5px;color:var(--accent);margin-top:8px;display:inline-block;background:#0b0e16;border:1px solid var(--line);border-radius:6px;padding:2px 8px}
+
+  /* ---------- benchmarks ---------- */
+  .tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px}
+  .tab{font-family:var(--mono);font-size:13px;color:var(--mid);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 14px;cursor:pointer;transition:.18s}
+  .tab:hover{color:var(--ink);border-color:var(--line2)}
+  .tab.active{background:rgba(94,234,212,.1);border-color:var(--accent);color:var(--accent)}
+  .panel-bm{display:none;animation:fade .35s ease}
+  .panel-bm.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .bm-note{margin-top:14px;font-size:13.5px;color:var(--dim)}
+  .winner{color:var(--green);font-weight:700}
+
+  /* ---------- density bars ---------- */
+  .density{display:flex;flex-direction:column;gap:11px;margin-top:8px}
+  .drow{display:grid;grid-template-columns:230px 1fr 92px;gap:14px;align-items:center;font-size:13.5px}
+  .drow .dl{color:var(--mid)} .drow .dl b{color:var(--ink)}
+  .bar{height:22px;border-radius:6px;background:linear-gradient(90deg,#5eead4,#7c9cff);position:relative;min-width:3px}
+  .bar.alt{background:linear-gradient(90deg,#39455e,#2b3447)}
+  .bar.vec{background:linear-gradient(90deg,#39455e,#2b3447)}
+  .drow .dv{font-family:var(--mono);text-align:right;color:var(--accent)}
+  @media(max-width:620px){.drow{grid-template-columns:120px 1fr 70px;gap:8px;font-size:12px}}
+
+  /* ---------- quickstart ---------- */
+  .qs{display:grid;grid-template-columns:230px 1fr;gap:22px;align-items:start}
+  .qs-nav{display:flex;flex-direction:column;gap:6px;position:sticky;top:84px}
+  .qs-nav button{text-align:left;font-family:var(--mono);font-size:13.5px;color:var(--mid);background:transparent;border:1px solid transparent;border-radius:9px;padding:10px 13px;cursor:pointer;display:flex;align-items:center;gap:10px;transition:.16s}
+  .qs-nav button .n{color:var(--faint);font-size:12px}
+  .qs-nav button:hover{background:var(--panel)}
+  .qs-nav button.active{background:rgba(94,234,212,.08);border-color:var(--line2);color:var(--ink)}
+  .qs-nav button.active .n{color:var(--accent)}
+  .qs-panel{display:none}
+  .qs-panel.active{display:block;animation:fade .3s ease}
+  .qs-panel h3{font-size:18px;margin-bottom:6px}
+  .qs-panel > p{color:var(--mid);font-size:14.5px;margin-bottom:14px}
+  .codeblock{position:relative}
+  .codeblock .copy{position:absolute;top:10px;right:10px;font-family:var(--mono);font-size:11.5px;color:var(--mid);background:var(--panel2);border:1px solid var(--line2);border-radius:7px;padding:5px 10px;cursor:pointer;z-index:2;transition:.15s}
+  .codeblock .copy:hover{color:var(--accent);border-color:var(--accent)}
+  .codeblock .copy.done{color:var(--green);border-color:var(--green)}
+
+  /* ---------- why / closing ---------- */
+  .why{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .why .col{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+  .why .col h3{font-size:17px;display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .why ul{list-style:none;margin:0;padding:0}
+  .why li{display:flex;gap:11px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14.5px;color:var(--mid)}
+  .why li:last-child{border-bottom:none}
+  .why li svg{flex:none;margin-top:3px}
+  .why li b{color:var(--ink)}
+  .callout{margin-top:24px;background:#0e1218;border:1px solid var(--line2);border-left:2px solid var(--accent);border-radius:var(--radius-sm);padding:20px 22px;font-size:15px;color:var(--mid)}
+  .callout b{color:var(--ink)}
+
+  /* ---------- footer ---------- */
+  footer.ft{border-top:1px solid var(--line);padding:46px 0 60px;background:#080a0f}
+  .ft-grid{display:flex;justify-content:space-between;gap:30px;flex-wrap:wrap;align-items:flex-start}
+  .ft-grid .brand{font-size:18px}
+  .ft-links{display:flex;gap:40px;flex-wrap:wrap}
+  .ft-links .col h5{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:12px;font-family:var(--mono)}
+  .ft-links .col a{display:block;color:var(--mid);font-size:14px;padding:4px 0}
+  .ft-links .col a:hover{color:var(--accent)}
+  .ft-bottom{margin-top:38px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;color:var(--faint);font-size:13px}
+
+  /* ---------- docs modal ---------- */
+  .modal{position:fixed;inset:0;z-index:100;display:none;background:rgba(5,7,11,.7);backdrop-filter:blur(6px)}
+  .modal.open{display:block;animation:fade .25s ease}
+  .modal-card{position:absolute;inset:4vh 4vw;max-width:1180px;margin:0 auto;background:var(--bg2);border:1px solid var(--line2);border-radius:18px;box-shadow:0 30px 80px -20px #000;display:grid;grid-template-columns:262px 1fr;overflow:hidden}
+  .modal-side{border-right:1px solid var(--line);background:#0b0e16;display:flex;flex-direction:column;min-height:0}
+  .modal-side .sh{padding:18px 18px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .modal-side .sh b{font-size:15px}
+  .doc-list{overflow:auto;padding:10px;flex:1}
+  .doc-list button{width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:9px;color:var(--mid);padding:10px 12px;cursor:pointer;font-size:13.5px;display:flex;flex-direction:column;gap:2px;transition:.15s}
+  .doc-list button:hover{background:var(--panel)}
+  .doc-list button.active{background:rgba(94,234,212,.08);border-color:var(--line2);color:var(--ink)}
+  .doc-list button .fn{font-family:var(--mono);font-size:12px;color:var(--accent)}
+  .doc-list button.active .fn{color:var(--accent)}
+  .doc-list button small{color:var(--faint);font-size:12px}
+  .modal-main{display:flex;flex-direction:column;min-height:0}
+  .modal-top{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
+  .modal-top .mt-title{font-family:var(--mono);font-size:13px;color:var(--mid)}
+  .modal-top .mt-actions{margin-left:auto;display:flex;gap:8px}
+  .modal-close{background:var(--panel2);border:1px solid var(--line2);color:var(--ink);width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:18px;line-height:1}
+  .modal-close:hover{border-color:var(--red);color:var(--red)}
+  .doc-content{overflow:auto;padding:30px 42px 60px;flex:1}
+  .doc-content.loading{opacity:.4}
+
+  /* markdown render */
+  .md{max-width:780px;font-size:15px;line-height:1.75;color:var(--mid)}
+  .md h1{font-size:30px;margin:6px 0 18px;color:var(--ink)}
+  .md h2{font-size:22px;margin:34px 0 12px;color:var(--ink);padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .md h3{font-size:17.5px;margin:26px 0 10px;color:var(--ink)}
+  .md p{margin:0 0 14px}
+  .md a{color:var(--accent2)}
+  .md code{background:#0b0e16;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:13px;color:var(--accent)}
+  .md pre{background:#0b0e16;border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow:auto;margin:0 0 18px}
+  .md pre code{background:none;border:none;padding:0;color:var(--mid);font-size:13px;line-height:1.7}
+  .md ul,.md ol{margin:0 0 16px;padding-left:22px}
+  .md li{margin:5px 0}
+  .md blockquote{border-left:3px solid var(--accent);margin:0 0 16px;padding:2px 0 2px 16px;color:var(--dim)}
+  .md table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 18px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .md table th{background:#0e1220;text-align:left;padding:9px 12px;color:var(--dim);font-family:var(--mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
+  .md table td{padding:9px 12px;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}
+  .md table td:last-child,.md table th:last-child{border-right:none}
+  .md hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+  .md strong{color:var(--ink)}
+
+  /* ---------- reveal animation ---------- */
+  .reveal{opacity:0;transform:translateY(18px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+
+  /* ---------- responsive ---------- */
+  @media(max-width:980px){
+    .split,.brain,.why,.qs{grid-template-columns:1fr}
+    .qs-nav{position:static;flex-direction:row;flex-wrap:wrap}
+    .cols-3{grid-template-columns:1fr 1fr}
+    .stats-grid{grid-template-columns:repeat(3,1fr);gap:18px}
+    .stat:nth-child(4){border-left:none}
+    .modal-card{grid-template-columns:1fr;inset:2vh 3vw}
+    .modal-side{position:absolute;inset:0;z-index:3;transform:translateX(-105%);transition:transform .28s;width:280px;border-right:1px solid var(--line2)}
+    .modal-side.show{transform:none}
+    .doc-content{padding:22px}
+  }
+  @media(max-width:720px){
+    .nav-links{display:none;position:absolute;top:62px;left:0;right:0;flex-direction:column;align-items:stretch;gap:4px;background:var(--bg2);border-bottom:1px solid var(--line);padding:14px 18px}
+    .nav-links.show{display:flex}
+    .nav-links a.navlink{padding:11px 12px}
+    .hamburger{display:flex}
+    .cols-3,.cols-2,.mech{grid-template-columns:1fr}
+    .stats-grid{grid-template-columns:repeat(2,1fr)}
+    .stat{border-left:none}
+    section{padding:58px 0}
+    .hero{padding:50px 0 44px}
+    .md{font-size:14.5px}.doc-content{padding:18px}
+  }
+  .docs-toggle-side{display:none}
+  @media(max-width:980px){.docs-toggle-side{display:inline-flex}}
+
+  /* ---- table scroll wrappers (mobile-safe data tables) ---- */
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:var(--radius);margin-bottom:0}
+  .tbl-wrap + .tbl-wrap{margin-top:16px}
+  .tbl-wrap table.tbl{border:none;border-radius:0}
+  .tbl-wrap table.tbl thead th{position:sticky;top:0}
+  @media(max-width:680px){ .tbl-wrap table.tbl{min-width:480px} }
+  /* ---- grid overflow guards (prevent blowout on small screens) ---- */
+  .grid>*,.split>*,.brain>*,.qs>*,.why>*{min-width:0}
+  pre,.terminal,.model-diagram,.flow{max-width:100%}
+  /* ---- collapse nav to a menu earlier (tablet + mobile) ---- */
+  @media(max-width:900px){
+    .nav-links{display:none;position:absolute;top:60px;left:0;right:0;flex-direction:column;align-items:stretch;gap:4px;background:var(--bg2);border-bottom:1px solid var(--line);padding:12px 16px;box-shadow:var(--shadow)}
+    .nav-links.show{display:flex}
+    .nav-links a.navlink{padding:12px 12px;border-radius:8px}
+    .nav-links a.navlink:hover{background:var(--panel2)}
+    .nav-links .btn{margin:5px 0;justify-content:center;width:100%}
+    .hamburger{display:flex;margin-left:auto}
+  }
+
+  /* ---- demos gallery ---- */
+  .gallery{display:grid;grid-template-columns:264px 1fr;gap:18px;align-items:start}
+  .demo-list{display:flex;flex-direction:column;gap:8px}
+  .demo-list button{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer;transition:.16s;display:flex;flex-direction:column;gap:3px}
+  .demo-list button:hover{border-color:var(--line2)}
+  .demo-list button.active{border-color:var(--accent);background:#0e1218}
+  .demo-list button .dt{font-weight:640;font-size:14px;color:var(--ink);display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .demo-list button .dtag{font:10px var(--mono);color:var(--accent);border:1px solid var(--line2);border-radius:5px;padding:1px 6px;background:#0b0e16;white-space:nowrap}
+  .demo-list button .dd{font-size:12.5px;color:var(--dim)}
+  .demo-stage{border:1px solid var(--line2);border-radius:var(--radius);overflow:hidden;background:var(--panel)}
+  .demo-bar{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:#0e1220;flex-wrap:wrap}
+  .demo-bar .tdots{display:flex;gap:6px}.demo-bar .tdots i{width:11px;height:11px;border-radius:50%;display:block}
+  .demo-bar .u{font:11.5px var(--mono);color:var(--faint)}
+  .demo-bar .nb{margin-left:auto;display:flex;gap:6px}
+  .demo-bar .nb button,.demo-bar .nb .open{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:7px;color:var(--mid);padding:5px 10px;cursor:pointer}
+  .demo-bar .nb button:hover,.demo-bar .nb .open:hover{color:var(--accent);border-color:var(--accent)}
+  .demo-frame{width:100%;height:600px;border:none;display:block;background:var(--bg)}
+  .demo-dots{display:flex;justify-content:center;gap:7px;padding:16px 0 2px}
+  .demo-dots span{width:7px;height:7px;border-radius:50%;background:var(--line2);cursor:pointer;transition:.18s}
+  .demo-dots span.on{background:var(--accent);width:22px;border-radius:4px}
+  @media(max-width:900px){.gallery{grid-template-columns:1fr}.demo-list{flex-direction:row;overflow-x:auto;padding-bottom:6px}.demo-list button{min-width:210px;flex:none}}
+</style>
+</head>
+<body>
+<!-- ===================== NAV ===================== -->
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="neuron-db home">
+      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="4.6" fill="#5eead4"/>
+        <circle cx="6" cy="7" r="2.3" fill="#7c9cff"/><circle cx="26" cy="9" r="2.3" fill="#7c9cff"/>
+        <circle cx="7" cy="25" r="2.3" fill="#f472b6"/><circle cx="25" cy="24" r="2.3" fill="#34d399"/>
+        <g stroke="#5eead4" stroke-width="1.1" opacity=".55">
+          <line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/>
+          <line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g>
+      </svg>
+      neuron<b>-db</b>
+    </a>
+    <nav class="nav-links" id="navlinks">
+      <a class="navlink" href="#features">Features</a>
+      <a class="navlink" href="#cortex">The cortex</a>
+      <a class="navlink" href="#demos">Demos</a>
+      <a class="navlink" href="#benchmarks">Benchmarks</a>
+      <a class="navlink" href="#density">Density</a>
+      <a class="navlink" href="#quickstart">Quickstart</a>
+      <button class="btn ghost" id="openDocs" type="button" style="margin:4px 0">Docs</button>
+      <a class="btn primary" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+    <button class="hamburger" id="hamburger" aria-label="menu"><span></span></button>
+  </div>
+</header>
+
+<a id="top"></a>
+<!-- ===================== HERO ===================== -->
+<section class="hero" style="border-top:none">
+  <div class="hero-bg">
+    <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+    <div class="hero-grid-overlay"></div>
+  </div>
+  <div class="wrap">
+    <span class="eyebrow"><span class="dotpulse"></span> pure Rust · zero dependencies · compiles to WebAssembly</span>
+    <h1>An associative memory you can <span class="grad">run anywhere.</span></h1>
+    <p class="lead">Write facts in plain language, recall them by meaning. <b>No tables, no schema, no embeddings, no model required.</b> The core is pure Rust with zero dependencies and fits in a 1&nbsp;MB wasm worker. Durable storage, encryption, an HTTP server, and a thinking cortex are opt-in.</p>
+    <div class="cta">
+      <a class="btn primary" href="#quickstart">Quickstart →</a>
+      <a class="btn" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">Star on GitHub</a>
+      <button class="btn ghost" id="openDocs2" type="button">Read the docs</button>
+    </div>
+    <div class="hero-terminal">
+      <div class="terminal">
+        <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">~/app · neuron</span></div>
+<pre><code><span class="tok-p">./build.sh</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">turn</span> me <span class="tok-s">'my plan is pro'</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">get</span>  me <span class="tok-s">'what plan am i on?'</span>      <span class="tok-c"># -&gt;</span> <span class="tok-r">pro</span>
+</code></pre>
+      </div>
+    </div>
+    <div class="trust">
+      <span class="chip"><b>~130×</b> denser than a 1536-d vector store</span>
+      <span class="chip"><b>~48 B</b> / fact serialized</span>
+      <span class="chip"><b>&lt;50 µs</b> recall in Rust</span>
+      <span class="chip"><b>0</b> deps in the default build</span>
+      <span class="chip">MIT licensed</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== STATS ===================== -->
+<div class="stats">
+  <div class="wrap">
+    <div class="stats-grid">
+      <div class="stat"><div class="num" data-count="130" data-suffix="×">130×</div><div class="lbl">more facts per GiB<br>vs float32 vectors</div></div>
+      <div class="stat"><div class="num" data-count="215" data-suffix="k/s">215k/s</div><div class="lbl">neurons created<br>Rust, in-memory</div></div>
+      <div class="stat"><div class="num" data-count="48" data-suffix=" B">48 B</div><div class="lbl">serialized<br>per fact</div></div>
+      <div class="stat"><div class="num" data-count="400" data-suffix="/400">400/400</div><div class="lbl">recall@1 on<br>distinct keys</div></div>
+      <div class="stat"><div class="num" data-count="0" data-suffix=" deps">0 deps</div><div class="lbl">default build<br>std-only, wasm</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== WHAT IT IS ===================== -->
+<section id="what">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">The model</div>
+      <h2 class="title">Two ideas. That's the whole database.</h2>
+      <p>A <b class="accent">fact</b> is a sentence, like <span class="mono">"the api key is zeta-9931"</span>. neuron-db keeps the surprising word as the retrievable value and indexes the rest as cues. A <b class="accent2">scope</b> is a named bag of facts (<span class="mono">user:42</span>). You insert by stating things and read by asking questions. Retrieval is associative (cue overlap), so you never declare a column or write SQL.</p>
+    </div>
+    <div class="split">
+      <div class="reveal">
+        <div class="model-diagram">
+<span class="tree">NeuronDB</span> <span class="dim">(one .db file)</span>
+<span class="tree">├─</span> scope <span class="sc">"user:42"</span>  <span class="dim">facts:</span> <span class="fa">"the plan is pro"</span>, <span class="fa">"region us-west-2"</span> …
+<span class="tree">├─</span> scope <span class="sc">"user:43"</span>  <span class="dim">facts:</span> <span class="fa">"the plan is free"</span> …
+<span class="tree">└─</span> scope <span class="sc">"team:ops"</span>  <span class="dim">facts:</span> <span class="fa">"the on-call is Dana"</span> …
+        </div>
+        <p class="dim" style="font-size:13.5px;margin-top:14px">A scope is <i>like</i> a row keyed by its id, and its facts are the columns, except you never declare them. <span class="mono accent">"what is the api key?"</span> finds the fact above without you naming a column.</p>
+      </div>
+      <div class="reveal">
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>Intent</th><th>SQL-ish</th><th>neuron-db</th></tr></thead>
+          <tbody>
+            <tr><td><b>insert</b></td><td class="mono">INSERT</td><td><span class="mono">observe(s, "the plan is pro")</span></td></tr>
+            <tr><td><b>read one</b></td><td class="mono">SELECT … LIMIT 1</td><td><span class="mono">get(s, "what plan?") → "pro"</span></td></tr>
+            <tr><td><b>read + meta</b></td><td class="mono">SELECT *</td><td><span class="mono">recall(s, q) → {value, fact, coverage}</span></td></tr>
+            <tr><td><b>update</b></td><td class="mono">UPDATE</td><td>just <span class="mono">observe</span> again; newest wins</td></tr>
+            <tr><td><b>delete</b></td><td class="mono">DELETE</td><td><span class="mono">forget(s, "plan")</span> by substring</td></tr>
+            <tr><td><b>converse</b></td><td class="dim">·</td><td><span class="mono">turn(s, msg)</span>, stores or answers in one call</td></tr>
+            <tr><td><b>encrypt</b></td><td class="dim">·</td><td><span class="mono">SecureNeuronDB.put/get(…)</span></td></tr>
+          </tbody>
+        </table></div>
+        <p class="dim" style="font-size:13.5px;margin-top:12px">There is no <span class="mono">UPDATE</span>; facts aren't rows you mutate. To change an answer, state the new fact; recall prefers the most recent match. To make one stick, <span class="mono accent">reinforce</span> it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- ===================== FEATURES / TIERS ===================== -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Tiers &amp; capabilities</div>
+      <h2 class="title">One core, six tiers. Add only what you need.</h2>
+      <p>Every tier shares the same associative store. Plasticity, sharding, durability, encryption, and the network server are opt-in Cargo features, so the default build stays std-only and wasm-clean.</p>
+    </div>
+    <div class="grid cols-3">
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="1.6"/><circle cx="19" cy="7" r="1.6"/><circle cx="18" cy="18" r="1.6"/><circle cx="6" cy="18" r="1.6"/><path d="M12 12 5 6M12 12l7-5M12 12l6 6M12 12l-6 6"/></svg></div>
+        <h3>Neuron <span class="tagm">std-only</span></h3>
+        <p>In-memory associative store, the default. A stem→fact inverted index keeps recall sub-linear. Recall in microseconds, no deps, no I/O.</p>
+        <div class="feat-code">n.observe("the wifi password is hunter2");<br>n.recall("what is the wifi password?") → "hunter2"</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg" style="stroke:#f472b6"><path d="M4 12c2-5 14-5 16 0M4 12c2 5 14 5 16 0"/><circle cx="12" cy="12" r="2.2" style="fill:#f472b6;stroke:none"/></svg></div>
+        <h3>PlasticNeuron <span class="tagm" style="color:#f472b6;border-color:rgba(244,114,182,.3)">adaptive</span></h3>
+        <p>Recall that adapts: strength on use, lazy exponential decay on disuse, Hebbian links, and a neurotransmitter-style spreading-activation recall. All O(1) scalar updates, with no re-embedding and no re-indexing.</p>
+        <div class="feat-code">for _ in 0..4 { n.reinforce(id, 1.0); }<br>n.recall_spreading(q, 2, 10, 0.6, 6);</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg" style="stroke:#7c9cff"><rect x="3" y="4" width="6" height="6" rx="1.4"/><rect x="15" y="4" width="6" height="6" rx="1.4"/><rect x="9" y="14" width="6" height="6" rx="1.4"/><path d="M6 10v2h12v-2M12 12v2"/></svg></div>
+        <h3>NeuronRouter <span class="tagm" style="color:#7c9cff;border-color:rgba(124,156,255,.3)">shard</span></h3>
+        <p>One scope recalls best when it's small. The router shards across many small neurons, auto-spills into new shards, and fans a query out to return the single best value.</p>
+        <div class="feat-code">let mut r = NeuronRouter::new(128);<br>r.get("what is the north gate code?")</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></div>
+        <h3>NeuronDB <span class="tagm">sqlite</span></h3>
+        <p>A durable database of scopes in one SQLite file, WAL mode behind a process-wide lock. Each write persists immediately; concurrent threads are safe. Ships the <span class="mono">neuron</span> CLI.</p>
+        <div class="feat-code">let db = NeuronDB::open("app.db", 500);<br>db.turn("user:42", "my color is teal");</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg" style="stroke:#34d399"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.4" style="fill:#34d399;stroke:none"/></svg></div>
+        <h3>SecureNeuronDB <span class="tagm" style="color:#34d399;border-color:rgba(52,211,153,.3)">secure</span></h3>
+        <p>Values are AES-256-GCM ciphertext, the index is a keyed hash, and the per-scope secret is supplied per call and <b>never stored</b>. A stolen <span class="mono">.db</span> file is opaque. Lose the secret, lose the data.</p>
+        <div class="feat-code">v.put("alice", "alice-secret", "wifi", "hunter2");<br>v.get("alice", "WRONG", q) → None</div>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg" style="stroke:#f5b454"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.5 2.5 13 0 16M12 4c-2.5 2.5-2.5 13 0 16"/></svg></div>
+        <h3>HTTP server <span class="tagm" style="color:#f5b454;border-color:rgba(245,180,84,.3)">server</span></h3>
+        <p>One endpoint per scope from a std <span class="mono">TcpListener</span>: turn, get, recall, batch observe, top-k memory block, forget, metrics. Optional <span class="mono">Bearer</span> auth via <span class="mono">NEURON_DB_KEY</span>.</p>
+        <div class="feat-code">POST /v1/{scope}        {message} → turn<br>POST /v1/{scope}/recall_many {query,k}</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== CORTEX / THINKING ===================== -->
+<section id="cortex">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Beyond a lookup table</div>
+      <h2 class="title">A memory that <span class="grad">thinks and grows.</span></h2>
+      <p>Most stores are key-value lookups. neuron-db has a second life: an <b class="pink">emergence cortex</b> that reads what the store recalled and copies the answer out, plus a plastic hippocampus that adapts in the moment, without gradient descent. The store is the bloodstream; the cortex is the brain that never has to think about the whole body at once.</p>
+    </div>
+
+    <div class="brain">
+      <div class="reveal">
+        <div class="flow" aria-label="two-tier architecture">
+          <div style="color:var(--faint);text-align:center;margin-bottom:6px">cue ▼</div>
+          <div class="layer l-store">
+            <div class="lt">① STORE TIER &nbsp;<span class="green">PlasticNeuron</span> · scales to millions</div>
+            cheap scalar plasticity decides <b>what</b> is relevant:<br>
+            • strength (bumped on use), lazy exponential decay<br>
+            • Hebbian graph, one-hop spreading activation<br>
+            <span class="dim">→ returns a small working set (a handful of facts)</span>
+          </div>
+          <div class="arrow">▼</div>
+          <div class="layer l-model">
+            <div class="lt">② MODEL TIER &nbsp;<span class="accent2">gary-neuron cortex</span> · bounded window</div>
+            runs only over that working set (192-384 tokens):<br>
+            • cortex reads the context and answers / completes<br>
+            • plastic hippocampus does surprise-gated adaptation<br>
+            <span class="dim">→ cost is O(working set), never O(database)</span>
+          </div>
+          <div class="arrow">▼</div>
+          <div class="layer l-sleep">
+            <div class="lt">③ SLEEP &nbsp;<span class="pink">consolidation</span> · off the hot path</div>
+            folds new episodes into cortex weights; merges &amp; prunes the store.<br>
+            <span class="dim">the model literally grows; the store stays lean.</span>
+          </div>
+        </div>
+        <p class="dim" style="font-size:13px;margin-top:14px">No query ever runs a neural net over the whole database. That split is the entire point: it's how a plastic, thinking, growing memory stays fast.</p>
+      </div>
+
+      <div class="reveal">
+        <div class="mech">
+          <div class="m">
+            <h4><span class="dot" style="background:#34d399"></span>Adaptation</h4>
+            <p>What you use often surfaces first. Two facts collide on "meeting"; reinforcing "monday" overtakes recency after <b class="hl">2 uses</b>.</p>
+            <span class="cost">strength · O(1)</span>
+          </div>
+          <div class="m">
+            <h4><span class="dot" style="background:#f5b454"></span>Forgetting</h4>
+            <p>Unused facts decay cleanly: <span class="mono">w·½^(age/half_life)</span>, computed lazily at read time. Decay only reranks; it never deletes.</p>
+            <span class="cost">decay · O(1) lazy</span>
+          </div>
+          <div class="m">
+            <h4><span class="dot" style="background:#7c9cff"></span>Association</h4>
+            <p>Facts recalled together wire together. A Hebbian link grows 0.5 → 8.0 over 5 rounds; spreading activation then surfaces the associate.</p>
+            <span class="cost">link · O(1)</span>
+          </div>
+          <div class="m">
+            <h4><span class="dot" style="background:#f472b6"></span>Spreading recall</h4>
+            <p>Neurotransmitter-style: release activation at cued facts, gate conflicting relations off, spread across synapses with reuptake decay, reaching a 2-hop fact that shares no word with the query.</p>
+            <span class="cost">spread · O(neighbors)</span>
+          </div>
+        </div>
+        <div class="callout" style="margin-top:18px">
+          <b>The emergence cortex.</b> An 8-layer, 96-dim, 384-context transformer (the <span class="mono">gary-neuron</span> model) baked into the binary with <span class="mono">include_bytes!</span>, with no files and no network. It was <i>trained to emergence</i>: it learned to read its context window and copy values out of it. The pure-Rust forward pass matches the numpy and TypeScript ports to <b class="accent">0.0000 MSE</b>, and runs inside a 1 MB WebAssembly worker.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- ===================== DEMOS ===================== -->
+<section id="demos">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Live demos</div>
+      <h2 class="title">See it run. In your browser.</h2>
+      <p>Every demo runs client-side, with nothing sent to a server. The live-memory and cortex views execute the real Rust core compiled to WebAssembly; the rest are faithful, interactive views of the documented behaviour. Use the list or the arrows to move through them.</p>
+    </div>
+    <div class="gallery reveal">
+      <div class="demo-list" id="demoList"></div>
+      <div>
+        <div class="demo-stage">
+          <div class="demo-bar">
+            <div class="tdots"><i style="background:#fb7185"></i><i style="background:#f5b454"></i><i style="background:#34d399"></i></div>
+            <span class="u" id="demoUrl">demos/live-memory.html</span>
+            <div class="nb">
+              <button id="demoPrev" type="button" aria-label="previous demo">&#8249; prev</button>
+              <button id="demoNext" type="button" aria-label="next demo">next &#8250;</button>
+              <a class="open" id="demoOpen" href="demos/live-memory.html" target="_blank" rel="noopener">full screen &#8599;</a>
+            </div>
+          </div>
+          <iframe class="demo-frame" id="demoFrame" title="neuron-db live demo" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+        </div>
+        <div class="demo-dots" id="demoDots"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== BENCHMARKS ===================== -->
+<section id="benchmarks">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Benchmarks</div>
+      <h2 class="title">Measured, and bounded honestly.</h2>
+      <p>From the legacy-python reference and the Rust core (release, LTO), single core. Numbers are indicative, reproducible with <span class="mono">python tests/bench.py</span> and <span class="mono">cargo run --release --bin bench</span>. The honest failure mode is published too.</p>
+    </div>
+
+    <div class="tabs reveal" role="tablist">
+      <button class="tab active" data-bm="speed">Speed</button>
+      <button class="tab" data-bm="latency">Recall latency</button>
+      <button class="tab" data-bm="overtime">10k-turn session</button>
+      <button class="tab" data-bm="plastic">Plasticity effects</button>
+      <button class="tab" data-bm="accuracy">Accuracy &amp; limits</button>
+    </div>
+
+    <div class="panel-bm active" data-bm="speed">
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Path · neurons/sec (3 facts each)</th><th class="num-cell">throughput</th></tr></thead>
+        <tbody>
+          <tr><td>Python, SQLite-backed (<span class="mono">NeuronDB.turn</span>, durable)</td><td class="num-cell">~1,200</td></tr>
+          <tr><td>Python, pure in-memory <span class="mono">Neuron</span></td><td class="num-cell">~30,000</td></tr>
+          <tr><td><b>Rust core, in-memory</b></td><td class="num-cell winner">~215,000</td></tr>
+        </tbody>
+      </table></div>
+      <table class="tbl" style="margin-top:16px">
+        <thead><tr><th>Operation (Python, single core)</th><th class="num-cell">result</th></tr></thead>
+        <tbody>
+          <tr><td>write throughput (<span class="mono">observe</span>)</td><td class="num-cell">~55,000 facts/s</td></tr>
+          <tr><td>secure put (AES-GCM + keyed index)</td><td class="num-cell">~390 /s</td></tr>
+          <tr><td>secure get</td><td class="num-cell">~270 µs</td></tr>
+          <tr><td>router recall (2,000 facts / 16 shards)</td><td class="num-cell">~0.6 ms</td></tr>
+          <tr><td>arithmetic op (<span class="mono">turn</span> evaluates math)</td><td class="num-cell">~12 µs</td></tr>
+        </tbody>
+      </table>
+      <p class="bm-note">The SQLite number is the realistic API rate (a durable write per neuron). In-memory is the ceiling. Rust is ~7× the Python in-memory rate, with true multi-core concurrency (no GIL) and a single static binary.</p>
+    </div>
+
+    <div class="panel-bm" data-bm="latency">
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Facts in neuron</th><th class="num-cell">Python (indexed)</th><th class="num-cell">Rust core</th></tr></thead>
+        <tbody>
+          <tr><td>100</td><td class="num-cell">~66 µs</td><td class="num-cell">·</td></tr>
+          <tr><td>500</td><td class="num-cell">~245-380 µs</td><td class="num-cell winner">~50 µs</td></tr>
+          <tr><td>1,000</td><td class="num-cell">~380 µs</td><td class="num-cell">·</td></tr>
+          <tr><td>5,000</td><td class="num-cell">~630 µs</td><td class="num-cell">·</td></tr>
+          <tr><td>10,000</td><td class="num-cell">~1.4 ms</td><td class="num-cell">·</td></tr>
+        </tbody>
+      </table></div>
+      <p class="bm-note">Recall is <b class="accent">sub-linear</b>: a stem→fact inverted index means only facts sharing a cue stem are scored, so latency tracks the number of <i>candidate</i> facts, not the total. Plastic recall adds ~1.3-1.4× (still sub-millisecond). Keep a hot neuron to hundreds of facts, or shard with the router.</p>
+    </div>
+
+    <div class="panel-bm" data-bm="overtime">
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Turn</th><th class="num-cell">facts</th><th class="num-cell">recall@1 (rotating probe)</th><th class="num-cell">latency</th><th class="num-cell">store</th></tr></thead>
+        <tbody>
+          <tr><td>2,000</td><td class="num-cell">1,015</td><td class="num-cell">50%</td><td class="num-cell">317 µs</td><td class="num-cell">38 KB</td></tr>
+          <tr><td>4,000</td><td class="num-cell">1,724</td><td class="num-cell">72%</td><td class="num-cell">539 µs</td><td class="num-cell">64 KB</td></tr>
+          <tr><td>6,000</td><td class="num-cell">1,630</td><td class="num-cell">82%</td><td class="num-cell">454 µs</td><td class="num-cell">61 KB</td></tr>
+          <tr><td>8,000</td><td class="num-cell">1,383</td><td class="num-cell winner">90%</td><td class="num-cell">416 µs</td><td class="num-cell">52 KB</td></tr>
+          <tr><td>10,000</td><td class="num-cell">1,262</td><td class="num-cell">74%</td><td class="num-cell">413 µs</td><td class="num-cell">48 KB</td></tr>
+        </tbody>
+      </table></div>
+      <p class="bm-note">Latency stays flat (~0.3-0.5 ms) across 10,000 turns; consolidation holds facts bounded (~1,300, not unbounded) under continuous writes. Accuracy dips are consolidation pruning a sampled fact, i.e. correct forgetting, not a regression.</p>
+    </div>
+
+    <div class="panel-bm" data-bm="plastic">
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Effect</th><th>Measured behaviour</th></tr></thead>
+        <tbody>
+          <tr><td><b class="green">Adaptation</b></td><td>Two facts collide on "meeting". After <b class="hl">2</b> reinforcements of "monday" it overtakes recency; by 40 uses w(mon)=42.0 vs w(fri)=1.0.</td></tr>
+          <tr><td><b class="amber">Forgetting</b></td><td>Untouched fact decays cleanly (half_life=50): <span class="mono">0.99 → 0.70 → 0.49 → 0.25 → 0.06</span> at 0/25/50/100/200 idle ticks.</td></tr>
+          <tr><td><b class="accent2">Association</b></td><td>Co-activating two unrelated facts grows their Hebbian link <span class="mono">0.5 → 8.0</span> over 5 rounds; spreading activation then surfaces the associate.</td></tr>
+          <tr><td><b class="pink">Consolidation</b></td><td>5 duplicates + 1 decayed fact consolidate <span class="mono">6 → 1</span> (4 merged, 1 pruned), recall preserved.</td></tr>
+        </tbody>
+      </table></div>
+      <p class="bm-note">None of these are visible to a static recall@1 test, which is exactly why plasticity is measured as a sequence of uses over time. Tests: <span class="mono">test_plastic.py</span> 6/6, <span class="mono">test_neurotransmitter.py</span> 5/5.</p>
+    </div>
+
+    <div class="panel-bm" data-bm="accuracy">
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Keys</th><th class="num-cell">facts</th><th class="num-cell">recall@1</th></tr></thead>
+        <tbody>
+          <tr><td><b>Distinct</b> (<span class="mono">north wifi password</span>, <span class="mono">spare gate code</span>…)</td><td class="num-cell">400</td><td class="num-cell winner">400/400 · 100%</td></tr>
+          <tr><td><b>Colliding stems</b> (<span class="mono">project0…project499</span> → all stem to <span class="mono">projec</span>)</td><td class="num-cell">500</td><td class="num-cell" style="color:var(--red)">~1/500</td></tr>
+        </tbody>
+      </table></div>
+      <p class="bm-note">Recall accuracy depends on whether keys are <b>lexically distinct</b>, not how many facts a neuron holds. The stemmer truncates to 6 characters, so keys differing only past that prefix collapse and the most-recent collider wins. Real-world keys (names, relations, attributes) are distinct and recall cleanly at 400+. Near-duplicate keys are <i>the</i> failure mode, and the memory-harness design addresses them with explicit keys, full-token disambiguation, and a dedup/supersede policy.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== DENSITY ===================== -->
+<section id="density">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Storage density</div>
+      <h2 class="title">~130× more facts per GiB than a vector store.</h2>
+      <p>A vector DB spends 1.5-12 KB per item on a dense embedding so it can retrieve by content. neuron-db adds <b>no embedding bytes at all</b>. Its retrieval index is stems plus a few scalars, which fit inside the same bytes as the text. ~48 bytes/fact serialized ≈ <b class="accent">22.4 million facts per GiB</b>.</p>
+    </div>
+    <div class="reveal">
+      <div class="density">
+        <div class="drow"><div class="dl"><b>neuron-db</b> serialized</div><div><div class="bar" style="width:100%"></div></div><div class="dv">1.0×</div></div>
+        <div class="drow"><div class="dl">Vector DB · binary quant 1536-d</div><div><div class="bar vec" style="width:18%"></div></div><div class="dv">5.4×</div></div>
+        <div class="drow"><div class="dl">Vector DB · int8 SQ 1536-d</div><div><div class="bar vec" style="width:13%"></div></div><div class="dv">33.4×</div></div>
+        <div class="drow"><div class="dl">Vector DB · f32 768-d</div><div><div class="bar vec" style="width:10%"></div></div><div class="dv">65.3×</div></div>
+        <div class="drow"><div class="dl">Vector DB · f32 1536-d</div><div><div class="bar vec" style="width:7%"></div></div><div class="dv">129.3×</div></div>
+        <div class="drow"><div class="dl">pgvector / Qdrant f32 + HNSW</div><div><div class="bar vec" style="width:5.5%"></div></div><div class="dv">193.2×</div></div>
+        <div class="drow"><div class="dl">Vector DB · f32 3072-d (OpenAI large)</div><div><div class="bar vec" style="width:4%"></div></div><div class="dv">257.2×</div></div>
+      </div>
+      <p class="dim" style="font-size:13px;margin-top:18px">Bars show relative facts-per-GiB (neuron-db = 100%). The right column reads as "neuron-db fits this many more facts in the same disk." Even against binary quantization, which throws away most recall accuracy, neuron-db is still ~5× denser. The trade is real: this is cue-and-association recall with scalar plasticity, <b>not</b> cosine-similarity semantic search. It's scalar-first by design; add a vector tier only for the queries that truly need meaning matching.</p>
+    </div>
+  </div>
+</section>
+<!-- ===================== QUICKSTART ===================== -->
+<section id="quickstart">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Quickstart</div>
+      <h2 class="title">Running in under a minute.</h2>
+      <p>The default build is zero-dependency and targets <span class="mono">wasm32-unknown-unknown</span>; native tiers are opt-in features that never touch the wasm build. Pick how you want to drive it.</p>
+    </div>
+    <div class="qs reveal">
+      <div class="qs-nav" role="tablist">
+        <button class="active" data-qs="build"><span class="n">01</span> Build &amp; install</button>
+        <button data-qs="cli"><span class="n">02</span> CLI</button>
+        <button data-qs="rust"><span class="n">03</span> Rust library</button>
+        <button data-qs="http"><span class="n">04</span> HTTP server</button>
+        <button data-qs="docker"><span class="n">05</span> Docker</button>
+        <button data-qs="secure"><span class="n">06</span> Encrypted tier</button>
+      </div>
+      <div>
+        <div class="qs-panel active" data-qs="build">
+          <h3>Build from source</h3>
+          <p>You need the Rust toolchain once. <span class="mono">build.sh</span> checks cargo and builds the <span class="mono">sqlite + secure + server</span> features.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">build</span></div>
+<pre><code><span class="tok-c"># clone and build everything</span>
+<span class="tok-p">git</span> clone https://github.com/gary23w/neuron-db
+<span class="tok-p">cd</span> neuron-db &amp;&amp; <span class="tok-p">./build.sh</span>
+
+<span class="tok-c"># or pick features yourself</span>
+<span class="tok-p">cargo</span> build <span class="tok-f">--release</span> <span class="tok-f">--features</span> <span class="tok-s">"sqlite secure server"</span>
+
+<span class="tok-c"># install the neuron + serve binaries onto PATH</span>
+<span class="tok-p">cargo</span> install <span class="tok-f">--path</span> rust/neuron-core <span class="tok-f">--features</span> <span class="tok-s">"sqlite secure server"</span>
+</code></pre>
+          </div>
+        </div>
+
+        <div class="qs-panel" data-qs="cli">
+          <h3>CLI: query the file from your shell</h3>
+          <p>The <span class="mono">neuron</span> CLI opens the SQLite file directly, no server required. The db path comes from <span class="mono">--db</span> or <span class="mono">$NEURON_DB</span>.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">neuron</span></div>
+<pre><code><span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">observe</span> user:42 <span class="tok-s">"the plan is pro"</span>      <span class="tok-c"># INSERT</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">get</span>     user:42 <span class="tok-s">"what plan am i on?"</span>   <span class="tok-c"># -&gt;</span> <span class="tok-r">pro</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">recall</span>  user:42 <span class="tok-s">"what plan?"</span>          <span class="tok-c"># value + fact + coverage</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">turn</span>    user:42 <span class="tok-s">"my color is teal"</span>    <span class="tok-c"># store or answer</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">forget</span>  user:42 <span class="tok-s">"plan"</span>               <span class="tok-c"># DELETE matching facts</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">list</span>                                 <span class="tok-c"># all scope ids</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-f">--json</span> <span class="tok-k">get</span> user:42 <span class="tok-s">"what plan?"</span>      <span class="tok-c"># {"value":"pro"}</span>
+</code></pre>
+          </div>
+        </div>
+
+        <div class="qs-panel" data-qs="rust">
+          <h3>Rust library: embedded, no server</h3>
+          <p>Add the crate and enable the <span class="mono">sqlite</span> feature for the durable <span class="mono">NeuronDB</span>.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">main.rs</span></div>
+<pre><code><span class="tok-k">use</span> neuron_core::db::NeuronDB;
+
+<span class="tok-k">let</span> db = NeuronDB::open(<span class="tok-s">"app.db"</span>, <span class="tok-n">500</span>);        <span class="tok-c">// file path, max facts/scope</span>
+
+db.observe(<span class="tok-s">"user:42"</span>, <span class="tok-s">"the plan is pro"</span>);          <span class="tok-c">// INSERT</span>
+db.get(<span class="tok-s">"user:42"</span>, <span class="tok-s">"what plan?"</span>);                  <span class="tok-c">// Some("pro")</span>
+
+db.observe(<span class="tok-s">"user:42"</span>, <span class="tok-s">"the plan is enterprise"</span>);   <span class="tok-c">// "UPDATE": newest wins</span>
+db.get(<span class="tok-s">"user:42"</span>, <span class="tok-s">"what plan?"</span>);                  <span class="tok-c">// Some("enterprise")</span>
+
+db.forget(<span class="tok-s">"user:42"</span>, Some(<span class="tok-s">"plan"</span>));             <span class="tok-c">// DELETE by substring</span>
+<span class="tok-k">let</span> t = db.turn(<span class="tok-s">"user:42"</span>, <span class="tok-s">"what is my color?"</span>);  <span class="tok-c">// t.reply == "teal."</span>
+</code></pre>
+          </div>
+        </div>
+
+        <div class="qs-panel" data-qs="http">
+          <h3>HTTP: query it over the network</h3>
+          <p>Start the server with <span class="mono">serve /data/neurons.db 8088</span>. Set <span class="mono">NEURON_DB_KEY</span> to require a bearer token on every request.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">curl</span></div>
+<pre><code><span class="tok-c"># turn: store a fact (one endpoint per scope)</span>
+<span class="tok-p">curl</span> <span class="tok-f">-d</span> <span class="tok-s">'{"message":"the api key is zeta-9931"}'</span> \
+     localhost:8088/v1/user:42
+
+<span class="tok-c"># get a single value back</span>
+<span class="tok-p">curl</span> <span class="tok-f">-d</span> <span class="tok-s">'{"query":"what is the api key?"}'</span> \
+     localhost:8088/v1/user:42/get          <span class="tok-c"># -&gt;</span> <span class="tok-r">{"value":"zeta-9931"}</span>
+
+<span class="tok-c"># top-k memory block for an LLM context window</span>
+<span class="tok-p">curl</span> <span class="tok-f">-d</span> <span class="tok-s">'{"query":"api key","k":5}'</span> \
+     localhost:8088/v1/user:42/recall_many
+</code></pre>
+          </div>
+        </div>
+
+        <div class="qs-panel" data-qs="docker">
+          <h3>Docker: run it as a service</h3>
+          <p>The image binds <span class="mono">0.0.0.0</span> inside the container and stores the db on a <span class="mono">/data</span> volume. Put it behind your own TLS-terminating proxy for public exposure.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">docker</span></div>
+<pre><code><span class="tok-p">docker</span> build <span class="tok-f">-t</span> neuron-db .
+<span class="tok-p">docker</span> run <span class="tok-f">-d</span> <span class="tok-f">-p</span> 8088:8088 <span class="tok-f">-v</span> neuron-data:/data \
+  <span class="tok-f">-e</span> NEURON_DB_KEY=$(openssl rand <span class="tok-f">-hex</span> 16) neuron-db
+
+<span class="tok-c"># or with compose: persists + restarts on failure</span>
+<span class="tok-p">NEURON_DB_KEY</span>=$(openssl rand <span class="tok-f">-hex</span> 16) docker compose up <span class="tok-f">-d</span>
+</code></pre>
+          </div>
+        </div>
+
+        <div class="qs-panel" data-qs="secure">
+          <h3>Encrypted tier: the secret is the login</h3>
+          <p>Values are AES-256-GCM ciphertext; the per-scope secret is supplied every call and never written to disk. A stolen <span class="mono">.db</span> is opaque.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">secure</span></div>
+<pre><code><span class="tok-c">// Rust, feature "secure"</span>
+<span class="tok-k">let</span> v = SecureNeuronDB::open(<span class="tok-s">"vault.db"</span>);
+v.put(<span class="tok-s">"alice"</span>, <span class="tok-s">"alice-secret"</span>, <span class="tok-s">"wifi password"</span>, <span class="tok-s">"hunter2"</span>);
+v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"alice-secret"</span>, <span class="tok-s">"what is the wifi password?"</span>); <span class="tok-c">// Some("hunter2")</span>
+v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,        <span class="tok-s">"what is the wifi password?"</span>); <span class="tok-c">// None</span>
+
+<span class="tok-c"># CLI</span>
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> vault.db <span class="tok-f">--secret</span> s3cr3t secure-put alice <span class="tok-s">"wifi password"</span> hunter2
+<span class="tok-p">neuron</span> <span class="tok-f">--db</span> vault.db <span class="tok-f">--secret</span> s3cr3t secure-get alice <span class="tok-s">"what is the wifi password?"</span>
+</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== WHY ===================== -->
+<section id="why">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">Why it's different</div>
+      <h2 class="title">Honest about the trade.</h2>
+      <p>neuron-db isn't trying to replace a vector DB everywhere. It owns the cheap, high-volume, lookup-and-adapt path, and tells you exactly where it doesn't fit.</p>
+    </div>
+    <div class="why">
+      <div class="col reveal">
+        <h3><span class="green">✓</span> Where neuron-db wins</h3>
+        <ul>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>Many small facts.</b> Preferences, entities, events, settings, the exact shape of LLM long-term memory, at ~130× the density of float32 vectors.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>No model, no GPU, no index to maintain.</b> Microsecond recall and O(1) updates with nothing to re-embed or re-index.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>Runs anywhere.</b> A 1 MB wasm worker at the edge, a static binary on a box, embedded in your Rust app, or a Postgres extension.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4"><path d="M5 12l4 4 10-11"/></svg><span><b>Adapts from use.</b> The plastic tier learns what matters and forgets what doesn't, without a training step.</span></li>
+        </ul>
+      </div>
+      <div class="col reveal">
+        <h3><span class="amber">⚠</span> Reach for vectors when</h3>
+        <ul>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>You need fuzzy semantic match.</b> <span class="mono">"the thing I use to get online"</span> won't match <span class="mono">"wifi password"</span> without an embedding.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>Cross-lingual recall</b> or similarity ranking is the core requirement.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>Near-duplicate keys.</b> Ten "meeting on {date}" entries collide on stems; use explicit keys and the dedup/supersede harness, or a vector tier.</span></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5b454" stroke-width="2.4"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg><span><b>ACID rows and joins.</b> neuron-db is an associative memory, not a relational database.</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout reveal">
+      The honest framing is <b>scalar-first</b>: neuron-db handles the cheap, high-volume lookup-and-adapt path at much higher density, and you add a vector tier only for the slice of queries that truly need meaning matching, paying for vectors only there.
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="ft">
+  <div class="wrap">
+    <div class="ft-grid">
+      <div style="max-width:320px">
+        <a class="brand" href="#top">
+          <svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="16" r="4.6" fill="#5eead4"/><circle cx="6" cy="7" r="2.3" fill="#7c9cff"/><circle cx="26" cy="9" r="2.3" fill="#7c9cff"/><circle cx="7" cy="25" r="2.3" fill="#f472b6"/><circle cx="25" cy="24" r="2.3" fill="#34d399"/><g stroke="#5eead4" stroke-width="1.1" opacity=".55"><line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/><line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g></svg>
+          neuron<b>-db</b>
+        </a>
+        <p class="dim" style="font-size:14px;margin-top:14px">An associative memory you can run anywhere. Pure Rust, zero dependencies, with a thinking cortex baked in.</p>
+        <p class="dim" style="font-size:13px">MIT licensed · Author: <b class="accent">gary23w</b></p>
+      </div>
+      <div class="ft-links">
+        <div class="col">
+          <h5>Docs</h5>
+          <a href="#" class="doc-open" data-doc="API.md">API reference</a>
+          <a href="#" class="doc-open" data-doc="DEPLOY.md">Deploy</a>
+          <a href="#" class="doc-open" data-doc="STORAGE.md">Storage density</a>
+          <a href="#" class="doc-open" data-doc="BENCHMARKS.md">Benchmarks</a>
+          <a href="#" class="doc-open" data-doc="PLASTICITY.md">Plasticity</a>
+        </div>
+        <div class="col">
+          <h5>Project</h5>
+          <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">Repository ↗</a>
+          <a href="https://github.com/gary23w/neuron-db/tree/legacy-python" target="_blank" rel="noopener">legacy-python ↗</a>
+          <a href="https://github.com/gary23w/neuron-db/tree/main/rust" target="_blank" rel="noopener">Rust core ↗</a>
+          <a href="https://github.com/gary23w/neuron-db/tree/main/worker" target="_blank" rel="noopener">Cloudflare worker ↗</a>
+        </div>
+        <div class="col">
+          <h5>Navigate</h5>
+          <a href="#features">Features</a>
+          <a href="#cortex">The cortex</a>
+          <a href="#benchmarks">Benchmarks</a>
+          <a href="#quickstart">Quickstart</a>
+        </div>
+      </div>
+    </div>
+    <div class="ft-bottom">
+      <span>© 2026 gary23w · neuron-db</span>
+      <span class="mono">cue → recall → think → grow</span>
+    </div>
+  </div>
+</footer>
+
+<!-- ===================== DOCS MODAL ===================== -->
+<div class="modal" id="docsModal" role="dialog" aria-modal="true" aria-label="Documentation">
+  <div class="modal-card">
+    <aside class="modal-side" id="modalSide">
+      <div class="sh"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5eead4" stroke-width="1.8"><path d="M4 5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M13 3v5h5"/></svg><b>Documentation</b></div>
+      <div class="doc-list" id="docList"></div>
+    </aside>
+    <div class="modal-main">
+      <div class="modal-top">
+        <button class="btn ghost docs-toggle-side" id="sideToggle" style="padding:6px 10px">☰ Files</button>
+        <span class="mt-title" id="docTitle">API.md</span>
+        <div class="mt-actions">
+          <a class="btn ghost" id="docRaw" href="#" target="_blank" rel="noopener" style="padding:6px 12px;font-size:13px">View raw ↗</a>
+          <button class="modal-close" id="modalClose" aria-label="close">×</button>
+        </div>
+      </div>
+      <div class="doc-content" id="docContent"><div class="md"><p class="dim">Loading…</p></div></div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  /* ---------- nav: scrolled state + mobile menu ---------- */
+  var nav = document.getElementById('nav');
+  var onScroll = function(){ nav.classList.toggle('scrolled', window.scrollY > 8); };
+  window.addEventListener('scroll', onScroll, {passive:true}); onScroll();
+
+  var navlinks = document.getElementById('navlinks');
+  document.getElementById('hamburger').addEventListener('click', function(){ navlinks.classList.toggle('show'); });
+  navlinks.querySelectorAll('a.navlink').forEach(function(a){ a.addEventListener('click', function(){ navlinks.classList.remove('show'); }); });
+
+  /* ---------- reveal on scroll ---------- */
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'});
+  document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+
+  /* ---------- animated stat counters ---------- */
+  var counted = false;
+  function animateStats(){
+    if(counted) return; counted = true;
+    document.querySelectorAll('.stat .num[data-count]').forEach(function(el){
+      var target = parseFloat(el.getAttribute('data-count'));
+      var suffix = el.getAttribute('data-suffix') || '';
+      var dur = 1100, start = performance.now();
+      function step(now){
+        var p = Math.min((now-start)/dur, 1);
+        var eased = 1 - Math.pow(1-p, 3);
+        var val = Math.round(target*eased);
+        el.textContent = (target>=1000 ? val.toLocaleString() : val) + suffix;
+        if(p<1) requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    });
+  }
+  var statStrip = document.querySelector('.stats');
+  if(statStrip){
+    var sio = new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ animateStats(); sio.disconnect(); } }); }, {threshold:0.4});
+    sio.observe(statStrip);
+  }
+
+  /* ---------- benchmark tabs ---------- */
+  document.querySelectorAll('.tab').forEach(function(tab){
+    tab.addEventListener('click', function(){
+      var key = tab.getAttribute('data-bm');
+      document.querySelectorAll('.tab').forEach(function(t){ t.classList.toggle('active', t===tab); });
+      document.querySelectorAll('.panel-bm').forEach(function(p){ p.classList.toggle('active', p.getAttribute('data-bm')===key); });
+    });
+  });
+
+  /* ---------- quickstart tabs ---------- */
+  document.querySelectorAll('.qs-nav button').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var key = btn.getAttribute('data-qs');
+      document.querySelectorAll('.qs-nav button').forEach(function(b){ b.classList.toggle('active', b===btn); });
+      document.querySelectorAll('.qs-panel').forEach(function(p){ p.classList.toggle('active', p.getAttribute('data-qs')===key); });
+    });
+  });
+
+  /* ---------- copy buttons ---------- */
+  document.querySelectorAll('.codeblock .copy').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pre = btn.parentElement.querySelector('pre');
+      var text = pre ? pre.innerText : '';
+      navigator.clipboard.writeText(text).then(function(){
+        var old = btn.textContent; btn.textContent = '✓ copied'; btn.classList.add('done');
+        setTimeout(function(){ btn.textContent = old; btn.classList.remove('done'); }, 1600);
+      }).catch(function(){ btn.textContent='⌘C'; });
+    });
+  });
+
+  /* ---------- docs modal ---------- */
+  var DOCS = [
+    {file:'API.md',           title:'API reference',   desc:'Data model + every operation'},
+    {file:'DESIGN.md',        title:'How it works',    desc:'Write · recall · abstain'},
+    {file:'PLASTICITY.md',    title:'Plasticity',      desc:'The memory that thinks & grows'},
+    {file:'BENCHMARKS.md',    title:'Benchmarks',      desc:'Speed, recall, capacity'},
+    {file:'STORAGE.md',       title:'Storage density', desc:'vs vector databases'},
+    {file:'MEMORY_HARNESS.md',title:'Memory harness',  desc:'LLM long-term memory design'},
+    {file:'DEPLOY.md',        title:'Deploy',          desc:'Build, Docker, env, backups'},
+    {file:'SECURITY.md',      title:'Security',        desc:'Encryption & access model'}
+  ];
+  var modal = document.getElementById('docsModal');
+  var docList = document.getElementById('docList');
+  var docContent = document.getElementById('docContent');
+  var docTitle = document.getElementById('docTitle');
+  var docRaw = document.getElementById('docRaw');
+  var modalSide = document.getElementById('modalSide');
+  var cache = {};
+
+  DOCS.forEach(function(d, i){
+    var b = document.createElement('button');
+    b.innerHTML = '<span class="fn">'+d.file+'</span><small>'+d.desc+'</small>';
+    b.addEventListener('click', function(){ selectDoc(d, b); });
+    b.dataset.file = d.file;
+    docList.appendChild(b);
+  });
+
+  if(window.marked){ marked.setOptions({gfm:true, breaks:false, headerIds:false, mangle:false}); }
+
+  function rewriteLinks(html){
+    // turn relative .md links into in-modal doc switches; leave http(s)/anchors alone
+    return html.replace(/href="([^"]+)"/g, function(m, href){
+      if(/^https?:|^#|^mailto:/.test(href)) return 'href="'+href+'" target="_blank" rel="noopener"';
+      var base = href.split('/').pop();
+      if(/\.md$/i.test(base)) return 'href="#" data-doclink="'+base+'"';
+      return m;
+    });
+  }
+
+  function render(d, md){
+    var html = window.marked ? marked.parse(md) : ('<pre>'+md.replace(/[&<]/g,function(c){return c==='&'?'&amp;':'&lt;';})+'</pre>');
+    docContent.innerHTML = '<div class="md">'+rewriteLinks(html)+'</div>';
+    docContent.classList.remove('loading');
+    docContent.scrollTop = 0;
+    docContent.querySelectorAll('[data-doclink]').forEach(function(a){
+      a.addEventListener('click', function(ev){
+        ev.preventDefault();
+        var f = a.getAttribute('data-doclink');
+        var match = DOCS.filter(function(x){return x.file===f;})[0];
+        var btn = docList.querySelector('button[data-file="'+f+'"]');
+        if(match && btn) selectDoc(match, btn);
+      });
+    });
+  }
+
+  function selectDoc(d, btn){
+    docList.querySelectorAll('button').forEach(function(b){ b.classList.toggle('active', b===btn); });
+    docTitle.textContent = d.file;
+    docRaw.href = d.file;
+    modalSide.classList.remove('show');
+    if(cache[d.file]){ render(d, cache[d.file]); return; }
+    docContent.classList.add('loading');
+    docContent.innerHTML = '<div class="md"><p class="dim">Loading '+d.file+'…</p></div>';
+    fetch(d.file).then(function(r){ if(!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function(txt){ cache[d.file] = txt; render(d, txt); })
+      .catch(function(err){
+        docContent.classList.remove('loading');
+        docContent.innerHTML = '<div class="md"><h2>Couldn’t load '+d.file+'</h2>'+
+          '<p class="dim">'+(location.protocol==='file:' ? 'The docs viewer fetches markdown over HTTP, so it works on the deployed GitHub Pages site, not from a local <span class="mono">file://</span> open.' : 'Error: '+err.message)+'</p>'+
+          '<p><a href="https://github.com/gary23w/neuron-db/blob/main/docs/'+d.file+'" target="_blank" rel="noopener">Open '+d.file+' on GitHub ↗</a></p></div>';
+      });
+  }
+
+  function openModal(file){
+    modal.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    var d = DOCS.filter(function(x){return x.file===(file||'API.md');})[0] || DOCS[0];
+    var btn = docList.querySelector('button[data-file="'+d.file+'"]');
+    selectDoc(d, btn);
+  }
+  function closeModal(){ modal.classList.remove('open'); document.body.style.overflow=''; }
+
+  document.getElementById('openDocs').addEventListener('click', function(){ openModal(); });
+  document.getElementById('openDocs2').addEventListener('click', function(){ openModal(); });
+  document.getElementById('modalClose').addEventListener('click', closeModal);
+  document.getElementById('sideToggle').addEventListener('click', function(){ modalSide.classList.toggle('show'); });
+  modal.addEventListener('click', function(e){ if(e.target===modal) closeModal(); });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && modal.classList.contains('open')) closeModal(); });
+  document.querySelectorAll('.doc-open').forEach(function(a){
+    a.addEventListener('click', function(e){ e.preventDefault(); openModal(a.getAttribute('data-doc')); });
+  });
+})();
+</script>
+<script>
+(function(){
+  "use strict";
+  var DEMOS=[
+    {f:'demos/live-memory.html',     t:'Live memory',      d:'Chat with it; it remembers',        tag:'real WASM'},
+    {f:'demos/cortex-stream.html',   t:'Emergence cortex', d:'Copies a value out of context',     tag:'real WASM'},
+    {f:'demos/plasticity.html',      t:'Plasticity',       d:'Adapt, decay, associate',           tag:'interactive'},
+    {f:'demos/density.html',         t:'Storage density',  d:'130x a vector store',               tag:'interactive'},
+    {f:'demos/encrypted-vault.html', t:'Encrypted vault',  d:'Right vs wrong passphrase',         tag:'WebCrypto'},
+    {f:'demos/collection.html',      t:'Live collection',  d:'Ingest events into a neuron',       tag:'in-page'}
+  ];
+  var list=document.getElementById('demoList'), frame=document.getElementById('demoFrame'),
+      url=document.getElementById('demoUrl'), open=document.getElementById('demoOpen'),
+      dotsWrap=document.getElementById('demoDots');
+  if(!list) return;
+  var idx=0, loaded=false;
+  DEMOS.forEach(function(dm,i){
+    var b=document.createElement('button');
+    b.innerHTML='<span class="dt">'+dm.t+' <span class="dtag">'+dm.tag+'</span></span><span class="dd">'+dm.d+'</span>';
+    b.addEventListener('click',function(){ show(i,true); });
+    list.appendChild(b);
+    var dot=document.createElement('span'); dot.addEventListener('click',function(){ show(i,true); });
+    dotsWrap.appendChild(dot);
+  });
+  function show(i,doLoad){
+    idx=(i+DEMOS.length)%DEMOS.length;
+    var dm=DEMOS[idx];
+    list.querySelectorAll('button').forEach(function(b,j){ b.classList.toggle('active',j===idx); });
+    dotsWrap.querySelectorAll('span').forEach(function(d,j){ d.classList.toggle('on',j===idx); });
+    url.textContent=dm.f; open.href=dm.f;
+    if(doLoad||loaded){ loaded=true; if(frame.getAttribute('src')!==dm.f) frame.setAttribute('src',dm.f); }
+  }
+  document.getElementById('demoPrev').addEventListener('click',function(){ show(idx-1,true); });
+  document.getElementById('demoNext').addEventListener('click',function(){ show(idx+1,true); });
+  // lazy: only boot the (heavy) wasm iframe once the gallery is scrolled into view
+  show(0,false);
+  var io=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ show(idx,true); io.disconnect(); } }); },{threshold:0.25});
+  io.observe(document.getElementById('demos'));
+})();
+</script>
+</body>
+</html>

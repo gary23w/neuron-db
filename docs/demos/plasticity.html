@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neuron-db · plasticity playground</title>
+<style>
+  :root{--bg:#0a0c12;--panel:#0f1216;--panel2:#15191f;--line:#20262e;--line2:#2b333d;--ink:#eef1f4;--mid:#9aa4b0;--dim:#6b7480;--faint:#5b6478;--accent:#5eead4;--accent2:#7c9cff;--pink:#f472b6;--green:#34d399;--amber:#f5b454;--red:#fb7185;--mono:ui-monospace,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+  .mono{font-family:var(--mono)}
+  header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+  header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
+  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}
+  main{flex:1;overflow:auto;padding:18px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px;align-content:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;min-height:0}
+  .card h2{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}
+  .card h2 .d{width:9px;height:9px;border-radius:50%}
+  .card .sub{font-size:12.5px;color:var(--dim);line-height:1.55;margin-bottom:13px}
+  .bars{display:flex;flex-direction:column;gap:9px;margin:6px 0 12px}
+  .barrow{display:flex;align-items:center;gap:9px;font:12px var(--mono)}
+  .barrow .nm{width:78px;color:var(--mid)}
+  .track{flex:1;height:20px;background:#0b0e16;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+  .fill{height:100%;border-radius:0;transition:width .4s cubic-bezier(.2,.7,.2,1)}
+  .barrow .vv{width:42px;text-align:right;color:var(--ink)}
+  .win{font:12px var(--mono);padding:7px 10px;border-radius:8px;background:#0b0e16;border:1px solid var(--line2);color:var(--mid);margin-bottom:11px}
+  .win b{color:var(--green)}
+  button{background:var(--accent);color:#04211c;border:none;border-radius:9px;font:680 13.5px var(--sans);padding:9px 14px;cursor:pointer}
+  button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line2)}
+  button:active{transform:translateY(1px)}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
+  .slider{width:100%;margin:8px 0}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .read{font:12px var(--mono);color:var(--mid);display:flex;justify-content:space-between;margin-top:6px}
+  .read b{color:var(--accent)}
+  canvas{width:100%;height:110px;background:#0b0e16;border:1px solid var(--line);border-radius:8px;margin:8px 0}
+  .graph{position:relative;height:130px;background:#0b0e16;border:1px solid var(--line);border-radius:8px;margin:8px 0;overflow:hidden}
+  .node{position:absolute;width:12px;height:12px;border-radius:50%;transform:translate(-50%,-50%);transition:.4s}
+  .syn{position:absolute;height:2px;transform-origin:left center;background:var(--line2);transition:.4s}
+  .lab{font:11px var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.07em;margin:10px 0 4px}
+  .note{font:11.5px var(--mono);color:var(--faint);line-height:1.6;margin-top:10px}
+  .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .foot a{color:var(--dim)}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+</style></head>
+<body>
+<header>
+  <h1>⚡ neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· plasticity playground — PlasticNeuron</span></h1>
+  <span class="pill">O(1) scalar updates · no neural net · no re-indexing</span>
+</header>
+<main>
+  <!-- ADAPTATION -->
+  <section class="card">
+    <h2><span class="d" style="background:var(--green)"></span>Adaptation</h2>
+    <div class="sub">Two facts collide on "meeting". Recency favors <b>friday</b>. <b>Reinforce</b> monday and watch effective strength overtake it after a couple of uses.</div>
+    <div class="win" id="adWin">winner: <b id="adWinner">friday</b> · "the meeting is on friday"</div>
+    <div class="bars">
+      <div class="barrow"><span class="nm">monday</span><div class="track"><div class="fill" id="fMon" style="background:var(--green)"></div></div><span class="vv" id="vMon">1.0</span></div>
+      <div class="barrow"><span class="nm">friday</span><div class="track"><div class="fill" id="fFri" style="background:var(--accent2)"></div></div><span class="vv" id="vFri">2.0</span></div>
+    </div>
+    <div class="note" id="adNote">recall picks the highest effective strength; ties break on recency.</div>
+    <div class="btnrow">
+      <button id="reinforce">reinforce(monday)</button>
+      <button class="ghost" id="adReset">reset</button>
+    </div>
+  </section>
+
+  <!-- DECAY -->
+  <section class="card">
+    <h2><span class="d" style="background:var(--amber)"></span>Forgetting (decay)</h2>
+    <div class="sub">Unused strength fades lazily: <span class="mono">w·½^(age/half&#8209;life)</span>, computed at read time. Decay only re&#8209;ranks — it never deletes.</div>
+    <canvas id="decayCv" width="520" height="220"></canvas>
+    <div class="lab">half-life</div>
+    <input type="range" id="hl" min="10" max="200" value="50">
+    <div class="read"><span>idle ticks: <b id="ageR">50</b></span><span>effective strength: <b id="effR">0.50</b></span></div>
+    <div class="lab" style="margin-top:8px">idle time</div>
+    <input type="range" id="age" min="0" max="200" value="50">
+    <div class="note">at 1 half-life, strength halves; the fact is still returned, it just loses ties to fresher facts.</div>
+  </section>
+
+  <!-- ASSOCIATION -->
+  <section class="card">
+    <h2><span class="d" style="background:var(--accent2)"></span>Association + spreading</h2>
+    <div class="sub">Facts recalled together <b>wire together</b> (Hebbian). Then a cue for one can surface the other via spreading activation — even with no shared word.</div>
+    <div class="graph" id="graph">
+      <div class="syn" id="syn"></div>
+      <div class="node" id="nA" style="background:var(--pink);left:25%;top:35%"></div>
+      <div class="node" id="nB" style="background:var(--accent);left:75%;top:65%"></div>
+    </div>
+    <div class="read"><span>Hebbian link w: <b id="linkR">0.5</b></span><span id="spreadR">spread: —</span></div>
+    <div class="note" id="asNote">"the server is in rack 7" &amp; "the keys are with Dana" share no words.</div>
+    <div class="btnrow">
+      <button id="coact">co-activate ×1</button>
+      <button class="ghost" id="spread">cue A → spread</button>
+      <button class="ghost" id="asReset">reset</button>
+    </div>
+  </section>
+</main>
+<div class="foot"><span>faithful visualization of the documented O(1) plasticity rules (PlasticNeuron)</span><a href="https://github.com/gary23w/neuron-db/blob/main/docs/PLASTICITY.md" target="_blank" rel="noopener">PLASTICITY.md ↗</a></div>
+<script>
+(function(){
+"use strict";
+function $(id){return document.getElementById(id);}
+/* ---- adaptation ---- */
+var wMon=1.0, wFri=2.0, reUses=0;
+function drawAd(){
+  var max=Math.max(wMon,wFri,2);
+  $('fMon').style.width=(wMon/max*100)+'%'; $('fFri').style.width=(wFri/max*100)+'%';
+  $('vMon').textContent=wMon.toFixed(1); $('vFri').textContent=wFri.toFixed(1);
+  var winner = wMon>wFri ? 'monday' : 'friday';
+  $('adWinner').textContent=winner;
+  $('adWin').innerHTML='winner: <b id="adWinner">'+winner+'</b> · "the meeting is on '+winner+'"';
+  $('adNote').textContent = reUses===0 ? 'recall picks the highest effective strength; ties break on recency.'
+    : (winner==='monday' ? 'after '+reUses+' use'+(reUses>1?'s':'')+', monday overtook recency — adapted to how you use it.'
+                         : 'reinforce again to push monday past friday.');
+}
+$('reinforce').addEventListener('click',function(){ reUses++; wMon+=1.5; if(wFri>1) wFri-=0.5; drawAd(); });
+$('adReset').addEventListener('click',function(){ wMon=1.0; wFri=2.0; reUses=0; drawAd(); });
+drawAd();
+
+/* ---- decay ---- */
+var cv=$('decayCv'), ctx=cv.getContext('2d');
+function eff(age,hl){return Math.pow(0.5, age/hl);}
+function drawDecay(){
+  var hl=+$('hl').value, age=+$('age').value, W=cv.width, H=cv.height, pad=24;
+  ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.strokeStyle='#1a2029'; ctx.lineWidth=1;
+  for(var gy=0;gy<=4;gy++){var y=pad+(H-2*pad)*gy/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(W-pad,y);ctx.stroke();}
+  // curve
+  ctx.strokeStyle='#f5b454'; ctx.lineWidth=2.5; ctx.beginPath();
+  for(var x=0;x<=200;x++){var px=pad+(W-2*pad)*x/200, py=pad+(H-2*pad)*(1-eff(x,hl));if(x===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
+  ctx.stroke();
+  // marker
+  var mx=pad+(W-2*pad)*age/200, my=pad+(H-2*pad)*(1-eff(age,hl));
+  ctx.fillStyle='#5eead4'; ctx.beginPath(); ctx.arc(mx,my,5,0,7); ctx.fill();
+  ctx.strokeStyle='rgba(94,234,212,.3)';ctx.beginPath();ctx.moveTo(mx,pad);ctx.lineTo(mx,H-pad);ctx.stroke();
+  $('ageR').textContent=age; $('effR').textContent=eff(age,hl).toFixed(2);
+}
+$('hl').addEventListener('input',drawDecay); $('age').addEventListener('input',drawDecay);
+drawDecay();
+
+/* ---- association ---- */
+var link=0.5;
+function drawSyn(){
+  var g=$('graph'), a=$('nA'), b=$('nB');
+  var ax=g.clientWidth*0.25, ay=g.clientHeight*0.35, bx=g.clientWidth*0.75, by=g.clientHeight*0.65;
+  var dx=bx-ax, dy=by-ay, len=Math.sqrt(dx*dx+dy*dy), ang=Math.atan2(dy,dx)*180/Math.PI;
+  var s=$('syn');
+  s.style.left=ax+'px'; s.style.top=ay+'px'; s.style.width=len+'px'; s.style.transform='rotate('+ang+'deg)';
+  s.style.height=Math.min(2+link*1.4,12)+'px';
+  s.style.background= link>2 ? 'var(--accent)' : 'var(--line2)';
+  s.style.opacity=Math.min(.3+link/8,1);
+  $('linkR').textContent=link.toFixed(1);
+}
+$('coact').addEventListener('click',function(){ link=Math.min(link*1.7+0.3,8); drawSyn(); $('spreadR').textContent='spread: —'; });
+$('spread').addEventListener('click',function(){
+  if(link>2){ $('nB').style.boxShadow='0 0 16px var(--accent)'; $('nB').style.width='18px'; $('nB').style.height='18px';
+    $('spreadR').innerHTML='spread: <b style="color:var(--green)">reached B</b>';
+    $('asNote').textContent='cue for A activated B across the synapse — recall surfaced an associate you never queried.';
+    setTimeout(function(){$('nB').style.boxShadow='';$('nB').style.width='12px';$('nB').style.height='12px';},900);
+  } else { $('spreadR').innerHTML='spread: <span style="color:var(--amber)">link too weak</span>'; $('asNote').textContent='co-activate a few times first to grow the link past threshold.'; }
+});
+$('asReset').addEventListener('click',function(){ link=0.5; drawSyn(); $('spreadR').textContent='spread: —'; });
+window.addEventListener('resize',drawSyn); drawSyn();
+})();
+</script>
+</body></html>

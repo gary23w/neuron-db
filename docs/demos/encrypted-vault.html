@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neuron-db · encrypted vault</title>
+<style>
+  :root{--bg:#0a0c12;--panel:#0f1216;--panel2:#15191f;--line:#20262e;--line2:#2b333d;--ink:#eef1f4;--mid:#9aa4b0;--dim:#6b7480;--faint:#5b6478;--accent:#5eead4;--green:#34d399;--amber:#f5b454;--red:#fb7185;--mono:ui-monospace,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+  .mono{font-family:var(--mono)}
+  header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+  header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
+  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}
+  header .pill b{color:var(--green)}
+  main{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);min-height:0}
+  .pane{background:var(--bg);display:flex;flex-direction:column;min-height:0;overflow:auto}
+  .pane h2{margin:0;padding:11px 16px;font:11.5px var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--dim);border-bottom:1px solid var(--line);flex:none}
+  .body{padding:16px;display:flex;flex-direction:column;gap:13px}
+  label{font:11.5px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px}
+  input{width:100%;background:var(--panel);border:1px solid var(--line2);border-radius:9px;color:var(--ink);font:14px var(--sans);padding:9px 12px;outline:none}
+  input:focus{border-color:var(--accent)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  button{background:var(--accent);color:#04211c;border:none;border-radius:9px;font:680 14px var(--sans);padding:10px 16px;cursor:pointer}
+  button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line2)}
+  button:active{transform:translateY(1px)}
+  .hint{font-size:12.5px;color:var(--dim);line-height:1.6}
+  .hint b{color:var(--mid)}
+  .entry{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:12.5px}
+  .entry .lab{font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;margin-bottom:6px}
+  .entry .ct{font:11.5px var(--mono);color:var(--red);word-break:break-all;line-height:1.5;background:#120e12;border:1px solid #2a1c22;border-radius:6px;padding:7px 9px}
+  .entry .idx{font:11px var(--mono);color:var(--dim);margin-top:6px;word-break:break-all}
+  .result{border-radius:9px;padding:13px;font-size:14px;border:1px solid var(--line2);background:var(--panel)}
+  .result.ok{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.06)}
+  .result.bad{border-color:rgba(251,113,133,.4);background:rgba(251,113,133,.06)}
+  .result .v{font:680 17px var(--mono)}
+  .result.ok .v{color:var(--green)}.result.bad .v{color:var(--red)}
+  .result .m{font:11.5px var(--mono);color:var(--dim);margin-top:6px}
+  .empty{color:var(--dim);font:13px var(--mono);text-align:center;margin:24px 0}
+  .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .foot a{color:var(--dim)}
+  @media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:auto auto}.row{grid-template-columns:1fr}}
+</style></head>
+<body>
+<header>
+  <h1>🔒 neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· SecureNeuronDB — encrypted vault</span></h1>
+  <span class="pill">AES-256-GCM · key <b>never stored</b></span>
+</header>
+<main>
+  <section class="pane">
+    <h2>① store a secret</h2>
+    <div class="body">
+      <div class="hint">Values are encrypted with <b>AES-256-GCM</b> under a key derived from your passphrase (PBKDF2). The passphrase is supplied per call and <b>never written to disk</b>. The cue is indexed by a <b>keyed hash</b>, so even the lookup key is opaque.</div>
+      <div><label>passphrase (the "login" for this scope)</label><input id="pStore" value="alice-secret"></div>
+      <div class="row">
+        <div><label>cue / label</label><input id="cue" value="wifi password"></div>
+        <div><label>secret value</label><input id="val" value="hunter2"></div>
+      </div>
+      <button id="enc">Encrypt &amp; store →</button>
+      <div class="hint">This is the realistic threat model: an attacker who steals the <span class="mono">.db</span> file sees only the ciphertext below. Lose the passphrase, lose the data — that's the point.</div>
+    </div>
+  </section>
+  <section class="pane">
+    <h2>② what's actually on disk <span id="cnt" style="color:var(--mid)"></span></h2>
+    <div class="body" id="store"><div class="empty" id="emptyMsg">vault is empty — store a secret on the left.</div></div>
+    <h2 style="border-top:1px solid var(--line)">③ recall</h2>
+    <div class="body">
+      <div class="row">
+        <div><label>passphrase</label><input id="pGet" value="alice-secret"></div>
+        <div><label>question</label><input id="q" value="what is the wifi password?"></div>
+      </div>
+      <div style="display:flex;gap:9px;flex-wrap:wrap">
+        <button id="dec">Recall with passphrase</button>
+        <button class="ghost" id="decWrong">Try a wrong passphrase</button>
+      </div>
+      <div id="out"></div>
+    </div>
+  </section>
+</main>
+<div class="foot">
+  <span>WebCrypto analog of the Rust <span class="mono">secure</span> tier · all client-side</span>
+  <a href="https://github.com/gary23w/neuron-db/blob/main/docs/SECURITY.md" target="_blank" rel="noopener">SECURITY.md ↗</a>
+</div>
+<script>
+(function(){
+"use strict";
+var subtle=(window.crypto||{}).subtle, enc=new TextEncoder(), dec=new TextDecoder();
+var vault=[];                      // [{salt,iv,ct,idx,cueShown}]
+var store=document.getElementById('store'), emptyMsg=document.getElementById('emptyMsg'), out=document.getElementById('out');
+function $(id){return document.getElementById(id);}
+function hex(buf){return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');}
+function stems(s){return s.toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(function(w){return w.length>2 && ['the','what','is','are','my','a','an','of','to'].indexOf(w)<0;}).map(function(w){return w.slice(0,6);}).sort();}
+
+async function deriveKey(pass,salt){
+  var base=await subtle.importKey('raw',enc.encode(pass),'PBKDF2',false,['deriveKey']);
+  return subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:60000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function keyedIndex(pass,salt,cue){
+  var base=await subtle.importKey('raw',enc.encode(pass+'|idx'),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  var sig=await subtle.sign('HMAC',base,enc.encode(salt+'|'+stems(cue).join(' ')));
+  return hex(sig).slice(0,24);
+}
+function render(){
+  $('cnt').textContent=vault.length?('· '+vault.length+' entr'+(vault.length===1?'y':'ies')):'';
+  if(!vault.length){store.innerHTML='';store.appendChild(emptyMsg);emptyMsg.style.display='';return;}
+  store.innerHTML='';
+  vault.forEach(function(e,i){
+    var d=document.createElement('div');d.className='entry';
+    d.innerHTML='<div class="lab"><span>entry #'+(i+1)+' · scope "vault"</span><span>'+e.ct.length/2+' B ciphertext</span></div>'+
+      '<div class="ct">'+e.ct+'</div>'+
+      '<div class="idx">keyed-index: '+e.idx+' · iv: '+e.iv+'</div>';
+    store.appendChild(d);
+  });
+}
+async function encrypt(){
+  if(!subtle){out.innerHTML='<div class="result bad"><div class="v">WebCrypto unavailable</div><div class="m">open over https to run this demo</div></div>';return;}
+  var pass=$('pStore').value, cue=$('cue').value, val=$('val').value;
+  if(!pass||!cue||!val) return;
+  var salt=crypto.getRandomValues(new Uint8Array(16));
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  var key=await deriveKey(pass,salt);
+  var ctBuf=await subtle.encrypt({name:'AES-GCM',iv:iv},key,enc.encode(val));
+  var saltHex=hex(salt);
+  vault.push({salt:salt,saltHex:saltHex,iv:hex(iv),ivRaw:iv,ct:hex(ctBuf),idx:await keyedIndex(pass,saltHex,cue),cue:cue});
+  render();
+  out.innerHTML='<div class="result ok"><div class="v">stored, encrypted</div><div class="m">value never appears in plaintext on disk · passphrase not stored</div></div>';
+}
+async function recall(useWrong){
+  if(!subtle){return;}
+  var pass=useWrong? ($('pGet').value+'-WRONG') : $('pGet').value;
+  var q=$('q').value;
+  for(var i=0;i<vault.length;i++){
+    var e=vault[i];
+    var idx=await keyedIndex(pass,e.saltHex,q);
+    if(idx===e.idx){
+      try{
+        var key=await deriveKey(pass,e.salt);
+        var pt=await subtle.decrypt({name:'AES-GCM',iv:e.ivRaw},key,hexToBuf(e.ct));
+        out.innerHTML='<div class="result ok"><div class="v">'+escapeHtml(dec.decode(pt))+'</div><div class="m">decrypted with the correct passphrase · matched keyed index '+e.idx+'</div></div>';
+        return;
+      }catch(err){}
+    }
+  }
+  out.innerHTML='<div class="result bad"><div class="v">None</div><div class="m">'+(useWrong?'wrong passphrase → keyed index misses and GCM auth fails. the data is unreadable.':'no entry matched — try the exact passphrase you stored with.')+'</div></div>';
+}
+function hexToBuf(h){var a=new Uint8Array(h.length/2);for(var i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a.buffer;}
+function escapeHtml(s){return s.replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+$('enc').addEventListener('click',encrypt);
+$('dec').addEventListener('click',function(){recall(false);});
+$('decWrong').addEventListener('click',function(){recall(true);});
+// seed one entry
+window.addEventListener('load',function(){ $('enc').click(); });
+})();
+</script>
+</body></html>
