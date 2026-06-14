@@ -15,8 +15,8 @@ A plastic memory's value shows up across a *sequence* of uses, over time:
 - **Growth** — the memory consolidates experience into its own weights and gets better.
 
 So the metrics change. Not recall@1 on a frozen set, but: does the right fact win *after
-use*? Does a cue surface its associates? Do stale facts fall away? `tests/test_plastic.py`
-measures exactly these.
+use*? Does a cue surface its associates? Do stale facts fall away?
+`rust/neuron-core/tests/plastic.rs` measures exactly these.
 
 ## Why this is built *in gary-neuron*, not around it
 
@@ -70,7 +70,7 @@ Pure standard library, every update O(1) or O(neighbors), no background threads:
 
 Measured overhead: plastic recall is **1.3× the static store** (88 µs vs 67 µs on a
 100-fact neuron) — the same order of magnitude. Adaptation, association, and forgetting all
-work (`test_plastic.py`, 6/6). This is the substrate that makes the model tier cheap: it
+work (`rust/neuron-core/tests/plastic.rs`, 6/6). This is the substrate that makes the model tier cheap: it
 narrows millions of facts to a working set without any neural cost.
 
 ## The model tier (design: wiring in gary-neuron)
@@ -82,7 +82,9 @@ model tier is an **optional adapter**, not a core dependency:
 1. **Retrieve** — `PlasticNeuron.recall_related(cue, k)` returns the working set: the best
    fact plus its associates, ranked by strength × link weight.
 2. **Think** — format the working set as the `U:/G:` context the cortex was trained on, run
-   the forward pass (TS at the edge via neuron-cloud, or numpy locally). The cortex copies
+   the forward pass (in this crate the cortex is bundled and run natively via
+   `GaryModel::embedded()`; the legacy-python numpy build and the external neuron-cloud
+   TypeScript port are alternative implementations). The cortex copies
    the answer out of the window; the plastic hippocampus reinforces what mattered. This is
    where "trained to emergence" pays off — it only ever sees the bounded window.
 3. **Write back** — surprise-gated facts the exchange produced go back into the store, and
@@ -109,12 +111,13 @@ split, and it is why a plastic, thinking, growing memory can stay fast.
 - **Shipped:** `PlasticNeuron` — store-tier plasticity (strength, decay, association,
   spreading, consolidation), tested, ~1.3× overhead.
 - **Next:** the model-tier adapter — feed `recall_related` working sets to the gary-neuron
-  cortex (numpy locally / TS in neuron-cloud) and wire `/sleep` consolidation back into both
-  the weights and the store.
+  cortex (bundled in this crate via `GaryModel::embedded()`; numpy and neuron-cloud TS are
+  the legacy-python / external implementations) and wire `/sleep` consolidation back into
+  both the weights and the store.
 
 ## Decay: where it lives and what it can (and can't) do
 
-Can your data silently vanish? No. Guarantees, tested in `tests/test_plastic_limits.py`:
+Can your data silently vanish? No. Guarantees, tested in `rust/neuron-core/tests/plastic.rs`:
 
 - **Decay is a store-tier feature added in `PlasticNeuron`** — not inherited from the gary-neuron hippocampus. In the original model the episodic store was permanent; only the hippocampus was transient (fast weights, reset per conversation).
 - **Decay only changes recall ranking.** A heavily decayed fact (effective strength ~0) is still returned by `recall` — it just loses ties to fresher facts. Decay never deletes.
@@ -125,13 +128,13 @@ So "factual decay" is opt-in, ranking-only, and reversible by pinning — not a 
 
 ## Do you need the "neocortex" (an LLM)?
 
-No. The three-tier brain picture is only for the *memory-for-an-LLM-agent* case. For a plain app or website database, **your app is the neocortex** — it decides what to store and ask; neuron-db is just the database (no LLM, no model, no dependencies — see `examples/app_backend.py`). Use `NeuronDB` for durable storage, or `PlasticNeuron` for usage-weighted ranking and associations. The LLM and the gary-neuron hippocampus are optional layers added only when you want the store to *reason* or *consolidate*.
+No. The three-tier brain picture is only for the *memory-for-an-LLM-agent* case. For a plain app or website database, **your app is the neocortex** — it decides what to store and ask; neuron-db is just the database (no LLM, no model, no dependencies — see `rust/neuron-core/examples/user_profiles.rs`). Use `NeuronDB` for durable storage, or `PlasticNeuron` for usage-weighted ranking and associations. The LLM and the gary-neuron hippocampus are optional layers added only when you want the store to *reason* or *consolidate*.
 
 ## Does the hippocampus "get smarter"? — the honest answer
 
 Three different things; only one is learning:
 
-- **`PlasticNeuron` re-weights.** Use strengthens, disuse decays, co-use associates — it changes *which* stored fact wins a cue, but never invents a fact you didn't store (`test_plasticity_does_not_invent_unstored_facts`) and never alters a stored value (`test_reinforcement_does_not_change_the_value`). Adaptation, not learning; no generalization.
+- **`PlasticNeuron` re-weights.** Use strengthens, disuse decays, co-use associates — it changes *which* stored fact wins a cue, but never invents a fact you didn't store and never alters a stored value (both verified in `rust/neuron-core/tests/plastic.rs`). Adaptation, not learning; no generalization.
 - **The trained hippocampus adapts within a conversation** (fast weights) then resets — also not permanent learning.
 - **Only sleep consolidation into the cortex weights is true "getting smarter"** — offline gradient training (`/sleep`), not a runtime effect.
 

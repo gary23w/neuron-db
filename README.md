@@ -36,13 +36,13 @@ into context every turn), `gpt-4o-mini`, a 700-fact user:
 
 The markdown-dump reinjects the whole memory every turn and eventually overruns the window;
 neuron-db injects only what it recalled — flat cost, no ceiling, matching or beating
-accuracy. Full numbers: **[docs/COMPARISON.md](docs/COMPARISON.md)** · how fast recall fires:
-**[docs/SYNAPSE.md](docs/SYNAPSE.md)**.
+accuracy. Full numbers: **[docs/guide/COMPARISON.md](docs/guide/COMPARISON.md)** · how fast recall fires:
+**[docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md)**.
 
 **Mount it in one line.** `neuron-mcp` is a native std-only stdio MCP server — point any MCP
 client (Claude Desktop/Code, Cursor) at the binary and your model gets `remember` / `recall`
 / `recall_chain` as tools. No Node, no Python, no HTTP process. See
-**[docs/MEMORY_HARNESS.md](docs/MEMORY_HARNESS.md)** and **[examples/mcp_chat/](examples/mcp_chat/)**.
+**[docs/guide/MEMORY_HARNESS.md](docs/guide/MEMORY_HARNESS.md)** and **[examples/mcp-chat/](examples/mcp-chat/)**.
 
 ```sh
 cargo build --release --features mcp --bin neuron-mcp
@@ -54,7 +54,7 @@ A **fact** is a sentence (`"the api key is zeta-9931"`); neuron-db keeps the sur
 as the retrievable value and indexes the rest as cues. A **scope** is a named bag of facts
 (`user:42`), and a database is a file of scopes. You insert by stating things and read by
 asking questions — retrieval is associative (cue overlap), so you never declare a column or
-write SQL. Full model and every operation: **[docs/API.md](docs/API.md)**.
+write SQL. Full model and every operation: **[docs/guide/API.md](docs/guide/API.md)**.
 
 ```rust
 use neuron_core::db::NeuronDB;
@@ -79,7 +79,7 @@ db.forget("user:42", Some("plan"));         // delete by substring
 
 - **Tiny.** A fact's retrieval state is stems and scalars, not a dense vector — about 48
   bytes/fact serialized, roughly **130× more facts per GiB** than a 1536-dim float vector
-  store. See **[docs/STORAGE.md](docs/STORAGE.md)**.
+  store. See **[docs/guide/STORAGE.md](docs/guide/STORAGE.md)**.
 - **Fast and dependency-free.** Microsecond recall, no GPU, no model. The default build runs
   in a 1 MB WebAssembly worker.
 - **Adaptive.** The plastic tier learns from use with O(1) scalar updates — no re-embedding,
@@ -91,7 +91,7 @@ curated synonym ontology (`reports to`↔`manager`), and — with `--features se
 meaning in co-occurrence so open-vocabulary paraphrase resolves too: trained on text,
 `"the thing I use to get online"` recalls the `wifi` fact. The fuzzy tier is a fallback, so
 the lexical path keeps its microsecond, ~130×-denser, no-model-on-the-hot-path profile. See
-**[docs/SEMANTIC.md](docs/SEMANTIC.md)** (incl. the book-ingestion test: 600k words in ~0.5s,
+**[docs/guide/SEMANTIC.md](docs/guide/SEMANTIC.md)** (incl. the book-ingestion test: 600k words in ~0.5s,
 ~3 ms lexical recall over 29k facts, and a semantic space that learns `whale`→`ship/sea/sperm`
 from the text alone).
 
@@ -105,7 +105,7 @@ cargo install --path rust/neuron-core --features "sqlite secure server"
 
 Default build is zero-dependency and targets `wasm32-unknown-unknown`; the native tiers are
 opt-in features so they never touch the wasm build. Running it as a service (and Docker):
-**[docs/DEPLOY.md](docs/DEPLOY.md)**.
+**[docs/guide/DEPLOY.md](docs/guide/DEPLOY.md)**.
 
 ## Security
 
@@ -128,13 +128,16 @@ or an **[existing API](examples/guides/EXISTING_API.md)**.
 
 ## Docs
 
-- [docs/SYNAPSE.md](docs/SYNAPSE.md) — how fast recall fires for an LLM, measured
-- [docs/SEMANTIC.md](docs/SEMANTIC.md) — the fuzzy semantic space + the book-ingestion test
-- [docs/COMPARISON.md](docs/COMPARISON.md) — multi-hop + neuron-db vs the markdown-dump memory
-- [docs/MEMORY_HARNESS.md](docs/MEMORY_HARNESS.md) — mount as LLM memory; the MCP server & tools
-- [docs/API.md](docs/API.md) — data model and every operation (library / CLI / HTTP)
-- [docs/DEPLOY.md](docs/DEPLOY.md) — build, install, Docker, env, backups
-- [docs/STORAGE.md](docs/STORAGE.md) — storage density vs vector databases
+- [docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md) — how fast recall fires for an LLM, measured
+- [docs/guide/SEMANTIC.md](docs/guide/SEMANTIC.md) — the fuzzy semantic space + the book-ingestion test
+- [docs/guide/COMPARISON.md](docs/guide/COMPARISON.md) — multi-hop + neuron-db vs the markdown-dump memory
+- [docs/guide/MEMORY_HARNESS.md](docs/guide/MEMORY_HARNESS.md) — mount as LLM memory; the MCP server & tools
+- [docs/guide/API.md](docs/guide/API.md) — data model and every operation (library / CLI / HTTP)
+- [docs/guide/DEPLOY.md](docs/guide/DEPLOY.md) — build, install, Docker, env, backups
+- [docs/guide/STORAGE.md](docs/guide/STORAGE.md) — storage density vs vector databases
+- [docs/guide/DESIGN.md](docs/guide/DESIGN.md) — how it works: write · recall · abstain
+- [docs/guide/PLASTICITY.md](docs/guide/PLASTICITY.md) — the memory that adapts, decays, and associates
+- [docs/guide/BENCHMARKS.md](docs/guide/BENCHMARKS.md) — speed, recall, and capacity numbers
 - [SECURITY.md](SECURITY.md) — encryption and access model
 
 MIT licensed. Author: gary23w.

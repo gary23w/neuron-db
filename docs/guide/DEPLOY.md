@@ -76,7 +76,7 @@ neuron --db /data/neurons.db stats user:42
 neuron --db /data/neurons.db get   user:42 "what plan?"
 ```
 
-See `docs/API.md` for the full command and endpoint reference.
+See `docs/guide/API.md` for the full command and endpoint reference.
 
 ## Backups
 

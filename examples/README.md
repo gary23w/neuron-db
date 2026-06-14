@@ -16,12 +16,12 @@ Located in `rust/neuron-core/examples/`:
 | `sharded_scale` | `NeuronRouter` holding 5k facts with fan-out recall | `cargo run --example sharded_scale` |
 | `encrypted_secrets` | `SecureNeuronDB` — encrypted values, per-scope secret | `cargo run --example encrypted_secrets --features secure` |
 
-## Live demo (`examples/demo/`)
+## Live demo (`examples/browser-demo/`)
 
 A two-pane proof of concept: a memory chatbot on the left, and a live feed of **everything
 neuron-db is collecting** from the browser on the right (mouse/clicks/scroll/keys/session).
-Open `examples/demo/index.html`, or run `examples/demo/run.sh` / `start-demo.bat` to back it
-with the real local server. See [demo/README.md](demo/README.md).
+Open `examples/browser-demo/index.html`, or run `examples/browser-demo/run.sh` / `run.ps1` /
+`start-demo.bat` to back it with the real local server. See [browser-demo/README.md](browser-demo/README.md).
 
 ## HTTP clients (`examples/http/`)
 
@@ -44,5 +44,5 @@ Start a server first: `serve neurons.db 8088` (or `docker compose up -d`).
 
 ## See also
 
-- [docs/API.md](../docs/API.md) — the full data model and operation reference.
-- [docs/DEPLOY.md](../docs/DEPLOY.md) — build, install, Docker, env, backups.
+- [docs/API.md](../docs/guide/API.md) — the full data model and operation reference.
+- [docs/DEPLOY.md](../docs/guide/DEPLOY.md) — build, install, Docker, env, backups.
