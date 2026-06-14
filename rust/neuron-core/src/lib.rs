@@ -130,7 +130,7 @@ fn surprise(w: &str, i: usize) -> f64 {
 }
 
 #[derive(Clone, Debug)]
-pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub head: String, pub self_flag: bool, pub id: i64 }
+pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64 }
 
 #[derive(Clone, Debug)]
 pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
@@ -179,8 +179,17 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     let _ = entity;
     let s_set: HashSet<String> = stems_s(&cont);
     let mut s: Vec<String> = s_set.into_iter().collect(); s.sort();
+    // earliest raw-token position of each content stem, aligned with the sorted `s`. This lets
+    // recall() compute the subject-position tiebreak via a binary_search per cue word instead
+    // of re-tokenizing + re-stemming the whole fact for every candidate (the hot-loop cost).
+    let mut pos = vec![u32::MAX; s.len()];
+    for (i, tok) in u.split_whitespace().enumerate() {
+        if let Ok(k) = s.binary_search(&stem1(&w1(tok))) {
+            if pos[k] == u32::MAX { pos[k] = i as u32; }
+        }
+    }
     let mut raw: Vec<String> = cont.into_iter().collect(); raw.sort(); raw.dedup();
-    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, head, self_flag: self_name, id: -1 })
+    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, pos, head, self_flag: self_name, id: -1 })
 }
 fn w_clone(raw: &str) -> String { clip(raw) }
 
@@ -243,6 +252,21 @@ impl Neuron {
         self.index = Some(idx); self.index_len = self.episodes.len();
     }
 
+    /// Ensure the inverted index covers all current episodes. Incrementally indexes appended
+    /// facts in O(new) instead of rebuilding the whole index in O(N); any fact removal nulls
+    /// the index (see observe() drain / db forget) so this path only ever sees pure appends.
+    fn ensure_index(&mut self) {
+        match &mut self.index {
+            Some(idx) if self.index_len <= self.episodes.len() => {
+                for i in self.index_len..self.episodes.len() {
+                    for s in &self.episodes[i].s { idx.entry(s.clone()).or_default().push(i); }
+                }
+                self.index_len = self.episodes.len();
+            }
+            _ => self.build_index(),
+        }
+    }
+
     pub fn observe(&mut self, text: &str) -> usize {
         if text.trim().is_empty() || text.contains('?') { return 0; }
         let mut n = 0;
@@ -252,6 +276,7 @@ impl Neuron {
         if self.episodes.len() > self.max_facts {
             let start = self.episodes.len() - self.max_facts;
             self.episodes.drain(0..start);
+            self.index = None; self.index_len = usize::MAX; // front-drain shifts indices -> rebuild
         }
         n
     }
@@ -263,7 +288,7 @@ impl Neuron {
         let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let name_query = cue.contains("name") && cue.intersection(rel_s()).count()==0;
-        if self.index.is_none() || self.index_len != self.episodes.len() { self.build_index(); }
+        self.ensure_index();
         let idx = self.index.as_ref().unwrap();
         let mut cand: HashSet<usize> = HashSet::new();
         for s in &cue { if let Some(v) = idx.get(s) { cand.extend(v); } }
@@ -273,14 +298,13 @@ impl Neuron {
         let mut bk: (i64,i64,i64,i64,i64,i64,i64) = (-1,-1,-1,-1,0,-100000,-1);
         for i in order {
             let e = &self.episodes[i];
-            let es: HashSet<&String> = e.s.iter().collect();
-            let mut ov = cue.iter().filter(|c| es.contains(c)).count();
+            let mut ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
             let es_pet = e.s.iter().any(|s| pets().contains(s));
             if ov < 1 && pet_query && es_pet { ov = 1; }
             if ov < 1 { continue; }
             let unbound_es = e.s.iter().any(|s| rel_s().contains(s) && !cue.contains(s));
             if unbound_es && !(pet_query && es_pet) { continue; }
-            let unbound_cue = cue.iter().any(|s| rel_s().contains(s) && !es.contains(s));
+            let unbound_cue = cue.iter().any(|s| rel_s().contains(s) && e.s.binary_search(s).is_err());
             if unbound_cue && !(pet_query && es_pet) { continue; }
             let exact_ov = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
             let selfp = if name_query && e.self_flag { 1 } else { 0 };
@@ -288,9 +312,9 @@ impl Neuron {
             let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
             // prefer the fact where the query's words appear EARLIEST (the subject), so
             // "Aurora depends on" beats "X depends on Aurora". Tiebreak before recency.
-            let first_cue = e.t.split_whitespace().enumerate()
-                .filter(|(_, w)| cue.contains(&stem1(&w1(w))))
-                .map(|(p, _)| p as i64).min().unwrap_or(9999);
+            let first_cue = cue.iter()
+                .filter_map(|c| e.s.binary_search(c).ok().map(|k| e.pos[k] as i64))
+                .min().unwrap_or(9999);
             let sc = (exact_ov, ov as i64, selfp, subj, spec, -first_cue, i as i64);
             if sc > bk { bk = sc; best = Some(i); }
         }
@@ -299,16 +323,15 @@ impl Neuron {
         // says "owner" but the fact says "owned"), a morphological scan may match more of the
         // query. Prefer it when it does. This rescues the entity-only-overlap case where the
         // primary would otherwise pick an arbitrary fact about the right entity.
-        let prim_ov = { let bes: HashSet<&String> = self.episodes[bi].s.iter().collect();
-                        cue.iter().filter(|c| bes.contains(c)).count() };
+        let prim_ov = { let bs = &self.episodes[bi].s;
+                        cue.iter().filter(|c| bs.binary_search(c).is_ok()).count() };
         if prim_ov < cue.len() {
             if let Some(r) = self.root_scan(query, 1).into_iter().next() {
                 if r.overlap > prim_ov { return Some(r); }
             }
         }
         let e = &self.episodes[bi];
-        let bes: HashSet<&String> = e.s.iter().collect();
-        let mut cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
+        let mut cov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count() as f64 / (cue.len().max(1) as f64);
         if pet_query && e.s.iter().any(|s| pets().contains(s)) { cov = 1.0; }
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(e, &cue, want_num);
@@ -327,14 +350,13 @@ impl Neuron {
         let mut scored: Vec<((i64,i64,i64,i64),usize)> = Vec::new();
         for i in order {
             let e = &self.episodes[i];
-            let es: HashSet<&String> = e.s.iter().collect();
-            let ov = cue.iter().filter(|c| es.contains(c)).count();
+            let ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
             if ov < 1 { continue; }
             let exact = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
             let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
-            let first_cue = e.t.split_whitespace().enumerate()
-                .filter(|(_, w)| cue.contains(&stem1(&w1(w))))
-                .map(|(p, _)| p as i64).min().unwrap_or(9999);
+            let first_cue = cue.iter()
+                .filter_map(|c| e.s.binary_search(c).ok().map(|k| e.pos[k] as i64))
+                .min().unwrap_or(9999);
             scored.push(((exact, ov as i64, spec, -first_cue), i));
         }
         scored.sort_by(|a,b| b.0.cmp(&a.0));
@@ -342,8 +364,7 @@ impl Neuron {
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let out: Vec<Recall> = scored.into_iter().map(|(sc,i)| {
             let e = &self.episodes[i];
-            let bes: HashSet<&String> = e.s.iter().collect();
-            let cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
+            let cov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count() as f64 / (cue.len().max(1) as f64);
             let (val, echo) = pick_value(e, &cue, want_num);
             Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo }
         }).collect();
@@ -406,7 +427,7 @@ impl Neuron {
 
     /// Candidate episode indices for a cue (ensures the index is current). Used by PlasticNeuron.
     pub(crate) fn candidates(&mut self, cue: &HashSet<String>, pet_query: bool) -> Vec<usize> {
-        if self.index.is_none() || self.index_len != self.episodes.len() { self.build_index(); }
+        self.ensure_index();
         let idx = self.index.as_ref().unwrap();
         let mut cand: HashSet<usize> = HashSet::new();
         for s in cue { if let Some(v) = idx.get(s) { cand.extend(v); } }
