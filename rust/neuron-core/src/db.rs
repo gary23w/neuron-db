@@ -184,6 +184,7 @@ impl NeuronDB {
         let e = cache.get_mut(nid).unwrap();
         let before = e.n.fact_count();
         match m { Some(s) => { let s = s.to_lowercase(); e.n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&s)); }, None => e.n.episodes.clear() }
+        e.n.invalidate_index(); // removal shifts episode indices -> force a rebuild on next recall
         let after = e.n.fact_count();
         Self::persist(conn, nid, e);
         (before - after, after)

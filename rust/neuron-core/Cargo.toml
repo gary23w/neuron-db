@@ -94,3 +94,12 @@ name = "plastic_bench"
 
 [[example]]
 name = "sharded_scale"
+
+# one-stop raw metrics across every tier + serialized byte-size/density
+[[example]]
+name = "metrics"
+required-features = ["secure", "semantic"]
+
+# how big can the total addressable context grow at flat per-turn cost
+[[example]]
+name = "context_scale"
