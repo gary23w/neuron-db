@@ -44,20 +44,22 @@ cargo run --release --features sqlite --example llm_memory_bench # LLM-memory ne
 
 ## 2. Test coverage
 
-**76 tests pass** across the workspace after this pass (was 33; +43 new NeuronDB
-tests).
+**107 tests pass** across the workspace (`--features "sqlite secure server mcp semantic"`).
 
 | Suite | Tests | Area |
 |---|---:|---|
-| `tests/db_comprehensive.rs` (new) | 43 | the full NeuronDB surface + edge cases |
-| `tests/db_tier.rs` | 5 | original NeuronDB smoke tests |
+| lib unit tests | 13 | stemmer, recall, encode internals |
+| `tests/db_comprehensive.rs` | 53 | the full NeuronDB surface + edge cases |
 | `tests/recall.rs` | 8 | core recall semantics |
-| `tests/plastic.rs` | 6 | plastic neuron |
-| `tests/router.rs` | 3 | sharded router |
 | `tests/turn.rs` | 6 | conversation routing brain |
+| `tests/plastic.rs` | 6 | plastic neuron |
+| `tests/db_tier.rs` | 5 | original NeuronDB smoke tests |
+| `tests/scale.rs` (new) | 5 | incremental-index correctness + recall at scale |
+| `tests/router.rs` | 3 | sharded router |
 | `tests/secure_tier.rs` | 3 | encrypted store |
+| `tests/semantic_tier.rs` | 3 | distributional semantic recall |
 | `tests/inference.rs` | 2 | cortex |
-| **Total** | **75** | |
+| **Total** | **107** | |
 
 The new `db_comprehensive.rs` covers:
 
@@ -290,11 +292,84 @@ Ordered by leverage:
 
 ---
 
-## 8. Status
+## 8. Recall optimization & scale to 1,000,000 facts (infinite-context pass)
 
-- 76/76 tests pass (`--features "sqlite secure server"`).
-- 3 issues fixed (UTF-8 panic, arithmetic `?`, stemming false positives), each with
-  a regression test.
-- User-testing benchmark: 100% recall accuracy across all categories at p50 3.7 µs.
-- wasm32 core still builds with no features (patches are std-only, dependency-free).
-- Benchmarks reproducible via `bench`, `db_bench`, and `scenario_bench`.
+A later pass benchmarked the recall hot path at scale, found two O(N) costs, fixed them
+(results unchanged — **107/107 tests pass**, incl. an `incremental == full-rebuild`
+equivalence test), and measured how far the *total* addressable memory can grow while the
+LLM's per-turn context stays flat. (These numbers supersede §5 for the recall paths.)
+
+### 8.1 Two optimizations
+
+**Recall hot loop.** Per candidate, `recall()` allocated a `HashSet` from the sorted stem
+vector and re-tokenized + re-stemmed the whole fact for the subject-position tiebreak. Both
+replaced with a `binary_search` over the already-sorted `Episode.s` plus a precomputed
+per-stem position array (`Episode.pos`, built once in `encode()`).
+
+| path | before | after | speedup |
+|---|---|---|---|
+| core recall @ 500 facts | 214 µs | 55 µs | ~3.9× |
+| broad cue @ 50k facts | 44 ms | 10.6 ms | ~4.2× |
+| `recall_chain` | 39 µs/hop | 12.6 µs/hop | ~3.1× |
+
+**Incremental index.** `build_index()` rebuilt the entire stem→fact map (O(N)) on the first
+recall after any write — ~0.94 s per turn at 1M facts. `ensure_index()` now incrementally
+indexes only appended facts (O(new)); any removal nulls the index so the incremental path
+only ever sees pure appends.
+
+| pattern (1,000,000-fact store) | before | after | speedup |
+|---|---|---|---|
+| append 1 fact + recall it (per turn) | ~0.94 s | 10.5 µs | ~90,000× |
+
+Trade: `encode()` now precomputes `pos`, so creation drops ~140k → ~125k facts/s — a good
+trade since reads dominate writes in a memory store.
+
+### 8.2 How big can the total context grow? (`examples/context_scale.rs`)
+
+| total facts | selective recall | per-turn injected block | store (serialized) |
+|---|---|---|---|
+| 10,000 | ~6.9 µs | 15 facts / ~120 tok | 0.4 MB |
+| 50,000 | ~5.5 µs | 15 facts / ~121 tok | 2 MB |
+| 200,000 | ~5.8 µs | 15 facts / ~122 tok | 7 MB |
+| 1,000,000 | ~5.8 µs | 15 facts / ~127 tok | 38 MB |
+
+Selective recall is **flat at ~6 µs from 10k to 1,000,000 facts**, and the per-turn block
+injected into the model stays **flat (~120 tokens)** while total memory grows 100×. That is
+the "effectively infinite context": total addressable memory is bounded only by storage
+(~26–33M facts/GiB), while the model's window cost is constant.
+
+### 8.3 Serialized byte-size / density (`examples/metrics.rs`)
+
+`dump()` stores flag + text only — **no embedding bytes**. Measured **32.5 bytes/fact →
+~33M facts/GiB** for short facts (≈ text length; longer facts scale with their text). For
+contrast, a single 1,536-d float32 embedding is ~6 KB/item.
+
+### 8.4 With the LLM in the loop (`bench_compare.py`, gpt-4o-mini, recall_chain)
+
+Same interlinked multi-hop question set, two memories, at growing sizes:
+
+| total facts | neuron-db ctx/turn | markdown ctx/turn | neuron acc | markdown acc | neuron $/1k-q | markdown $/1k-q |
+|---|---|---|---|---|---|---|
+| 1,000  | 1,122 tok | 9,898 tok | 100% | 100% | $0.19 | $1.49 |
+| 6,000  | 1,122 tok | 67,067 tok | 100% | 92% | $0.19 | $10.06 |
+| 50,000 | 1,122 tok | ~446,863 tok (won't fit a 128k window) | 100% | — | $0.19 | — |
+
+neuron-db's injected context is **flat at 1,122 tokens** at every size, 100% accurate (incl.
+all 1/2/3-hop), exactly 2 model calls per answer. The markdown baseline grows linearly
+(8.8× → 59.8×), degrades (92% at 6k — lost-in-the-middle), and at 50,000 facts (~447k
+tokens) **cannot be loaded at all** — while neuron-db answers at the same flat cost.
+Reproduce: `python examples/mcp-chat/bench_compare.py --sizes 1000,6000 --chain` (and
+`--sizes 50000 --no-markdown --chain` for the scale point).
+
+---
+
+## 9. Status
+
+- **107/107 tests pass** (`--features "sqlite secure server mcp semantic"`).
+- 3 original issues fixed (UTF-8 panic, arithmetic `?`, stemming false positives), each
+  with a regression test; recall hot path + index made ~4× / O(1)-incremental (§8).
+- Selective recall flat ~6 µs to 1,000,000 facts; per-turn LLM context flat (~1.1k tokens)
+  while total memory grows unbounded; serialized density 32.5 bytes/fact (no embeddings).
+- wasm32 core still builds with no features (all changes are std-only, dependency-free).
+- Reproducible via `bench`, `db_bench`, `metrics`, `context_scale`, `scenario_bench`, and
+  `examples/mcp-chat/bench_compare.py`.
