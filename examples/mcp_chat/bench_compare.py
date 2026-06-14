@@ -22,6 +22,7 @@ from chat import Mcp, to_openai_tools, openai_chat
 
 # gpt-4o-mini approx pricing ($ per token)
 PRICE_IN, PRICE_OUT = 0.15 / 1e6, 0.60 / 1e6
+PHRASING = "aligned"   # "aligned" | "misaligned" (set from CLI; read by gen_org)
 
 NAMES = ["Marisol","Dana","Kenji","Amara","Bjorn","Priya","Tariq","Lena","Mateo","Nadia","Owen","Sofia","Hiro","Esther","Diego","Yuki"]
 TEAMS = ["frontend","infrastructure","design","data","platform","mobile","security","growth"]
@@ -56,17 +57,32 @@ def gen_org(n_people, n_projects, total_facts):
     # Facts use canonical field NOUNS (owner/manager/city/timezone/status/deadline) so the
     # model's recall queries lexically align (the system prompt steers it to those nouns).
     facts = []
-    for p in people:
-        facts.append(f"{p['name']} role is {p['role']} on the {p['team']} team")
-        facts.append(f"{p['name']} city is {p['city']}")
-        facts.append(f"{p['name']} timezone is {p['tz']}")
-        if p["mgr"]: facts.append(f"{p['name']} manager is {p['mgr']}")
-    for pr in projects:
-        facts.append(f"project {pr['name']} owner is {pr['owner']}")
-        facts.append(f"project {pr['name']} status is {pr['status']}")
-        facts.append(f"project {pr['name']} deadline is {pr['deadline']}")
-        facts.append(f"project {pr['name']} language is {pr['lang']}")
-        facts.append(f"project {pr['name']} depends on project {pr['dep']}")
+    if PHRASING == "misaligned":
+        # store with different verbs than the queries use (owned by / lives in / reports to)
+        # to exercise the morphological + alias fallback
+        for p in people:
+            facts.append(f"{p['name']} works as a {p['role']} on the {p['team']} team")
+            facts.append(f"{p['name']} lives in {p['city']}")
+            facts.append(f"{p['name']} timezone is {p['tz']}")
+            if p["mgr"]: facts.append(f"{p['name']} reports to {p['mgr']}")
+        for pr in projects:
+            facts.append(f"project {pr['name']} is owned by {pr['owner']}")
+            facts.append(f"project {pr['name']} status is {pr['status']}")
+            facts.append(f"project {pr['name']} deadline is {pr['deadline']}")
+            facts.append(f"project {pr['name']} is written in {pr['lang']}")
+            facts.append(f"project {pr['name']} depends on project {pr['dep']}")
+    else:
+        for p in people:
+            facts.append(f"{p['name']} role is {p['role']} on the {p['team']} team")
+            facts.append(f"{p['name']} city is {p['city']}")
+            facts.append(f"{p['name']} timezone is {p['tz']}")
+            if p["mgr"]: facts.append(f"{p['name']} manager is {p['mgr']}")
+        for pr in projects:
+            facts.append(f"project {pr['name']} owner is {pr['owner']}")
+            facts.append(f"project {pr['name']} status is {pr['status']}")
+            facts.append(f"project {pr['name']} deadline is {pr['deadline']}")
+            facts.append(f"project {pr['name']} language is {pr['lang']}")
+            facts.append(f"project {pr['name']} depends on project {pr['dep']}")
     core = len(facts)
     for i in range(max(0, total_facts - core)):
         facts.append(f"log entry {code(i)} recorded routine event number {i}")
@@ -108,20 +124,34 @@ NEURON_SYS = (
     "recall_value 'Aurora owner' -> 'Marisol'; recall_value 'Marisol manager' -> 'Dana'; "
     "recall_value 'Dana timezone' -> 'WET'. Answer with just the value. If recall returns nothing, say you don't know."
 )
+NEURON_SYS_CHAIN = (
+    "You answer questions using a long-term memory accessed through tools.\n"
+    "For a single field, call recall_value (e.g. 'Aurora deadline').\n"
+    "For a MULTI-HOP question of the form 'the A of the B of X', call recall_chain ONCE with "
+    "start=X and path listing relations from X outward. Example: 'the timezone of the manager "
+    "of the owner of Aurora' -> recall_chain(start='Aurora', path=['owner','manager','timezone']). "
+    "'the status of the project that Aurora depends on' -> recall_chain(start='Aurora', "
+    "path=['depends on','status']). Answer with just the value. If a tool returns nothing, say you don't know."
+)
 MD_SYS = ("You answer questions using the MEMORY provided below. Answer concisely with just the value. "
           "If it is not in the memory, say you don't know.\n")
 
+_TRIVIAL = {"in", "the", "a", "an", "of", "on", "at", "is"}
+def _salient(e):
+    # last content word of a value, so "in design" credits an answer of "design"
+    ws = [w for w in str(e).lower().split() if w not in _TRIVIAL]
+    return ws[-1] if ws else str(e).lower()
 def score(ans, expect):
     a = ans.lower()
-    return all(str(e).lower() in a for e in expect)
+    return all(str(e).lower() in a or _salient(e) in a for e in expect)
 
-def ask_neuron(mcp, scope, tools, model, key, q):
-    msgs = [{"role": "system", "content": NEURON_SYS}, {"role": "user", "content": q["q"]}]
-    tin = tout = hops = 0
+def ask_neuron(mcp, scope, tools, model, key, q, sys_prompt):
+    msgs = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": q["q"]}]
+    tin = tout = hops = calls = 0
     t0 = time.perf_counter()
     ans = ""
     for _ in range(8):  # bound the chain
-        msg, u = openai_chat(msgs, tools, model, key)
+        msg, u = openai_chat(msgs, tools, model, key); calls += 1
         tin += u.get("prompt_tokens", 0); tout += u.get("completion_tokens", 0)
         tcs = msg.get("tool_calls")
         am = {"role": "assistant", "content": msg.get("content")}
@@ -135,7 +165,8 @@ def ask_neuron(mcp, scope, tools, model, key, q):
             args["scope"] = scope
             text, _, _ = mcp.call(tc["function"]["name"], args); hops += 1
             msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": text})
-    return {"tin": tin, "tout": tout, "hops": hops, "ms": (time.perf_counter() - t0) * 1000, "ok": score(ans, q["expect"]), "ans": ans}
+    return {"tin": tin, "tout": tout, "hops": hops, "calls": calls,
+            "ms": (time.perf_counter() - t0) * 1000, "ok": score(ans, q["expect"]), "ans": ans}
 
 def ask_markdown(md, model, key, q):
     msgs = [{"role": "system", "content": MD_SYS + "\n# MEMORY\n" + md}, {"role": "user", "content": q["q"]}]
@@ -150,14 +181,22 @@ def agg(rs):
     tin = sum(r["tin"] for r in rs); tout = sum(r["tout"] for r in rs)
     return {"acc": sum(r["ok"] for r in rs) / n * 100, "tin": tin / n, "tout": tout / n,
             "ms": statistics.median(r["ms"] for r in rs), "hops": statistics.mean(r["hops"] for r in rs),
+            "calls": statistics.mean(r.get("calls", 0) for r in rs),
             "cost": (tin * PRICE_IN + tout * PRICE_OUT) / n}
 
 def main():
+    global PHRASING
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
     ap.add_argument("--mcp", default=None)
     ap.add_argument("--sizes", default="300,1500,6000")
+    ap.add_argument("--chain", action="store_true", help="prompt the model to use recall_chain for multi-hop")
+    ap.add_argument("--misaligned", action="store_true", help="store facts with different verbs than the queries (exercises the fallback)")
+    ap.add_argument("--no-markdown", action="store_true", help="skip the markdown baseline (saves tokens on focused runs)")
+    ap.add_argument("--debug", action="store_true", help="print each missed question + the model's answer")
     args = ap.parse_args()
+    PHRASING = "misaligned" if args.misaligned else "aligned"
+    neuron_sys = NEURON_SYS_CHAIN if args.chain else NEURON_SYS
     key = os.environ.get("OPENAI_API_KEY") or sys.exit("set OPENAI_API_KEY")
     here = os.path.dirname(os.path.abspath(__file__))
     local = next((p for p in (os.path.join(here, "neuron-mcp.exe"), os.path.join(here, "neuron-mcp")) if os.path.exists(p)), None)
@@ -173,39 +212,48 @@ def main():
     mcp.handshake()
     tools = to_openai_tools(mcp.list_tools())
 
-    print(f"model={args.model}  sizes={sizes}\n")
+    cfg = f"phrasing={PHRASING}  multihop={'recall_chain' if args.chain else 'manual'}  markdown={'off' if args.no_markdown else 'on'}"
+    print(f"model={args.model}  sizes={sizes}  {cfg}\n")
     rows = []
     for total in sizes:
         facts, md, qs = gen_org(12, 8, total)
-        scope = f"org{total}"
+        scope = f"org{total}-{PHRASING}"
         for i in range(0, len(facts), 500):
             mcp.call("remember", {"scope": scope, "facts": facts[i:i + 500]})
         md_tokens_est = len(md) // 4
         print(f"--- memory = {len(facts)} facts ({len(qs)} questions; markdown ~{md_tokens_est} tokens) ---")
         try:
-            neu = [ask_neuron(mcp, scope, tools, args.model, key, q) for q in qs]
-            mdr = [ask_markdown(md, args.model, key, q) for q in qs]
+            neu = [ask_neuron(mcp, scope, tools, args.model, key, q, neuron_sys) for q in qs]
+            mdr = None if args.no_markdown else [ask_markdown(md, args.model, key, q) for q in qs]
         except SystemExit as e:   # e.g. API quota/rate limit mid-run: keep prior results
             print(f"  (stopped at {len(facts)} facts: {e})")
             break
-        na, ma = agg(neu), agg(mdr)
+        na = agg(neu)
+        ma = agg(mdr) if mdr else None
         rows.append((len(facts), na, ma))
-        print(f"  neuron-db: acc {na['acc']:.0f}%  in {na['tin']:.0f} tok  out {na['tout']:.0f}  hops {na['hops']:.1f}  {na['ms']:.0f} ms  ${na['cost']*1000:.4f}/1k-q")
-        print(f"  markdown : acc {ma['acc']:.0f}%  in {ma['tin']:.0f} tok  out {ma['tout']:.0f}  hops -    {ma['ms']:.0f} ms  ${ma['cost']*1000:.4f}/1k-q")
-        # per-hop accuracy + hop usage for the neuron mode (shows neuron-linking)
+        print(f"  neuron-db: acc {na['acc']:.0f}%  in {na['tin']:.0f} tok  out {na['tout']:.0f}  llm-calls {na['calls']:.1f}  tool-calls {na['hops']:.1f}  {na['ms']:.0f} ms  ${na['cost']*1000:.4f}/1k-q")
+        if ma:
+            print(f"  markdown : acc {ma['acc']:.0f}%  in {ma['tin']:.0f} tok  out {ma['tout']:.0f}  llm-calls 1.0  tool-calls -    {ma['ms']:.0f} ms  ${ma['cost']*1000:.4f}/1k-q")
+        # per-hop accuracy for the neuron mode (shows neuron-linking)
         byhop = {}
         for q, r in zip(qs, neu):
             byhop.setdefault(q["hops"], []).append(r)
         for h in sorted(byhop):
             rs = byhop[h]
-            print(f"      neuron {h}-hop: acc {sum(x['ok'] for x in rs)/len(rs)*100:.0f}%  avg hops used {statistics.mean(x['hops'] for x in rs):.1f}")
+            print(f"      neuron {h}-hop: acc {sum(x['ok'] for x in rs)/len(rs)*100:.0f}%  avg llm-calls {statistics.mean(x['calls'] for x in rs):.1f}")
+        if args.debug:
+            for q, r in zip(qs, neu):
+                if not r["ok"]:
+                    print(f"      MISS [{q['hops']}h] {q['q']}  expected={q['expect']}  got={r['ans'][:90]!r}")
     mcp.close()
 
-    print("\n================ neuron-db vs markdown-dump ================")
-    print(f"{'facts':>6} | {'neuron in_tok':>13} {'md in_tok':>10} | {'neuron $/1k':>11} {'md $/1k':>9} | {'neuron acc':>10} {'md acc':>7} | {'md/neuron tok':>13}")
-    for f, na, ma in rows:
-        ratio = ma["tin"] / max(1, na["tin"])
-        print(f"{f:>6} | {na['tin']:>13.0f} {ma['tin']:>10.0f} | {na['cost']*1000:>11.4f} {ma['cost']*1000:>9.4f} | {na['acc']:>9.0f}% {ma['acc']:>6.0f}% | {ratio:>12.1f}x")
+    if any(ma for _, _, ma in rows):
+        print("\n================ neuron-db vs markdown-dump ================")
+        print(f"{'facts':>6} | {'neuron in_tok':>13} {'md in_tok':>10} | {'neuron $/1k':>11} {'md $/1k':>9} | {'neuron acc':>10} {'md acc':>7} | {'md/neuron tok':>13}")
+        for f, na, ma in rows:
+            if not ma: continue
+            ratio = ma["tin"] / max(1, na["tin"])
+            print(f"{f:>6} | {na['tin']:>13.0f} {ma['tin']:>10.0f} | {na['cost']*1000:>11.4f} {ma['cost']*1000:>9.4f} | {na['acc']:>9.0f}% {ma['acc']:>6.0f}% | {ratio:>12.1f}x")
     try: os.remove(syn_log); os.remove(env["NEURON_MCP_DB"])
     except OSError: pass
 

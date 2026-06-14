@@ -130,6 +130,39 @@ fn recall_chain_three_hops() {
 }
 
 #[test]
+fn dependency_resolves_to_correct_project() {
+    // many near-identical "project X depends on project Y" facts: recall must pick the one
+    // whose subject matches, not another project's dependency.
+    let db = NeuronDB::open(&tmp(), 5000);
+    let pn = ["Aurora","Beacon","Citadel","Delta","Everest","Falcon","Granite","Helix"];
+    let st = ["shipped","review","blocked","design","progress","planned","paused","archived"];
+    for j in 0..8 {
+        let mut dep = pn[(j+3)%8]; if dep == pn[j] { dep = pn[(j+1)%8]; }
+        db.observe("o", &format!("project {} owner is owner{}", pn[j], j));
+        db.observe("o", &format!("project {} status is {}", pn[j], st[j]));
+        db.observe("o", &format!("project {} deadline is month{}", pn[j], j));
+        db.observe("o", &format!("project {} depends on project {}", pn[j], dep));
+    }
+    assert_eq!(db.get("o", "Aurora depends on").as_deref(), Some("Delta"));
+    assert_eq!(db.get("o", "Beacon depends on").as_deref(), Some("Everest"));
+    // and via the chain tool (start as subject)
+    let (v, _) = db.recall_chain("o", "Aurora", &["depends on".into()]);
+    assert_eq!(v.as_deref(), Some("Delta"));
+}
+
+#[test]
+fn recall_chain_multiword_relation() {
+    // a relation can be several words ("depends on"); the hop must still validate
+    let db = NeuronDB::open(&tmp(), 5000);
+    db.observe_many("o", &[
+        "project Aurora depends on project Beacon".into(),
+        "project Beacon status is blocked".into(),
+    ]);
+    let (val, _) = db.recall_chain("o", "Aurora", &["depends on".into(), "status".into()]);
+    assert_eq!(val.as_deref(), Some("blocked"));
+}
+
+#[test]
 fn recall_chain_reports_break() {
     let db = NeuronDB::open(&tmp(), 5000);
     db.observe("o", "project Aurora owner is Marisol");
