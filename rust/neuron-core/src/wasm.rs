@@ -3,8 +3,81 @@
 use crate::Neuron;
 use crate::model::GaryModel;
 
-static mut BUF: [u8; 256] = [0u8; 256];
+static mut BUF: [u8; 16384] = [0u8; 16384];
 static mut BUFLEN: usize = 0;
+
+// ---- persistent in-browser store, for the live "synapse" visualization ----
+static mut STORE: Option<Neuron> = None;
+#[allow(static_mut_refs)]
+fn store() -> &'static mut Neuron {
+    unsafe { STORE.get_or_insert_with(|| Neuron::new(100_000)) }
+}
+#[allow(static_mut_refs)]
+fn put(s: &str) -> usize {
+    let b = s.as_bytes();
+    let n = b.len().min(unsafe { BUF.len() });
+    unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
+    n
+}
+fn input(ptr: *const u8, len: usize) -> String {
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned()
+}
+
+/// Reset the in-browser store. Call before seeding a fresh graph.
+#[no_mangle] pub extern "C" fn syn_reset() { unsafe { STORE = Some(Neuron::new(100_000)); } }
+
+/// Observe one fact. Returns the new neuron's index, or -1 if it was not stored.
+#[no_mangle]
+pub extern "C" fn syn_add(ptr: *const u8, len: usize) -> i32 {
+    let s = store();
+    let before = s.fact_count();
+    s.observe(&input(ptr, len));
+    if s.fact_count() > before { (s.fact_count() - 1) as i32 } else { -1 }
+}
+
+/// Fire a single recall. Writes "value\tbestIdx\tc1,c2,..." to BUF; returns its length.
+/// bestIdx = the winning neuron index, the c-list = every candidate neuron that fired.
+#[no_mangle]
+pub extern "C" fn syn_fire(ptr: *const u8, len: usize) -> usize {
+    let q = input(ptr, len);
+    let s = store();
+    let mut cue = crate::stems_s(&crate::content(&q));
+    crate::expand_cue(&q, &mut cue);
+    let pet = cue.contains(&crate::stem1("pet")) || cue.contains(&crate::stem1("animal"));
+    let cands = s.candidates(&cue, pet);
+    let (best_idx, value) = match s.recall(&q) {
+        Some(r) => (s.episodes.iter().position(|e| e.t == r.fact).map(|x| x as i64).unwrap_or(-1), r.value),
+        None => (-1, String::new()),
+    };
+    let clist: Vec<String> = cands.iter().map(|i| i.to_string()).collect();
+    put(&format!("{}\t{}\t{}", value, best_idx, clist.join(",")))
+}
+
+/// Fire a multi-hop chain. Input: "start\nrel1\nrel2\n...". Walks the chain server-side
+/// (each hop a recall, the relation must appear in the resolved fact). Writes one line per
+/// resolved hop, "neuronIdx\tvalue", to BUF; returns its length. This is the synapse linking
+/// neuron to neuron with no extra cost per hop.
+#[no_mangle]
+pub extern "C" fn syn_chain(ptr: *const u8, len: usize) -> usize {
+    let text = input(ptr, len);
+    let mut lines = text.split('\n').map(|x| x.trim()).filter(|x| !x.is_empty());
+    let mut current = match lines.next() { Some(s) => s.to_string(), None => return put("") };
+    let s = store();
+    let mut out: Vec<String> = Vec::new();
+    for rel in lines {
+        let rel_words: Vec<&str> = rel.split_whitespace().filter(|w| w.len() >= 3).collect();
+        match s.recall(&format!("{} {}", current, rel)) {
+            Some(r) if rel_words.is_empty()
+                || rel_words.iter().any(|rw| r.fact.split_whitespace().any(|w| crate::rel_matches(w, rw))) => {
+                let idx = s.episodes.iter().position(|e| e.t == r.fact).map(|x| x as i64).unwrap_or(-1);
+                out.push(format!("{}\t{}", idx, r.value));
+                current = r.value;
+            }
+            _ => break,
+        }
+    }
+    put(&out.join("\n"))
+}
 
 /// Full self-test inside the wasm sandbox: store recall + emergence cortex generation.
 /// Returns a bitmask: 1 = store recall correct, 2 = cortex copied the value from context.

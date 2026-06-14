@@ -353,6 +353,7 @@
       neuron<b>-db</b>
     </a>
     <nav class="nav-links" id="navlinks">
+      <a class="navlink" href="#synapse">LLM memory</a>
       <a class="navlink" href="#features">Features</a>
       <a class="navlink" href="#cortex">The cortex</a>
       <a class="navlink" href="#demos">Demos</a>
@@ -413,6 +414,49 @@
     </div>
   </div>
 </div>
+
+<!-- ===================== LLM MEMORY / SYNAPSE ===================== -->
+<section id="synapse">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker">LLM memory · the synapse</div>
+      <h2 class="title">Link <span class="grad">infinite neurons.</span> At no cost.</h2>
+      <p>An LLM's context window is small; neuron-db is the memory that lives <i>outside</i> it. A relational question — <span class="mono">"the timezone of the manager of the owner of Aurora"</span> — normally forces the model to recall a fact, wait, recall the next, wait… N hops = N+1 model calls. <b class="accent">recall_chain</b> collapses that: the model sends one path, and the synapse walks the whole chain server-side, each hop a microsecond recall. Depth is paid in microseconds, not model turns.</p>
+    </div>
+
+    <div class="split">
+      <div class="reveal">
+        <div class="model-diagram" style="white-space:pre-wrap">
+<span class="dim">recall_chain(start=</span><span class="sc">"Aurora"</span><span class="dim">, path=[</span><span class="fa">owner</span>, <span class="fa">manager</span>, <span class="fa">timezone</span><span class="dim">])</span>
+
+  Aurora <span class="tree">──owner──▶</span>   <span class="sc">Kenji</span>
+   Kenji <span class="tree">──manager─▶</span> <span class="sc">Marisol</span>
+ Marisol <span class="tree">──timezone▶</span> <span class="accent">WET</span>
+
+<span class="dim">3 hops · resolved server-side · 2 model calls · ~40&nbsp;µs synapse</span>
+        </div>
+        <p class="dim" style="font-size:13.5px;margin-top:14px">A 3-hop or a 30-hop answer costs the LLM the same two calls. The recall itself is free — see it fire in the <a href="demos/synapse-3d.html">3D synapse demo →</a></p>
+      </div>
+      <div class="reveal">
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>700-fact user · live, gpt-4o-mini</th><th class="num-cell">neuron-db</th><th class="num-cell">markdown dump</th></tr></thead>
+          <tbody>
+            <tr><td><b>multi-hop accuracy</b> (1/2/3 hops)</td><td class="num-cell winner">100%</td><td class="num-cell">83–100%</td></tr>
+            <tr><td><b>context cost / turn</b></td><td class="num-cell winner">~1.1k tok (flat)</td><td class="num-cell">2.7k → 67k</td></tr>
+            <tr><td>at 6,000 stored facts</td><td class="num-cell">$0.19 /1k-q</td><td class="num-cell">$10.06 /1k-q</td></tr>
+            <tr><td>model calls per answer (any depth)</td><td class="num-cell winner">2</td><td class="num-cell">1</td></tr>
+            <tr><td>needle recall to 50k facts</td><td class="num-cell winner">100% · ~16 µs</td><td class="num-cell">context-bound</td></tr>
+          </tbody>
+        </table></div>
+        <p class="dim" style="font-size:13.5px;margin-top:12px">The markdown-dump reinjects the whole memory every turn (linear, and it eventually overruns the window). neuron-db injects only what it recalled — flat cost, no ceiling, and it matches or beats accuracy. <a class="doc-open" data-doc="COMPARISON.md" href="#">Read the full comparison →</a></p>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:24px">
+      <b>Mount it in one line.</b> <span class="mono">neuron-mcp</span> is a native std-only stdio MCP server — point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets <span class="mono">remember</span> / <span class="mono">recall</span> / <span class="mono">recall_chain</span> as tools. No Node, no Python, no HTTP process. Recall stays microseconds whether the user has 10 facts or 10 million.
+    </div>
+  </div>
+</section>
 
 <!-- ===================== WHAT IT IS ===================== -->
 <section id="what">
@@ -581,11 +625,11 @@
         <div class="demo-stage">
           <div class="demo-bar">
             <div class="tdots"><i style="background:#fb7185"></i><i style="background:#f5b454"></i><i style="background:#34d399"></i></div>
-            <span class="u" id="demoUrl">demos/live-memory.html</span>
+            <span class="u" id="demoUrl">demos/synapse-3d.html</span>
             <div class="nb">
               <button id="demoPrev" type="button" aria-label="previous demo">&#8249; prev</button>
               <button id="demoNext" type="button" aria-label="next demo">next &#8250;</button>
-              <a class="open" id="demoOpen" href="demos/live-memory.html" target="_blank" rel="noopener">full screen &#8599;</a>
+              <a class="open" id="demoOpen" href="demos/synapse-3d.html" target="_blank" rel="noopener">full screen &#8599;</a>
             </div>
           </div>
           <iframe class="demo-frame" id="demoFrame" title="neuron-db live demo" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
@@ -1015,11 +1059,13 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
   /* ---------- docs modal ---------- */
   var DOCS = [
     {file:'API.md',           title:'API reference',   desc:'Data model + every operation'},
+    {file:'SYNAPSE.md',       title:'Synapse',         desc:'LLM recall speed, measured'},
+    {file:'COMPARISON.md',    title:'vs markdown memory', desc:'Multi-hop, cost, 100% accuracy'},
+    {file:'MEMORY_HARNESS.md',title:'Memory harness',  desc:'Mount as LLM memory (MCP)'},
     {file:'DESIGN.md',        title:'How it works',    desc:'Write · recall · abstain'},
     {file:'PLASTICITY.md',    title:'Plasticity',      desc:'The memory that thinks & grows'},
     {file:'BENCHMARKS.md',    title:'Benchmarks',      desc:'Speed, recall, capacity'},
     {file:'STORAGE.md',       title:'Storage density', desc:'vs vector databases'},
-    {file:'MEMORY_HARNESS.md',title:'Memory harness',  desc:'LLM long-term memory design'},
     {file:'DEPLOY.md',        title:'Deploy',          desc:'Build, Docker, env, backups'},
     {file:'SECURITY.md',      title:'Security',        desc:'Encryption & access model'}
   ];
@@ -1109,6 +1155,7 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
 (function(){
   "use strict";
   var DEMOS=[
+    {f:'demos/synapse-3d.html',      t:'3D synapse',       d:'Watch neurons fire & link in 3D',   tag:'real WASM'},
     {f:'demos/live-memory.html',     t:'Live memory',      d:'Chat with it; it remembers',        tag:'real WASM'},
     {f:'demos/cortex-stream.html',   t:'Emergence cortex', d:'Copies a value out of context',     tag:'real WASM'},
     {f:'demos/plasticity.html',      t:'Plasticity',       d:'Adapt, decay, associate',           tag:'interactive'},
