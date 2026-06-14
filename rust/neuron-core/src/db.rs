@@ -85,11 +85,15 @@ impl NeuronDB {
         let mut current = start.trim().to_string();
         let mut trail = vec![current.clone()];
         for rel in path {
-            let rel_root = crate::root_token(rel);
+            // a relation may be multiple words ("depends on"); match on any of its content
+            // words (length >= 3 to skip stopwords like "on"/"of"). rel_matches tolerates
+            // morphological + stem variants (owner/owned, dependency/depends).
+            let rel_words: Vec<&str> = rel.split_whitespace().filter(|w| w.len() >= 3).collect();
             match self.recall(nid, &format!("{} {}", current, rel)) {
                 // only advance if the relation actually appears in the recalled fact; otherwise
                 // recall's best-effort (entity overlap alone) would let a broken chain continue.
-                Some(h) if h.fact.split_whitespace().any(|w| crate::root_token(w) == rel_root) => {
+                Some(h) if rel_words.is_empty()
+                    || rel_words.iter().any(|rw| h.fact.split_whitespace().any(|w| crate::rel_matches(w, rw))) => {
                     current = h.value.clone();
                     trail.push(h.value);
                 }
