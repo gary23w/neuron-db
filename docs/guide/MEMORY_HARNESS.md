@@ -77,6 +77,27 @@ This is the recommended wiring; the reference implementation is `examples/mcp-ch
 two-pane live harness (chat on the left, the neuron-db memory firing on the right, with passive
 auto-capture on by default) demonstrates it end to end.
 
+### Documents — one scope each, plus a register (categorization at ingest)
+
+Passive-encoding a long pasted document into the conversational scope flattens it into hundreds
+of sentence-facts mixed with everything else — and the user refers to it by *position* ("the
+first blog", "that article"), which shares no words with its content, so recall can't find it.
+The harness should treat a document as a first-class object: detect a large paste, store it in
+its **own scope** (`{scope}__doc{n}`), and keep an ordered **register** of `{n, title}` it
+injects into the system prompt each turn. Give the model a `recall_document(n, query)` tool the
+harness routes to that document's scope. Then "summarize the first blog" → doc #1 → a
+**semantic-ranked** block recall from that scope alone — coherent, no cross-document bleed. Keep
+the document OUT of the context window (a stub) so the answer comes from recall, not free-ridden
+context. (Implemented in the two-pane lab; uses `recall_blended` for semantic-ranked blocks.)
+
+### Recall ranking — engage the semantic layer for every query
+
+Plain block recall ranks by lexical cue-overlap, which ties on `ov=1` keyword hits and returns
+a jumble for broad/narrative queries. `recall_blended` (feature `semantic`) ranks the scope's
+facts by semantic cosine (cached embeddings) with a lexical boost, so "tell me about X" returns
+the facts that are actually *about* X. Build the MCP server with `--features "mcp semantic"` to
+get it; it falls back to lexical otherwise.
+
 ### Scoping
 
 One neuron per memory scope, addressed by id: `user:{id}`, `agent:{id}`, `session:{id}`,
