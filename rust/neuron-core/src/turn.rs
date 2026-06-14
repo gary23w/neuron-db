@@ -43,8 +43,11 @@ fn find_math(s: &str) -> Option<(i64, char, i64)> {
         t = t.replace(&format!(" {} ", w), sym);
     }
     let toks: Vec<&str> = t.split_whitespace().collect();
+    // strip surrounding punctuation so "what is 12 * 11?" parses "11", not "11?"
     for w in toks.windows(3) {
-        if let (Ok(a), Ok(b)) = (w[0].parse::<i64>(), w[2].parse::<i64>()) {
+        let punct = |c: char| "?.!,;:'\"()[]{}".contains(c);
+        let (pa, pb) = (w[0].trim_matches(punct), w[2].trim_matches(punct));
+        if let (Ok(a), Ok(b)) = (pa.parse::<i64>(), pb.parse::<i64>()) {
             if w[1].len() == 1 {
                 let op = w[1].chars().next().unwrap();
                 if "+-*/".contains(op) { return Some((a, op, b)); }

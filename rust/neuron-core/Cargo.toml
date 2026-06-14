@@ -61,3 +61,11 @@ required-features = ["sqlite"]
 [[example]]
 name = "encrypted_secrets"
 required-features = ["secure"]
+
+[[example]]
+name = "db_bench"
+required-features = ["sqlite"]
+
+[[example]]
+name = "scenario_bench"
+required-features = ["sqlite"]
