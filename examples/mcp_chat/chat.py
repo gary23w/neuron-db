@@ -104,13 +104,18 @@ def to_openai_tools(mcp_tools):
 
 # ---------------- OpenAI ----------------
 def openai_chat(messages, tools, model, key):
-    body = json.dumps({"model": model, "messages": messages, "tools": tools,
-                       "tool_choice": "auto", "temperature": 0}).encode()
+    """Returns (message, usage). usage has prompt_tokens/completion_tokens/total_tokens."""
+    payload = {"model": model, "messages": messages, "temperature": 0}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    body = json.dumps(payload).encode()
     req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=90) as r:
-            return json.loads(r.read())["choices"][0]["message"]
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read())
+            return data["choices"][0]["message"], data.get("usage", {})
     except urllib.error.HTTPError as e:
         sys.exit(f"OpenAI error {e.code}: {e.read().decode()[:500]}")
 
@@ -127,11 +132,13 @@ class Chat:
         self.turn_idx += 1
         self.messages.append({"role": "user", "content": user_text})
         llm_ms = 0.0
+        tok_in = tok_out = 0
         calls = []
         while True:
             t = time.perf_counter()
-            msg = openai_chat(self.messages, self.tools, self.model, self.key)
+            msg, usage = openai_chat(self.messages, self.tools, self.model, self.key)
             llm_ms += (time.perf_counter() - t) * 1000.0
+            tok_in += usage.get("prompt_tokens", 0); tok_out += usage.get("completion_tokens", 0)
             tcs = msg.get("tool_calls")
             am = {"role": "assistant", "content": msg.get("content")}
             if tcs:
@@ -139,8 +146,8 @@ class Chat:
             self.messages.append(am)
             if not tcs:
                 reply = msg.get("content") or ""
-                self.records.append({"turn": self.turn_idx, "user": user_text,
-                                     "reply": reply, "llm_ms": llm_ms, "calls": calls})
+                self.records.append({"turn": self.turn_idx, "user": user_text, "reply": reply,
+                                     "llm_ms": llm_ms, "tok_in": tok_in, "tok_out": tok_out, "calls": calls})
                 return reply
             for tc in tcs:
                 name = tc["function"]["name"]
