@@ -150,6 +150,43 @@ recall itself is free, and the only real cost of depth is model turns.
 
 ---
 
+## 6. Final results — all fixes applied, verified live
+
+After implementing `recall_chain`, the morphological fallback, and fixing three bugs that a
+live `gpt-4o-mini` run surfaced (below), neuron-db **matches or beats** the markdown-dump on
+accuracy at a **flat, ~60× lower token cost**:
+
+| facts | neuron acc | md acc | neuron in-tok | md in-tok | neuron $/1k-q | md $/1k-q |
+|---:|---:|---:|---:|---:|---:|---:|
+| 300 | **100%** | 83% | 1,122 | 2,656 | $0.19 | $0.40 |
+| 1,500 | **100%** | 100% | 1,122 | 15,412 | $0.19 | $2.31 |
+| 6,000 | **100%** | 83% | **1,122 (flat)** | 67,067 | **$0.19** | $10.06 |
+
+Per-hop accuracy is **100% at 1, 2, and 3 hops**, each in a constant **2.0 LLM calls** (the
+model forms a `recall_chain` path once; the synapse walks it server-side). The markdown-dump
+is not only pricier but occasionally *less* accurate (83%) — the model mis-reasons over the
+raw 67k-token dump, whereas `recall_chain` is deterministic.
+
+### Bugs found by the live bench and fixed on the fly
+
+1. **`recall_chain` multi-word relations.** A relation like `"depends on"` failed the per-hop
+   validation (single fact words never equal the two-word relation), wrongly breaking the
+   chain. Fixed: match on any content word of the relation, tolerant of stem/root variants.
+2. **Subject/object ambiguity.** `recall_value("Aurora depends on")` returned **Falcon** —
+   the query's bag of words also matches `"Falcon depends on Aurora"`, and recall's recency
+   tiebreak picked the wrong one (recall and recall_many even disagreed). Fixed: a
+   subject-position tiebreak prefers the fact where the query's words appear earliest, applied
+   consistently to both paths.
+3. **Partial-bind fallback.** When a relation word matched nothing (query "owner", fact
+   "owned"), primary recall fell back to entity-only overlap and picked an arbitrary fact by
+   recency. Fixed: when the relation doesn't fully bind, run the morphological scan and prefer
+   it if it matches more of the query. This lifted the misaligned-vocabulary 1-hop case from
+   50% → 100% (overall 17% → 50%; residual gap is true synonyms — `reports`↔`manager` — which
+   need an embedding tier).
+
+A measurement note: multi-word values (`"in design"`) isolate to their salient token
+(`"design"`); the scorer credits that as correct.
+
 ## Reproduce
 
 ```sh

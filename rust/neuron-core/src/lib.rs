@@ -56,6 +56,11 @@ fn stems<'a, I: IntoIterator<Item = &'a String>>(it: I) -> HashSet<String> { it.
 /// Public morphological root (owner/owned/owns -> own). Used by recall_chain to verify a
 /// hop's relation actually appears in the recalled fact before advancing.
 pub fn root_token(w: &str) -> String { root(w) }
+/// Whether two words name the same relation: same morphological root (owner/owned) OR same
+/// stem (dependency/depends -> "depend"). Lets recall_chain tolerate phrasing variants.
+pub fn rel_matches(a: &str, b: &str) -> bool {
+    root(a) == root(b) || stem1(&w1(a)) == stem1(&w1(b))
+}
 /// Morphological root for the fuzzy fallback: strip a common suffix so owner/owned/owns
 /// normalize together. ONLY used on a primary recall miss, so it never affects the fast path.
 fn root(w: &str) -> String {
@@ -236,7 +241,7 @@ impl Neuron {
         if pet_query { for s in pets() { if let Some(v) = idx.get(s) { cand.extend(v); } } }
         let mut order: Vec<usize> = cand.into_iter().collect(); order.sort();
         let mut best: Option<usize> = None;
-        let mut bk: (i64,i64,i64,i64,i64,i64) = (-1,-1,-1,-1,0,-1);
+        let mut bk: (i64,i64,i64,i64,i64,i64,i64) = (-1,-1,-1,-1,0,-100000,-1);
         for i in order {
             let e = &self.episodes[i];
             let es: HashSet<&String> = e.s.iter().collect();
@@ -252,10 +257,26 @@ impl Neuron {
             let selfp = if name_query && e.self_flag { 1 } else { 0 };
             let subj = if cue.contains(&e.head) { 1 } else { 0 };
             let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
-            let sc = (exact_ov, ov as i64, selfp, subj, spec, i as i64);
+            // prefer the fact where the query's words appear EARLIEST (the subject), so
+            // "Aurora depends on" beats "X depends on Aurora". Tiebreak before recency.
+            let first_cue = e.t.split_whitespace().enumerate()
+                .filter(|(_, w)| cue.contains(&stem1(&w1(w))))
+                .map(|(p, _)| p as i64).min().unwrap_or(9999);
+            let sc = (exact_ov, ov as i64, selfp, subj, spec, -first_cue, i as i64);
             if sc > bk { bk = sc; best = Some(i); }
         }
         let bi = match best { Some(b) => b, None => return self.root_scan(query, 1).into_iter().next() };
+        // If the relation didn't fully bind (some cue words matched nothing -- e.g. the query
+        // says "owner" but the fact says "owned"), a morphological scan may match more of the
+        // query. Prefer it when it does. This rescues the entity-only-overlap case where the
+        // primary would otherwise pick an arbitrary fact about the right entity.
+        let prim_ov = { let bes: HashSet<&String> = self.episodes[bi].s.iter().collect();
+                        cue.iter().filter(|c| bes.contains(c)).count() };
+        if prim_ov < cue.len() {
+            if let Some(r) = self.root_scan(query, 1).into_iter().next() {
+                if r.overlap > prim_ov { return Some(r); }
+            }
+        }
         let e = &self.episodes[bi];
         let bes: HashSet<&String> = e.s.iter().collect();
         let mut cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
@@ -274,7 +295,7 @@ impl Neuron {
         let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let order = self.candidates(&cue, pet_query);
-        let mut scored: Vec<((i64,i64,i64),usize)> = Vec::new();
+        let mut scored: Vec<((i64,i64,i64,i64),usize)> = Vec::new();
         for i in order {
             let e = &self.episodes[i];
             let es: HashSet<&String> = e.s.iter().collect();
@@ -282,7 +303,10 @@ impl Neuron {
             if ov < 1 { continue; }
             let exact = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
             let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
-            scored.push(((exact, ov as i64, spec), i));
+            let first_cue = e.t.split_whitespace().enumerate()
+                .filter(|(_, w)| cue.contains(&stem1(&w1(w))))
+                .map(|(p, _)| p as i64).min().unwrap_or(9999);
+            scored.push(((exact, ov as i64, spec, -first_cue), i));
         }
         scored.sort_by(|a,b| b.0.cmp(&a.0));
         scored.truncate(k);
