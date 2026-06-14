@@ -14,7 +14,7 @@ Usage:
     python chat.py --script turns.txt   # one user turn per line
   options: --scope user:abc  --model gpt-4o-mini  --mcp <path-to-neuron-mcp>
 """
-import argparse, json, os, subprocess, sys, urllib.request, urllib.error, itertools
+import argparse, json, os, subprocess, sys, time, urllib.request, urllib.error, itertools
 
 # make unicode (emoji, em-dash, CJK) printable on a legacy Windows console
 for _s in (sys.stdout, sys.stderr):
@@ -30,15 +30,25 @@ SYSTEM = (
     "- BEFORE answering anything about the user or something they told you earlier, call "
     "`recall` or `recall_value` to retrieve it. The memory is the source of truth -- do "
     "not rely on chat history alone.\n"
-    "- If recall returns no memory, say you don't have it stored rather than guessing.\n"
+    "- Recall matches facts by overlapping WORDS, not meaning. Query with the concrete "
+    "nouns used when a fact was stored ('editor', 'laptop', 'keyboard', 'deploy region'), "
+    "not abstract categories ('dev environment', 'my setup'). For a multi-field request, "
+    "put all the specific nouns in one recall query (or call recall several times).\n"
+    "- If a recall returns nothing, retry once with more specific terms before giving up.\n"
+    "- When you store an update to an existing field, reuse that field's wording ('project "
+    "Beacon status is in progress', not 'Beacon is now unblocked') so later recalls find it.\n"
+    "- If recall still returns no memory, say you don't have it stored rather than guessing.\n"
     "- Keep answers concise."
 )
 
 # ---------------- MCP stdio client ----------------
 class Mcp:
-    def __init__(self, cmd, env):
+    def __init__(self, cmd, env, stderr_path=None):
+        # optionally capture the server's stderr (the synapse-timing log) to a file
+        self._errf = open(stderr_path, "w", encoding="utf-8") if stderr_path else None
         self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
+                                  stderr=(self._errf or subprocess.DEVNULL),
+                                  text=True, bufsize=1, env=env)
         self.ids = itertools.count(1)
 
     def _rpc(self, method, params=None, notify=False):
@@ -64,17 +74,22 @@ class Mcp:
         return self._rpc("tools/list")["result"]["tools"]
 
     def call(self, name, args):
+        t = time.perf_counter_ns()
         r = self._rpc("tools/call", {"name": name, "arguments": args})
+        rtt_us = (time.perf_counter_ns() - t) / 1000.0   # client-side round-trip
         content = r.get("result", {}).get("content", [])
         text = "".join(c.get("text", "") for c in content)
         is_err = r.get("result", {}).get("isError", False)
-        return text, is_err
+        return text, is_err, rtt_us
 
     def close(self):
         try:
             self.p.stdin.close(); self.p.terminate()
         except Exception:
             pass
+        if self._errf:
+            try: self._errf.flush(); self._errf.close()
+            except Exception: pass
 
 def to_openai_tools(mcp_tools):
     """MCP tool defs -> OpenAI function tools, with `scope` hidden (bound by the client)."""
@@ -104,19 +119,29 @@ class Chat:
     def __init__(self, mcp, scope, model, key, tools):
         self.mcp, self.scope, self.model, self.key, self.tools = mcp, scope, model, key, tools
         self.messages = [{"role": "system", "content": SYSTEM}]
-        self.tool_calls = []   # telemetry: (name, args, result)
+        self.tool_calls = []   # [{turn, tool, args, result, rtt_us}]
+        self.records = []      # per-turn: {turn, user, reply, llm_ms, calls:[...]}
+        self.turn_idx = 0
 
     def turn(self, user_text):
+        self.turn_idx += 1
         self.messages.append({"role": "user", "content": user_text})
+        llm_ms = 0.0
+        calls = []
         while True:
+            t = time.perf_counter()
             msg = openai_chat(self.messages, self.tools, self.model, self.key)
+            llm_ms += (time.perf_counter() - t) * 1000.0
             tcs = msg.get("tool_calls")
             am = {"role": "assistant", "content": msg.get("content")}
             if tcs:
                 am["tool_calls"] = tcs
             self.messages.append(am)
             if not tcs:
-                return msg.get("content") or ""
+                reply = msg.get("content") or ""
+                self.records.append({"turn": self.turn_idx, "user": user_text,
+                                     "reply": reply, "llm_ms": llm_ms, "calls": calls})
+                return reply
             for tc in tcs:
                 name = tc["function"]["name"]
                 try:
@@ -124,10 +149,12 @@ class Chat:
                 except json.JSONDecodeError:
                     args = {}
                 args["scope"] = self.scope   # client binds the scope
-                result, is_err = self.mcp.call(name, args)
-                self.tool_calls.append((name, args, result))
+                result, is_err, rtt_us = self.mcp.call(name, args)
                 shown = {k: v for k, v in args.items() if k != "scope"}
-                print(f"   \033[36m[tool] {name}({json.dumps(shown)}) -> {result!r}\033[0m")
+                rec = {"turn": self.turn_idx, "tool": name, "args": shown,
+                       "result": result, "rtt_us": rtt_us}
+                self.tool_calls.append(rec); calls.append(rec)
+                print(f"   \033[36m[tool] {name}({json.dumps(shown)}) -> {result[:80]!r}  ({rtt_us/1000:.2f} ms rtt)\033[0m")
                 self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
 
 def main():
@@ -192,8 +219,8 @@ def main():
 
     # telemetry summary
     tally = {}
-    for name, _, _ in chat.tool_calls:
-        tally[name] = tally.get(name, 0) + 1
+    for rec in chat.tool_calls:
+        tally[rec["tool"]] = tally.get(rec["tool"], 0) + 1
     print("---- session telemetry ----")
     print(f"total tool calls: {len(chat.tool_calls)}  by tool: {tally}")
     mcp.close()
