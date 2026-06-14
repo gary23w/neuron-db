@@ -7,6 +7,7 @@
 //! stats. Std-only; reuses the same hand-rolled JSON approach as the HTTP server.
 //! Feature-gated behind `mcp` (which enables `sqlite`).
 use std::io::{self, BufRead, Write};
+use std::time::Instant;
 use crate::db::NeuronDB;
 
 const PROTO_DEFAULT: &str = "2025-06-18";
@@ -112,46 +113,64 @@ r#"{"name":"stats","description":"Report how many facts a memory scope holds.","
 ];
 fn tools_array() -> String { format!("[{}]", TOOL_DEFS.join(",")) }
 
+/// emit a per-call "synapse" line to stderr (pure recall time, neurons fired through,
+/// neurons returned). Gated by NEURON_MCP_LOG=1 so normal runs stay quiet.
+fn synapse_log(tool: &str, scope: &str, db: &NeuronDB, returned: usize, us: u128) {
+    if std::env::var("NEURON_MCP_LOG").as_deref() == Ok("1") {
+        let store = db.stats(scope).facts;
+        eprintln!("synapse {{\"tool\":\"{}\",\"scope\":\"{}\",\"store\":{},\"returned\":{},\"us\":{}}}",
+                  tool, json_escape(scope), store, returned, us);
+    }
+}
+
 fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
     let name = json_field(body, "name").unwrap_or_default();
     let scope = json_field(body, "scope").unwrap_or_default();
     if scope.is_empty() { return tool_err(id, "missing required argument: scope"); }
     let scope = scope.chars().take(128).collect::<String>();
-    match name.as_str() {
+    let t0 = Instant::now();
+    let (resp, returned) = match name.as_str() {
         "recall" => {
             let q = json_field(body, "query").unwrap_or_default();
-            if q.is_empty() { return tool_err(id, "recall needs a query"); }
-            let k = json_num(body, "k").unwrap_or(5).clamp(1, 50) as usize;
-            let hits = db.recall_many(&scope, &q, k);
-            if hits.is_empty() { return tool_text(id, &format!("No memories found in {} for \"{}\".", scope, q)); }
-            let mut s = format!("Relevant memories in {} ({}):\n", scope, hits.len());
-            for h in &hits { s.push_str(&format!("- {}\n", h.fact)); }
-            tool_text(id, s.trim_end())
+            if q.is_empty() { (tool_err(id, "recall needs a query"), 0) }
+            else {
+                let k = json_num(body, "k").unwrap_or(5).clamp(1, 50) as usize;
+                let hits = db.recall_many(&scope, &q, k);
+                let n = hits.len();
+                if hits.is_empty() {
+                    (tool_text(id, &format!("No memories found in {} for \"{}\".", scope, q)), 0)
+                } else {
+                    let mut s = format!("Relevant memories in {} ({}):\n", scope, n);
+                    for h in &hits { s.push_str(&format!("- {}\n", h.fact)); }
+                    (tool_text(id, s.trim_end()), n)
+                }
+            }
         }
         "recall_value" => {
             let q = json_field(body, "query").unwrap_or_default();
-            if q.is_empty() { return tool_err(id, "recall_value needs a query"); }
-            match db.get(&scope, &q) { Some(v) => tool_text(id, &v), None => tool_text(id, "(no memory)") }
+            if q.is_empty() { (tool_err(id, "recall_value needs a query"), 0) }
+            else { match db.get(&scope, &q) { Some(v) => (tool_text(id, &v), 1), None => (tool_text(id, "(no memory)"), 0) } }
         }
         "remember" => {
             let mut texts = json_array(body, "facts");
             if texts.is_empty() { if let Some(t) = json_field(body, "text") { texts.push(t); } }
             texts.retain(|t| !t.trim().is_empty());
-            if texts.is_empty() { return tool_err(id, "remember needs 'text' or 'facts'"); }
-            let w = db.observe_many(&scope, &texts);
-            tool_text(id, &format!("Stored {} fact(s) in {}.", w, scope))
+            if texts.is_empty() { (tool_err(id, "remember needs 'text' or 'facts'"), 0) }
+            else { let w = db.observe_many(&scope, &texts); (tool_text(id, &format!("Stored {} fact(s) in {}.", w, scope)), w) }
         }
         "forget" => {
             let m = json_field(body, "match");
             let (f, r) = db.forget(&scope, m.as_deref());
-            tool_text(id, &format!("Forgot {} fact(s) from {}; {} remain.", f, scope, r))
+            (tool_text(id, &format!("Forgot {} fact(s) from {}; {} remain.", f, scope, r)), f)
         }
         "stats" => {
             let s = db.stats(&scope);
-            tool_text(id, &format!("{} holds {} fact(s) (max {}), {} turns.", scope, s.facts, s.max_facts, s.turns))
+            (tool_text(id, &format!("{} holds {} fact(s) (max {}), {} turns.", scope, s.facts, s.max_facts, s.turns)), s.facts)
         }
-        other => tool_err(id, &format!("unknown tool: {}", other)),
-    }
+        other => (tool_err(id, &format!("unknown tool: {}", other)), 0),
+    };
+    synapse_log(&name, &scope, db, returned, t0.elapsed().as_micros());
+    resp
 }
 
 /// Handle one JSON-RPC message; returns Some(response) for requests, None for notifications.

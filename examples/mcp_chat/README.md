@@ -31,6 +31,20 @@ The system prompt instructs it to `remember` durable facts the user states and t
 `recall` before answering questions about the user — and to abstain (not guess) when
 recall returns nothing.
 
+## Large simulation + synapse timing
+
+`app_sim.py` seeds a big per-user store (~700 facts) and runs a multi-turn session where
+the model recalls sizable blocks, measuring the **synapse** (pure neuron recall µs), MCP
+round-trip, and LLM latency separately:
+
+```sh
+export OPENAI_API_KEY=sk-...
+python app_sim.py        # seeds, runs ~11 turns, prints a synapse timing report
+```
+
+Result: recall fires in a median ~20–40 µs over 700 facts (~0.2 ms round-trip) vs ~1.8 s
+for the model — memory is ~tens-of-thousands× faster. Full write-up: `docs/SYNAPSE.md`.
+
 ## Measured (gpt-4o-mini, `--demo`)
 
 A 7-turn session (state facts → recall them → update a fact → recall again → ask an
