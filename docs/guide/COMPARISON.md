@@ -29,7 +29,7 @@ require chaining:
 
 The identical content is materialized two ways: as neuron-db facts (`project Aurora owner
 is Marisol`) and as a markdown document (`- Aurora: owner Marisol; status …`). Memory size
-is grown via filler (300 → 1,500 → 6,000 facts) while the question set stays fixed.
+is grown via filler (1,000 → 6,000 → 50,000 facts) while the question set stays fixed.
 
 ### Question set (fixed, 12 questions over 2 projects)
 
@@ -78,8 +78,9 @@ prompt/schema concern, not a neuron-db performance concern.
 
 > **Update — `recall_chain` removes the per-hop model cost.** The server now offers a
 > multi-hop tool: the LLM passes one `(start, path)` and the synapse walks the whole chain
-> server-side in microseconds (each hop a recall; a hop only advances if the relation
-> actually matched the recalled fact, so broken chains report where they stopped). That
+> server-side in microseconds (**~12.6 µs per hop, flat** — so a 50-hop chain is ~0.63 ms
+> total, still 2 model calls). Each hop is a recall; a hop only advances if the relation
+> actually matched the recalled fact, so broken chains report where they stopped. That
 > turns an N-hop answer from **N+1 model calls into 2** (one to form the path, one to phrase
 > the answer) — depth is now paid in microseconds, not model turns. "Infinite hops at no LLM
 > cost." See `MEMORY_HARNESS.md` §3a. The lexical sensitivity in §4 is likewise softened by
@@ -93,25 +94,30 @@ Same questions, two memory strategies, growing memory:
 
 | facts | neuron in-tokens | md in-tokens | md/neuron | neuron $/1k-q | md $/1k-q | neuron acc | md acc |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 300 | 1,183 | 2,656 | 2.2× | $0.20 | $0.40 | 75% | 83% |
-| 1,500 | 1,183 | 15,412 | 13× | $0.20 | $2.31 | 75% | 75% |
-| 6,000 | ~1,219 | 67,075 | **55×** | $0.21 | **$10.06** | —\* | —\* |
+| 1,000 | 1,122 | 9,898 | 8.8× | $0.19 | $1.49 | **100%** | 100% |
+| 6,000 | 1,122 | 67,067 | **59.8×** | $0.19 | **$10.06** | **100%** | 92% |
+| 50,000 | **1,122 (flat)** | ~446,863\* | **398×** | **$0.19** | n/a\* | **100%** | n/a\* |
 
-\* the 6,000-fact accuracy run was cut short by an API quota limit; token/cost figures are
-from a complete prior run. Accuracy was identical at 300 and 1,500 facts (recall is
-selective, so haystack size doesn't change it), so it is effectively size-independent.
+\* the 50,000-fact markdown-dump **cannot be run**: at ~446,863 tokens it is **3.5× over
+`gpt-4o-mini`'s 128k window**, so the model can't load it at all (token/cost/accuracy are
+n/a). neuron-db answers the same questions at 100% on 1,122 tokens. Accuracy is selective —
+haystack size doesn't change it — so it is effectively size-independent.
 
 **What this shows:**
 
-- **Context cost.** neuron-db is **flat (~1.2k tokens/turn)** no matter how much is
+- **Context cost.** neuron-db is **flat (~1,122 tokens/turn)** no matter how much is
   remembered — it injects only the recalled facts. The markdown-dump is **linear**: it
-  reinjects the *entire* memory every turn (2.7k → 15k → 67k tokens), **2–55× more** here
-  and unbounded. The synapse-timing work (`SYNAPSE.md`) and the needle benchmark
-  (`BENCHMARKS.md` §5.4) show neuron recall stays flat to 50,000 facts, so this gap only
-  widens.
-- **The context-window ceiling.** The markdown-dump *cannot* grow past the window: at
-  ~6,000 facts it already spends ~67k tokens; by ~12–15k facts it approaches a 128k limit
-  and breaks. neuron-db has no such ceiling (scale to millions, sharded per scope).
+  reinjects the *entire* memory every turn (9.9k → 67k → ~447k tokens), **8.8× more at 1k
+  growing to ~398× at 50k** here, and unbounded. The synapse-timing work (`SYNAPSE.md`) and
+  the needle benchmark (`BENCHMARKS.md` §5.4) show neuron recall stays flat to 50,000+
+  facts, so this gap only widens.
+- **The context-window wall.** The markdown-dump *cannot* grow past the window: at ~6,000
+  facts it already spends ~67k tokens; by ~12k facts it approaches the 128k limit and
+  breaks. At 50,000 facts the markdown memory is ~446,863 tokens — **3.5× the entire
+  `gpt-4o-mini` window** — so it literally cannot be loaded and the run is impossible.
+  neuron-db stays at **1,122 tokens with 100% accuracy** on that same store. This is the
+  headline result: **effectively unbounded total memory at a flat per-turn cost.** neuron-db
+  has no such ceiling (scale to millions, sharded per scope).
 - **Accuracy.** Comparable (~75%) **when the query vocabulary matches how facts are
   stored.** The markdown-dump is **more robust to phrasing** — the model reads everything,
   so it doesn't matter whether you say "owner" or "owned by". neuron-db is **lexical**: in
@@ -158,14 +164,16 @@ accuracy at a **flat, ~60× lower token cost**:
 
 | facts | neuron acc | md acc | neuron in-tok | md in-tok | neuron $/1k-q | md $/1k-q |
 |---:|---:|---:|---:|---:|---:|---:|
-| 300 | **100%** | 83% | 1,122 | 2,656 | $0.19 | $0.40 |
-| 1,500 | **100%** | 100% | 1,122 | 15,412 | $0.19 | $2.31 |
-| 6,000 | **100%** | 83% | **1,122 (flat)** | 67,067 | **$0.19** | $10.06 |
+| 1,000 | **100%** | 100% | 1,122 | 9,898 | $0.19 | $1.49 |
+| 6,000 | **100%** | 92% | 1,122 | 67,067 | $0.19 | $10.06 |
+| 50,000 | **100%** | n/a | **1,122 (flat)** | ~446,863 (overflows window) | **$0.19** | n/a |
 
 Per-hop accuracy is **100% at 1, 2, and 3 hops**, each in a constant **2.0 LLM calls** (the
-model forms a `recall_chain` path once; the synapse walks it server-side). The markdown-dump
-is not only pricier but occasionally *less* accurate (83%) — the model mis-reasons over the
-raw 67k-token dump, whereas `recall_chain` is deterministic.
+model forms a `recall_chain` path once; the synapse walks it server-side, ~12.6 µs/hop). The
+markdown-dump is not only pricier but degrades in accuracy at scale (92% at 6,000) — the
+model mis-reasons over the raw 67k-token dump (lost-in-the-middle), whereas `recall_chain` is
+deterministic. At 50,000 facts the markdown memory (~446,863 tokens) **overflows the model's
+window entirely** and cannot run, while neuron-db answers at 100% on a flat 1,122 tokens.
 
 ### Bugs found by the live bench and fixed on the fly
 
@@ -204,5 +212,7 @@ A measurement note: multi-word values (`"in design"`) isolate to their salient t
 ```sh
 cargo build --release --features mcp --bin neuron-mcp
 export OPENAI_API_KEY=sk-...
-python examples/mcp-chat/bench_compare.py --sizes 300,1500,6000
+python examples/mcp-chat/bench_compare.py --sizes 1000,6000 --chain
+# scale point (markdown can't load 50k facts, so skip it):
+python examples/mcp-chat/bench_compare.py --sizes 50000 --no-markdown --chain
 ```

@@ -28,16 +28,21 @@ into context every turn), `gpt-4o-mini`, a 700-fact user:
 
 | | neuron-db | markdown-dump |
 |---|---|---|
-| multi-hop accuracy (1/2/3 hops) | **100%** | 83–100% |
-| context cost / turn | **~1.1k tokens (flat)** | 2.7k → 67k (linear) |
+| multi-hop accuracy (1/2/3 hops) | **100%** | 92–100% (degrades) |
+| context cost / turn | **~1.1k tokens (flat)** | 9.9k → 447k (linear, overflows) |
 | cost at 6,000 facts | **$0.19 / 1k-q** | $10.06 / 1k-q |
 | model calls per answer, any depth | **2** | 1 |
-| needle recall to 50k facts | **100% · ~16 µs** | context-bound |
+| selective recall in 1,000,000 facts | **100% · ~6 µs** | context-bound |
 
 The markdown-dump reinjects the whole memory every turn and eventually overruns the window;
 neuron-db injects only what it recalled — flat cost, no ceiling, matching or beating
-accuracy. Full numbers: **[docs/guide/COMPARISON.md](docs/guide/COMPARISON.md)** · how fast recall fires:
-**[docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md)**.
+accuracy. Measured to **50,000 facts**, neuron-db answers at **100%** on ~1.1k tokens of
+context while the equivalent markdown memory (~447k tokens) can't fit a 128k window at all;
+selective recall stays **flat ~6 µs out to 1,000,000 facts** (38 MB), and appending a fact
+then recalling it costs ~10 µs/turn even at that size (incremental indexing). Full numbers:
+**[docs/guide/COMPARISON.md](docs/guide/COMPARISON.md)** · how fast recall fires:
+**[docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md)** · scale + raw metrics:
+**[docs/guide/BENCHMARKS.md](docs/guide/BENCHMARKS.md)**.
 
 **Mount it in one line.** `neuron-mcp` is a native std-only stdio MCP server — point any MCP
 client (Claude Desktop/Code, Cursor) at the binary and your model gets `remember` / `recall`

@@ -86,6 +86,21 @@ Two things stand out:
 - The **end-to-end cost is dominated entirely by the model.** Of a ~1.8 s turn, neuron-db
   is ~0.0002 s. Memory is not a latency concern; it is free relative to the LLM.
 
+### Optimized recall (current build)
+
+A recall hot-path optimization — `binary_search` over sorted stems plus precomputed token
+positions — made recall **~4× faster across the board**. With it, the synapse numbers above
+tighten further, and two scaling properties hold on the optimized core (measured via the
+Rust `db_bench` / `context_scale` examples):
+
+- **Selective recall is flat at ~6 µs** from **10,000 to 1,000,000 facts** — a distinctive
+  cue resolves in microseconds regardless of store size, sub-linear via the stem→fact
+  inverted index. Store growth does not cost recall.
+- **`recall_chain` multi-hop is ~12.6 µs per hop, flat** (down from ~39 µs before the
+  optimization). A 50-hop chain walks server-side in ~0.63 ms total — and is still just
+  **2 model calls** (one to form the path, one to phrase the answer). Depth is paid in
+  microseconds, not model turns.
+
 ---
 
 ## 3. What the LLM returns
@@ -158,8 +173,10 @@ the query doesn't share words with how facts were stored. Mitigations, in order:
 For an LLM using neuron-db as memory:
 
 - **Speed is a non-issue.** Recall fires in tens of microseconds and round-trips in
-  ~0.2 ms — ~40,000–86,000× faster than the model call, and flat as the store grows into
-  the tens of thousands of facts (`BENCHMARKS.md` §5.4).
+  ~0.2 ms — ~40,000–86,000× faster than the model call. On the optimized build (a ~4×
+  recall speedup), selective recall stays **flat at ~6 µs from 10,000 to 1,000,000 facts**,
+  and multi-hop `recall_chain` is **~12.6 µs per hop, flat** — so depth and store size are
+  both microsecond costs (`BENCHMARKS.md` §5.4).
 - **Accuracy is high on cued recall** — direct fields, multi-fact blocks, numeric values,
   updates (with field-matched phrasing), and abstention all worked.
 - **The limitation is lexical, not performance.** Abstract/paraphrased queries that don't
