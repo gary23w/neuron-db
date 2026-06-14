@@ -137,6 +137,39 @@ impl NeuronDB {
             _ => None,
         }
     }
+    /// Hybrid block recall: rank the scope's facts by SEMANTIC similarity to the query (via the
+    /// cached space) with a lexical-overlap boost, and return the top-k. Unlike plain recall this
+    /// engages the semantic layer for EVERY query (not only on a lexical miss), so a broad or
+    /// narrative question ("tell me about the O'Malley story") returns topically-coherent facts
+    /// instead of scattered keyword matches that bleed across unrelated documents.
+    #[cfg(feature = "semantic")]
+    pub fn recall_blended(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
+        let facts: Vec<(String, String)> = {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| (e.t.clone(), e.v.clone())).collect()
+        };
+        if facts.is_empty() { return Vec::new(); }
+        let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
+        let ranked = { let mut s = self.sem.lock().unwrap(); s.rank_cached(query, &texts) };
+        if ranked.is_empty() { return self.recall_many(nid, query, k); } // no semantic signal -> lexical
+        // lexical boost: fraction of the query's content words (>=3 chars) present in the fact
+        let qw: Vec<String> = query.to_lowercase().split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3).map(|w| w.to_string()).collect();
+        let mut scored: Vec<(f32, usize)> = ranked.iter().map(|&(i, cos)| {
+            let lt = texts[i].to_lowercase();
+            let boost = if qw.is_empty() { 0.0 } else {
+                qw.iter().filter(|w| lt.contains(w.as_str())).count() as f32 / qw.len() as f32
+            };
+            (cos + 0.25 * boost, i)
+        }).collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored.into_iter().map(|(score, i)| {
+            let (fact, value) = facts[i].clone();
+            Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false }
+        }).collect()
+    }
     pub fn recall_many(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
         let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);

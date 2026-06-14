@@ -136,6 +136,10 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if q.is_empty() { (tool_err(id, "recall needs a query"), 0) }
             else {
                 let k = json_num(body, "k").unwrap_or(5).clamp(1, 50) as usize;
+                // semantic-ranked block recall when available (topically coherent), else lexical
+                #[cfg(feature = "semantic")]
+                let hits = db.recall_blended(&scope, &q, k);
+                #[cfg(not(feature = "semantic"))]
                 let hits = db.recall_many(&scope, &q, k);
                 let n = hits.len();
                 if hits.is_empty() {
