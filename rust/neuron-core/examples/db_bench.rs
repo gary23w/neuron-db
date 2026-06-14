@@ -168,5 +168,25 @@ fn main() {
         rm(&path);
     }
 
+    // 8) recall_chain: server-side multi-hop. N hops = N microsecond recalls, ZERO model
+    //    round-trips -- this is "infinite hops at no LLM cost".
+    {
+        let path = tmp("chain");
+        let db = NeuronDB::open(&path, 1_000_000);
+        let depth = 50usize;
+        let facts: Vec<String> = (0..depth).map(|i| format!("node{} next is node{}", i, i + 1)).collect();
+        db.observe_many("c", &facts);
+        let _ = db.recall_chain("c", "node0", &["next".to_string()]); // warm
+        for &hops in &[1usize, 5, 10, 20, 50] {
+            let p: Vec<String> = std::iter::repeat("next".to_string()).take(hops).collect();
+            let iters = 2000;
+            let t = Instant::now();
+            for _ in 0..iters { std::hint::black_box(db.recall_chain("c", "node0", &p)); }
+            let us = t.elapsed().as_micros() as f64 / iters as f64;
+            println!("8) recall_chain {:>2} hops: {:>8.2} us total ({:.2} us/hop)", hops, us, us / hops as f64);
+        }
+        rm(&path);
+    }
+
     println!("\n== done ==");
 }

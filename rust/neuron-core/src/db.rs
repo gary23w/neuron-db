@@ -77,6 +77,27 @@ impl NeuronDB {
         inner.cache.get_mut(nid).unwrap().n.recall_many(query, k)
     }
     pub fn get(&self, nid: &str, query: &str) -> Option<String> { self.recall(nid, query).map(|h| h.value) }
+    /// Multi-hop traversal, server-side: start at `start` and follow each relation in `path`,
+    /// resolving "<current> <relation>" by recall at every step. The whole chain fires in
+    /// microseconds with no model round-trips, so hop count costs the LLM nothing. Returns the
+    /// final value (None if the chain breaks) and the trail of resolved values for transparency.
+    pub fn recall_chain(&self, nid: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>) {
+        let mut current = start.trim().to_string();
+        let mut trail = vec![current.clone()];
+        for rel in path {
+            let rel_root = crate::root_token(rel);
+            match self.recall(nid, &format!("{} {}", current, rel)) {
+                // only advance if the relation actually appears in the recalled fact; otherwise
+                // recall's best-effort (entity overlap alone) would let a broken chain continue.
+                Some(h) if h.fact.split_whitespace().any(|w| crate::root_token(w) == rel_root) => {
+                    current = h.value.clone();
+                    trail.push(h.value);
+                }
+                _ => return (None, trail),
+            }
+        }
+        (Some(current), trail)
+    }
     pub fn turn(&self, nid: &str, msg: &str) -> TurnOut {
         let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
