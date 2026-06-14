@@ -90,10 +90,15 @@ fn limitation_two_char_alpha_value_not_retrievable() {
 }
 
 #[test]
-fn limitation_single_content_word_fact_dropped() {
-    // a fact with only one content word and a stopword value is not stored at all
+fn single_content_word_fact_is_stored() {
+    // an explicit short fact (>=1 content word, >=3 words) IS stored now — right for an LLM
+    // memory where "remember: i am tired" should work. (The 2-char value "US" still isn't the
+    // retrievable value; see limitation_two_char_alpha_value_not_retrievable.)
     let db = NeuronDB::open(&tmp(), 500);
-    assert_eq!(db.observe("u", "my country is US"), 0); // "us" is a stopword, "country" lone content word
+    assert_eq!(db.observe("u", "my country is US"), 1);
+    assert_ne!(db.get("u", "what is my country?").as_deref(), Some("US"));
+    // bare junk is still rejected (no content word, or fewer than 3 words)
+    assert_eq!(db.observe("u", "ok thanks"), 0);
 }
 
 // ---------- value follows the relation (no leading structural word leaks) ----------
@@ -640,10 +645,17 @@ fn concurrent_writes_force_eviction_no_corruption() {
 // ---------- duplicate facts ----------
 
 #[test]
-fn duplicate_facts_both_stored() {
+fn duplicate_fact_deduped_on_single_observe() {
+    // re-stating an IDENTICAL fact via single observe() is a no-op (no pile-up of duplicates,
+    // which is what an LLM re-calling `remember` would otherwise create). Updates use different
+    // text and still both store (newest wins). Batch observe_many is not deduped (bulk ingest).
     let db = NeuronDB::open(&tmp(), 500);
     db.observe("u", "the gate code is 4471");
     db.observe("u", "the gate code is 4471");
-    assert_eq!(db.stats("u").facts, 2);
+    assert_eq!(db.stats("u").facts, 1);
     assert_eq!(db.get("u", "what is the gate code?").as_deref(), Some("4471"));
+    // a genuine update (different text) does store, and wins by recency
+    db.observe("u", "the gate code is 9920");
+    assert_eq!(db.stats("u").facts, 2);
+    assert_eq!(db.get("u", "what is the gate code?").as_deref(), Some("9920"));
 }

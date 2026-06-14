@@ -170,7 +170,9 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if texts.is_empty() { if let Some(t) = json_field(body, "text") { texts.push(t); } }
             texts.retain(|t| !t.trim().is_empty());
             if texts.is_empty() { (tool_err(id, "remember needs 'text' or 'facts'"), 0) }
-            else { let w = db.observe_many(&scope, &texts); (tool_text(id, &format!("Stored {} fact(s) in {}.", w, scope)), w) }
+            // observe() per fact (not observe_many) so the interactive remember path dedups
+            // exact restatements; bulk ingest still uses observe_many directly for speed.
+            else { let w: usize = texts.iter().map(|t| db.observe(&scope, t)).sum(); (tool_text(id, &format!("Stored {} fact(s) in {}.", w, scope)), w) }
         }
         "forget" => {
             let m = json_field(body, "match");
