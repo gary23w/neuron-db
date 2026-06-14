@@ -73,12 +73,19 @@ fn short_numeric_value_is_retrievable() {
 // ---------- KNOWN LIMITATIONS (asserted so regressions/changes are visible) ----------
 
 #[test]
-fn limitation_observe_drops_text_with_question_mark() {
-    // observe() rejects any text containing '?' (so questions aren't stored as facts).
-    // Side effect: a URL/value with a query string never lands.
+fn observe_keeps_declaratives_skips_questions() {
+    // observe() now decides per SENTENCE: question sentences are skipped, declaratives kept —
+    // so a paragraph of prose is captured, not dropped wholesale for containing a '?'.
     let db = NeuronDB::open(&tmp(), 500);
+    // a value with a '?' query string is one sentence containing '?', still dropped
     assert_eq!(db.observe("u", "the tracking url is site.com?utm_source=x"), 0);
     assert_eq!(db.get("u", "what is the tracking url?"), None);
+    // a pure question is dropped
+    assert_eq!(db.observe("u", "what is my plan?"), 0);
+    // but declaratives in a MIXED paragraph are captured (the question sentence is skipped)
+    let n = db.observe("u", "I drive a red truck. Do you like it? My garage holds two cars.");
+    assert!(n >= 2, "expected declaratives captured, got {n}");
+    assert!(db.get("u", "what is in my garage?").is_some());
 }
 
 #[test]
