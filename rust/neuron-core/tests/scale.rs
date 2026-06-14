@@ -70,8 +70,10 @@ fn selective_recall_correct_at_scale() {
 #[test]
 fn recall_correct_after_forget() {
     use neuron_core::db::NeuronDB;
-    let path = std::env::temp_dir().join(format!("ndb_scale_forget_{}.db", std::process::id()));
+    let uniq = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("ndb_scale_forget_{}_{}.db", std::process::id(), uniq));
     let p = path.to_string_lossy().into_owned();
+    for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{}", p, ext)); } // hermetic
     let db = NeuronDB::open(&p, 1_000_000);
     for i in 0..500 { db.observe("s", &format!("the {} key is k{}", code(i), i)); }
     assert_eq!(db.get("s", &format!("what is the {} key?", code(100))), Some("k100".to_string()));
