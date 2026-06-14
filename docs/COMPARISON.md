@@ -179,10 +179,22 @@ raw 67k-token dump, whereas `recall_chain` is deterministic.
    consistently to both paths.
 3. **Partial-bind fallback.** When a relation word matched nothing (query "owner", fact
    "owned"), primary recall fell back to entity-only overlap and picked an arbitrary fact by
-   recency. Fixed: when the relation doesn't fully bind, run the morphological scan and prefer
-   it if it matches more of the query. This lifted the misaligned-vocabulary 1-hop case from
-   50% → 100% (overall 17% → 50%; residual gap is true synonyms — `reports`↔`manager` — which
-   need an embedding tier).
+   recency. Fixed: when the relation doesn't fully bind, run the fuzzy scan and prefer it if
+   it matches more of the query.
+4. **Synonym bridging.** A curated synonym→canonical ontology, applied to *both* the query
+   and the stored facts (`reports to`↔`manager`, `lives in`↔`city`, `owned by`↔`owner`), with
+   the same subject-position tiebreak in the fallback path. See `MEMORY_HARNESS.md` §3b.
+
+### Synonym-misaligned result (the former gap)
+
+Storing facts with *different verbs than the queries use* ("is owned by", "lives in",
+"reports to") was the adversarial case that scored **17%**. After the morphological root,
+synonym ontology, and subject-position tiebreak in the fallback, it is **100%** at 1, 2, and
+3 hops via `recall_chain` — identical to the aligned case, at the same flat ~1.1k tokens and
+2 LLM calls. (Manual step-by-step chaining by the model is ~83% on the dependency question —
+the model sometimes mis-reads a `recall` block — which is why the harness steers multi-hop to
+`recall_chain`, where it is deterministic.) Open-vocabulary paraphrase beyond known synonyms
+would still want an embedding tier.
 
 A measurement note: multi-word values (`"in design"`) isolate to their salient token
 (`"design"`); the scorer credits that as correct.

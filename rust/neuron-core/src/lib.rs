@@ -56,10 +56,22 @@ fn stems<'a, I: IntoIterator<Item = &'a String>>(it: I) -> HashSet<String> { it.
 /// Public morphological root (owner/owned/owns -> own). Used by recall_chain to verify a
 /// hop's relation actually appears in the recalled fact before advancing.
 pub fn root_token(w: &str) -> String { root(w) }
-/// Whether two words name the same relation: same morphological root (owner/owned) OR same
-/// stem (dependency/depends -> "depend"). Lets recall_chain tolerate phrasing variants.
+/// Map a word to its canonical synonym if known (plural-tolerant): "reports"/"report" ->
+/// "manager", "lives" -> "city". Returns the word's own normalized form otherwise.
+fn canon(w: &str) -> String {
+    let wl = w1(w);
+    if let Some(c) = aliases().get(wl.as_str()) { return (*c).to_string(); }
+    let s = wl.trim_end_matches('s');
+    if s.len() >= 3 { if let Some(c) = aliases().get(s) { return (*c).to_string(); } }
+    wl
+}
+/// Whether two words name the same relation: same morphological root (owner/owned), same
+/// stem (dependency/depends), or the same canonical synonym (reports/manager, lives/city).
 pub fn rel_matches(a: &str, b: &str) -> bool {
-    root(a) == root(b) || stem1(&w1(a)) == stem1(&w1(b))
+    root(a) == root(b) || stem1(&w1(a)) == stem1(&w1(b)) || {
+        let (ca, cb) = (canon(a), canon(b));
+        root(&ca) == root(&cb) || stem1(&ca) == stem1(&cb)
+    }
 }
 /// Morphological root for the fuzzy fallback: strip a common suffix so owner/owned/owns
 /// normalize together. ONLY used on a primary recall miss, so it never affects the fast path.
@@ -78,12 +90,20 @@ fn stems_s(it: &HashSet<String>) -> HashSet<String> { it.iter().map(|w| stem1(w)
 fn aliases() -> &'static HashMap<&'static str, &'static str> {
     static M: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     M.get_or_init(|| {
-        // curated synonym -> canonical; expands a query's cue so paraphrases recall.
+        // curated synonym -> canonical; applied to BOTH the query cue and (in the fallback)
+        // the stored facts, so synonyms recall regardless of which side used which word.
         [("subscription","plan"),("tier","plan"),("membership","plan"),
-         ("boss","manager"),("supervisor","manager"),("report","manager"),("lead","manager"),
+         ("boss","manager"),("supervisor","manager"),("report","manager"),("reports","manager"),
+         ("manages","manager"),("manage","manager"),("lead","manager"),("reporting","manager"),
          ("role","job"),("occupation","job"),("profession","job"),("position","job"),("title","job"),
          ("ide","editor"),("tz","timezone"),("zone","timezone"),("mail","email"),
-         ("username","handle"),("user","handle"),("due","deadline"),("cell","phone"),("mobile","phone")]
+         ("username","handle"),("user","handle"),("due","deadline"),("cell","phone"),("mobile","phone"),
+         // residence -> city
+         ("lives","city"),("live","city"),("living","city"),("resides","city"),("reside","city"),
+         ("based","city"),("located","city"),("location","city"),("home","city"),("hometown","city"),
+         // ownership / dependency relation words
+         ("owned","owner"),("owns","owner"),("own","owner"),("dependency","depends"),
+         ("blocker","depends"),("requires","depends"),("needs","depends")]
         .iter().cloned().collect()
     })
 }
@@ -328,22 +348,31 @@ impl Neuron {
     fn root_scan(&self, query: &str, k: usize) -> Vec<Recall> {
         let qc = content(query);
         if qc.is_empty() { return Vec::new(); }
+        // canonicalize both sides through the synonym map so reports<->manager, lives<->city, etc. match
         let mut qroots: HashSet<String> = qc.iter().map(|w| root(w)).collect();
-        for w in &qc { if let Some(c) = aliases().get(w.as_str()) { qroots.insert(root(c)); } }
+        for w in &qc { qroots.insert(root(&canon(w))); }
         let want_num = qc.contains("many") || qc.contains("much") || qc.contains("number");
-        let mut scored: Vec<((i64,i64,i64), usize)> = Vec::new();
+        let in_q = |w: &str| qroots.contains(&root(w)) || qroots.contains(&root(&canon(w)));
+        let mut scored: Vec<((i64,i64,i64,i64), usize)> = Vec::new();
         for (i, e) in self.episodes.iter().enumerate() {
-            let er: HashSet<String> = e.raw.iter().map(|w| root(w)).collect();
+            let mut er: HashSet<String> = HashSet::new();
+            for w in &e.raw { er.insert(root(w)); er.insert(root(&canon(w))); }
             let ov = qroots.iter().filter(|r| er.contains(*r)).count() as i64;
             if ov < 1 { continue; }
             let spec = -(e.raw.len() as i64);
-            scored.push(((ov, spec, i as i64), i));
+            // subject-position tiebreak: prefer where the query's words appear earliest, so
+            // "Dana manager" picks "Dana reports to X" over "Y reports to Dana".
+            let first_pos = e.t.split_whitespace().enumerate()
+                .filter(|(_, w)| in_q(w)).map(|(p, _)| p as i64).min().unwrap_or(9999);
+            scored.push(((ov, spec, -first_pos, i as i64), i));
         }
         scored.sort_by(|a,b| b.0.cmp(&a.0));
         scored.truncate(k);
         scored.into_iter().map(|(sc, i)| {
             let e = &self.episodes[i];
-            let cue: HashSet<String> = e.raw.iter().filter(|w| qroots.contains(&root(w))).map(|w| stem1(w)).collect();
+            let cue: HashSet<String> = e.raw.iter()
+                .filter(|w| qroots.contains(&root(w)) || qroots.contains(&root(&canon(w))))
+                .map(|w| stem1(w)).collect();
             let (val, echo) = pick_value(e, &cue, want_num);
             let cov = sc.0 as f64 / qroots.len().max(1) as f64;
             Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.0 as usize, exact: 0, echo }
