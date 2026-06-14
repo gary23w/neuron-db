@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>neuron-db · 3D synapse — watch neurons fire</title>
+<meta name="description" content="Watch the real neuron-db Rust core fire in 3D: a knowledge graph of neurons, and a recall_chain pulse linking neuron to neuron across the graph — running entirely in your browser via WebAssembly.">
+<style>
+  :root{--bg:#05070d;--ink:#e9eef7;--mid:#aeb8cc;--dim:#7d869b;--accent:#5eead4;--accent2:#7c9cff;--pink:#f472b6;--amber:#f5b454;--line:#1c2435;--panel:rgba(12,16,24,.82);--mono:ui-monospace,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #cv{position:fixed;inset:0;display:block}
+  .ov{position:fixed;z-index:5}
+  /* top bar */
+  #top{top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:13px 18px;background:linear-gradient(180deg,rgba(5,7,13,.9),transparent)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:730;font-size:16px;letter-spacing:-.01em}
+  .brand b{color:var(--accent)}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+  .you{margin-left:auto;font:12px var(--mono);color:var(--dim)}
+  .you b{color:var(--accent2)}
+  .eng{font:11px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:3px 8px;background:rgba(10,14,22,.6)}
+  .eng b{color:var(--green,#34d399)}
+  /* left panel */
+  #panel{top:64px;left:18px;width:312px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(10px);padding:16px;box-shadow:0 24px 60px -30px #000}
+  #panel h1{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}
+  #panel .sub{font-size:12.5px;color:var(--mid);margin:0 0 14px;line-height:1.5}
+  #panel .lab{font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:14px 0 8px}
+  .chain-btn{display:block;width:100%;text-align:left;background:rgba(20,26,40,.7);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:9px 11px;margin-bottom:7px;cursor:pointer;font-size:13px;transition:.15s;line-height:1.35}
+  .chain-btn:hover{border-color:var(--accent2);transform:translateX(2px)}
+  .chain-btn .hops{font:10px var(--mono);color:var(--accent);float:right}
+  .qrow{display:flex;gap:7px;margin-top:4px}
+  #q{flex:1;min-width:0;background:#0a0e16;border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:9px 11px;font-size:13px;font-family:var(--mono)}
+  #q:focus{outline:none;border-color:var(--accent)}
+  #go{background:var(--accent);color:#04211c;border:none;border-radius:9px;padding:0 14px;font-weight:700;cursor:pointer}
+  #go:hover{background:#74f0dc}
+  .hint{font:11px var(--mono);color:var(--faint,#5b6478);margin-top:7px;line-height:1.5}
+  /* readout */
+  #out{bottom:18px;left:18px;width:312px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(10px);padding:14px 16px;box-shadow:0 24px 60px -30px #000}
+  #out .h{font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent2);margin-bottom:9px;display:flex;justify-content:space-between}
+  #out .h .t{color:var(--dim);text-transform:none;letter-spacing:0}
+  #trail{font:12.5px var(--mono);line-height:1.7;color:var(--mid);min-height:20px}
+  #trail .hop{color:var(--ink)}
+  #trail .arr{color:var(--accent)}
+  #trail .val{color:var(--accent);font-weight:700}
+  #ans{margin-top:9px;font-size:14px;color:var(--ink)}
+  #ans b{color:var(--accent)}
+  .miss{color:var(--pink)}
+  /* legend / help bottom-right */
+  #help{bottom:18px;right:18px;font:11.5px var(--mono);color:var(--dim);text-align:right;line-height:1.7;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 13px;backdrop-filter:blur(8px)}
+  #help b{color:var(--mid)}
+  #banner{top:64px;left:50%;transform:translateX(-50%);background:#2a1620;border:1px solid #5b2740;color:#ffd9e4;padding:9px 14px;border-radius:9px;font:12px var(--mono);display:none}
+  @media(max-width:760px){
+    #panel{position:fixed;top:auto;bottom:auto;left:8px;right:8px;width:auto;top:58px;padding:12px;max-height:42vh;overflow:auto}
+    #out{left:8px;right:8px;width:auto;bottom:8px}
+    #help{display:none}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="ov" id="top">
+  <span class="brand"><span class="dot"></span> neuron<b>-db</b> · 3D synapse</span>
+  <span class="eng" id="eng">engine: <b id="engName">loading…</b></span>
+  <span class="you">you joined as <b id="sid">anon</b></span>
+</div>
+
+<div class="ov" id="banner"></div>
+
+<div class="ov" id="panel">
+  <h1>Watch the synapse fire</h1>
+  <p class="sub">Every glowing node is a <b>neuron</b> (one stored fact). Fire a multi-hop question and watch the <b>recall_chain</b> pulse leap neuron&nbsp;→&nbsp;neuron across the graph — each hop a real microsecond recall, no extra cost. This is the live Rust core in your browser.</p>
+  <div class="lab">Link neurons — multi-hop chains</div>
+  <div id="presets"></div>
+  <div class="lab">Or fire your own</div>
+  <div class="qrow">
+    <input id="q" placeholder="Aurora > owner > manager > timezone" autocomplete="off" spellcheck="false">
+    <button id="go">fire</button>
+  </div>
+  <div class="hint">chain with <b style="color:var(--accent)">&gt;</b> (entity &gt; relation &gt; relation…), or ask a single question like “what city is Dana in?”. Drag to orbit · scroll to zoom.</div>
+</div>
+
+<div class="ov" id="out">
+  <div class="h"><span>synapse</span><span class="t" id="timing"></span></div>
+  <div id="trail">— pick a chain to fire —</div>
+  <div id="ans"></div>
+</div>
+
+<div class="ov" id="help">
+  <div><b>neurons</b> <span id="nNodes">0</span> · <b>synapses</b> <span id="nEdges">0</span></div>
+  <div>drag · scroll · auto-orbits</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+/* ============================ knowledge graph ============================ */
+// a small org graph: people in a management hierarchy + projects with owners and
+// dependencies. Facts use canonical field nouns so recall is exact; chains run deep.
+var FACTS = [
+  // executives / hierarchy (manager chains run several hops deep)
+  "Nadia role is chief executive",
+  "Nadia city is Halifax", "Nadia timezone is AST",
+  "Marisol manager is Nadia", "Marisol city is Lisbon", "Marisol timezone is WET", "Marisol team is platform",
+  "Dana manager is Nadia", "Dana city is Oslo", "Dana timezone is CET", "Dana team is data",
+  "Kenji manager is Marisol", "Kenji city is Osaka", "Kenji timezone is JST", "Kenji team is frontend",
+  "Amara manager is Marisol", "Amara city is Nairobi", "Amara timezone is EAT", "Amara team is design",
+  "Bjorn manager is Dana", "Bjorn city is Tallinn", "Bjorn timezone is EET", "Bjorn team is infrastructure",
+  "Priya manager is Dana", "Priya city is Austin", "Priya timezone is CST", "Priya team is growth",
+  "Mateo manager is Kenji", "Mateo city is Bogota", "Mateo timezone is COT", "Mateo team is mobile",
+  // projects (owners point into the people graph; dependencies chain project->project)
+  "project Aurora owner is Kenji", "project Aurora status is in review", "project Aurora deadline is December",
+  "project Aurora depends on project Beacon",
+  "project Beacon owner is Bjorn", "project Beacon status is blocked", "project Beacon deadline is January",
+  "project Beacon depends on project Citadel",
+  "project Citadel owner is Priya", "project Citadel status is shipped", "project Citadel deadline is March",
+  "project Delta owner is Amara", "project Delta status is in design", "project Delta deadline is May",
+  "project Delta depends on project Aurora"
+];
+// preset chains: each is start + ordered relations from the entity outward.
+var PRESETS = [
+  {label:"Timezone of the manager of the owner of Aurora", start:"Aurora", path:["owner","manager","timezone"]},
+  {label:"Manager of the manager of the owner of Aurora",  start:"Aurora", path:["owner","manager","manager"]},
+  {label:"City of the owner of project Delta",             start:"Delta",  path:["owner","city"]},
+  {label:"Status of the project Aurora depends on",        start:"Aurora", path:["depends on","status"]},
+  {label:"Owner of the project that Delta depends on",     start:"Delta",  path:["depends on","owner"]},
+];
+
+/* ============================ engine: wasm (real) + js mirror ============================ */
+var te=new TextEncoder(), td=new TextDecoder(), EX=null, ENGINE="mirror";
+function wbytes(s){var b=te.encode(s);var p=EX.alloc(b.length);new Uint8Array(EX.memory.buffer,p,b.length).set(b);return [p,b.length];}
+function wread(n){return td.decode(new Uint8Array(EX.memory.buffer,EX.answer_ptr(),n));}
+
+// real wasm calls
+function wAdd(t){var a=wbytes(t);return EX.syn_add(a[0],a[1]);}
+function wChain(start,path){var a=wbytes([start].concat(path).join("\n"));var n=EX.syn_chain(a[0],a[1]);var s=wread(n);
+  return s.split("\n").filter(function(x){return x;}).map(function(l){var p=l.split("\t");return {idx:+p[0],val:p[1]};});}
+function wFire(q){var a=wbytes(q);var n=EX.syn_fire(a[0],a[1]);var s=wread(n);var p=s.split("\t");
+  return {value:p[0], best:+p[1], cands:(p[2]||"").split(",").filter(function(x){return x.length;}).map(Number)};}
+
+// js mirror (used only if wasm can't load — keeps the visual alive everywhere)
+var MFACTS=[];
+function mNorm(w){return w.toLowerCase().replace(/[^a-z0-9]/g,"");}
+var SYN={owned:"owner",owns:"owner",reports:"manager",manages:"manager",boss:"manager",supervisor:"manager",
+  lives:"city",resides:"city",based:"city",home:"city",tz:"timezone",zone:"timezone",depends:"depends",dependency:"depends"};
+function mCanon(w){w=mNorm(w);return SYN[w]||w;}
+function mAdd(t){MFACTS.push(t);return MFACTS.length-1;}
+function mFire(q){ // find best fact: shares the entity (a capitalized token) + the relation word
+  var qt=q.split(/\s+/), ents=qt.filter(function(w){return /^[A-Z]/.test(w)&&w.length>2;}).map(mNorm);
+  var rels=qt.map(mCanon);
+  var best=-1,bestScore=0,cands=[];
+  for(var i=0;i<MFACTS.length;i++){var ft=MFACTS[i].split(/\s+/);var fl=ft.map(mNorm),fc=ft.map(mCanon);
+    var hasEnt=ents.some(function(e){return fl.indexOf(e)>=0;});
+    var hasRel=rels.some(function(r){return r.length>2&&fc.indexOf(r)>=0;});
+    if(hasEnt){cands.push(i);}
+    var sc=(hasEnt?1:0)+(hasRel?2:0); if(sc>bestScore){bestScore=sc;best=i;}
+  }
+  var val=""; if(best>=0){var ft=MFACTS[best].split(/\s+/);
+    for(var j=ft.length-1;j>=0;j--){if(/^[A-Z]/.test(ft[j])&&mNorm(ft[j])!=="project"){val=ft[j];break;}}
+    if(!val){var k=ft.indexOf("is"); if(k>=0&&ft[k+1]) val=ft.slice(k+1).join(" ");}
+  }
+  return {value:val,best:best,cands:cands};
+}
+function mChain(start,path){var cur=start,out=[];for(var i=0;i<path.length;i++){var r=mFire(cur+" "+path[i]);
+  if(r.best<0||!r.value)break; out.push({idx:r.best,val:r.value}); cur=r.value;} return out;}
+
+function fire(q){return ENGINE==="wasm"?wFire(q):mFire(q);}
+function chain(s,p){return ENGINE==="wasm"?wChain(s,p):mChain(s,p);}
+
+/* ============================ scene ============================ */
+var cv=document.getElementById("cv");
+var renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+var scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x05070d,0.018);
+var camera=new THREE.PerspectiveCamera(58,1,0.1,500); camera.position.set(0,2,46);
+var world=new THREE.Group(); scene.add(world);
+
+// glow sprite texture
+function glowTex(){var c=document.createElement("canvas");c.width=c.height=128;var x=c.getContext("2d");
+  var g=x.createRadialGradient(64,64,0,64,64,64);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.25,"rgba(255,255,255,.85)");
+  g.addColorStop(.5,"rgba(255,255,255,.32)");g.addColorStop(1,"rgba(255,255,255,0)");x.fillStyle=g;x.fillRect(0,0,128,128);
+  return new THREE.CanvasTexture(c);}
+var GLOW=glowTex();
+var COL={person:new THREE.Color(0x7c9cff),project:new THREE.Color(0x5eead4),other:new THREE.Color(0xf472b6)};
+var FLARE=new THREE.Color(0xffffff), CHAINCOL=new THREE.Color(0x5eead4);
+
+var nodes=[]; // {idx,text,subject,value,type,pos,spr,flare,base}
+function tokens(t){return t.split(/\s+/);}
+function isCap(w){return /^[A-Z]/.test(w);}
+function clip(w){return w.replace(/[^A-Za-z0-9]/g,"");}
+function subjectOf(t){var ft=tokens(t);for(var i=0;i<ft.length;i++){if(isCap(ft[i])&&clip(ft[i]).toLowerCase()!=="project")return clip(ft[i]);}return clip(ft[0]);}
+function valueOf(t){var ft=tokens(t);for(var i=ft.length-1;i>=0;i--){if(isCap(ft[i])&&clip(ft[i]).toLowerCase()!=="project")return clip(ft[i]);}var k=ft.indexOf("is");return k>=0?clip(ft[ft.length-1]):"";}
+
+// deterministic fibonacci-sphere positions for each unique entity, facts cluster around subject
+function buildGraph(){
+  var ents={}, order=[];
+  FACTS.forEach(function(t){var s=subjectOf(t);if(!(s in ents)){ents[s]=null;order.push(s);}});
+  var N=order.length, R=22, epos={};
+  order.forEach(function(s,i){var y=1-(i/(N-1))*2;var rad=Math.sqrt(1-y*y);var th=i*2.399963;
+    epos[s]=new THREE.Vector3(Math.cos(th)*rad*R, y*R*0.78, Math.sin(th)*rad*R);});
+  // per-subject jitter so multiple facts about one entity don't overlap
+  var cnt={};
+  FACTS.forEach(function(t,i){
+    var s=subjectOf(t), v=valueOf(t), c=cnt[s]=(cnt[s]||0); cnt[s]++;
+    var base=epos[s].clone();
+    var off=new THREE.Vector3(Math.sin(c*1.7)*3.0, Math.cos(c*2.3)*2.6+ (c-1)*0.6, Math.cos(c*1.1)*3.0);
+    var type = /^project/i.test(t) ? "project" : "person";
+    var spr=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:COL[type].clone(),blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:.92}));
+    spr.scale.setScalar(2.1); spr.position.copy(base).add(off); world.add(spr);
+    nodes.push({idx:i,text:t,subject:s,value:v,type:type,pos:spr.position,spr:spr,flare:0,base:COL[type].clone()});
+  });
+  // edges: value of A == subject of B  (the relation that a chain traverses)
+  var bySubj={}; nodes.forEach(function(n){(bySubj[n.subject.toLowerCase()]=bySubj[n.subject.toLowerCase()]||[]).push(n);});
+  var segPos=[], segCol=[], dim=new THREE.Color(0x223049);
+  var edgeCount=0;
+  nodes.forEach(function(a){ if(!a.value) return; var tg=bySubj[a.value.toLowerCase()]; if(!tg) return;
+    tg.forEach(function(b){ if(b===a) return;
+      segPos.push(a.pos.x,a.pos.y,a.pos.z,b.pos.x,b.pos.y,b.pos.z);
+      segCol.push(dim.r,dim.g,dim.b,dim.r,dim.g,dim.b); edgeCount++;
+    });
+  });
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute("position",new THREE.Float32BufferAttribute(segPos,3));
+  geo.setAttribute("color",new THREE.Float32BufferAttribute(segCol,3));
+  var edges=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,blending:THREE.AdditiveBlending,transparent:true,opacity:.5,depthWrite:false}));
+  world.add(edges);
+  document.getElementById("nNodes").textContent=nodes.length;
+  document.getElementById("nEdges").textContent=edgeCount;
+}
+
+/* ============================ pulses ============================ */
+var pulses=[]; // {from,to,t,dur,spr}
+function spawnPulse(from,to,delay){
+  var spr=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:CHAINCOL.clone(),blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:0}));
+  spr.scale.setScalar(3.4); world.add(spr);
+  pulses.push({from:from,to:to,t:-delay,dur:0.5,spr:spr});
+}
+function flare(node,amt){node.flare=Math.min(2.2, node.flare+amt);}
+
+/* ============================ fire orchestration ============================ */
+var trailEl=document.getElementById("trail"), ansEl=document.getElementById("ans"), timingEl=document.getElementById("timing");
+function fireChain(start, path){
+  // clear old pulses
+  pulses.forEach(function(p){world.remove(p.spr);}); pulses=[];
+  var t0=performance.now();
+  var hops=chain(start, path);
+  var us=Math.round((performance.now()-t0)*1000);
+  // build the visual: start node = first hop's owning subject if present, else just hops
+  var seq=[]; // node objects in order
+  hops.forEach(function(h){ var nd=nodes[h.idx]; if(nd) seq.push(nd); });
+  // animate pulses between consecutive hop neurons
+  var d=0;
+  for(var i=0;i<seq.length;i++){
+    (function(n,delay){ setTimeout(function(){flare(n,2.0);}, delay*1000); })(seq[i], d);
+    if(i<seq.length-1){ spawnPulse(seq[i].pos, seq[i+1].pos, d); }
+    d+=0.55;
+  }
+  // focus camera target on the path centroid
+  if(seq.length){ var c=new THREE.Vector3(); seq.forEach(function(n){c.add(n.pos);}); c.divideScalar(seq.length); camTarget.copy(c); }
+  // readout
+  if(!hops.length){ trailEl.innerHTML='<span class="miss">chain broke — no neuron matched.</span>'; ansEl.textContent=""; timingEl.textContent=""; return; }
+  var parts=['<span class="hop">'+esc(start)+'</span>'];
+  hops.forEach(function(h){parts.push('<span class="arr">→</span> <span class="val">'+esc(h.val)+'</span>');});
+  trailEl.innerHTML=parts.join(" ");
+  ansEl.innerHTML='answer: <b>'+esc(hops[hops.length-1].val)+'</b>';
+  timingEl.textContent=hops.length+' hops · synapse '+us+' µs';
+}
+function fireSingle(q){
+  pulses.forEach(function(p){world.remove(p.spr);}); pulses=[];
+  var t0=performance.now(); var r=fire(q); var us=Math.round((performance.now()-t0)*1000);
+  (r.cands||[]).forEach(function(i){ if(nodes[i]) flare(nodes[i],0.7); });
+  if(r.best>=0&&nodes[r.best]){ flare(nodes[r.best],2.0); camTarget.copy(nodes[r.best].pos); }
+  if(r.best<0||!r.value){ trailEl.innerHTML='<span class="miss">no memory.</span>'; ansEl.textContent=""; timingEl.textContent=(r.cands?r.cands.length:0)+' fired'; return; }
+  trailEl.innerHTML='fired <b>'+(r.cands?r.cands.length:1)+'</b> candidate neuron(s), one won';
+  ansEl.innerHTML='answer: <b>'+esc(r.value)+'</b>';
+  timingEl.textContent='recall '+us+' µs';
+}
+function esc(s){return (s+"").replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+
+function runQuery(text){
+  text=text.trim(); if(!text) return;
+  if(text.indexOf(">")>=0){ var parts=text.split(">").map(function(x){return x.trim();}).filter(function(x){return x;});
+    fireChain(parts[0], parts.slice(1)); }
+  else fireSingle(text);
+}
+
+/* ============================ controls + loop ============================ */
+var camTarget=new THREE.Vector3(0,0,0), camDist=46, rotX=0.1, rotY=0, dragging=false, lastX,lastY, autoSpin=true;
+cv.addEventListener("pointerdown",function(e){dragging=true;autoSpin=false;lastX=e.clientX;lastY=e.clientY;});
+window.addEventListener("pointerup",function(){dragging=false;});
+window.addEventListener("pointermove",function(e){if(!dragging)return;rotY+=(e.clientX-lastX)*0.005;rotX+=(e.clientY-lastY)*0.005;rotX=Math.max(-1.2,Math.min(1.2,rotX));lastX=e.clientX;lastY=e.clientY;});
+cv.addEventListener("wheel",function(e){e.preventDefault();camDist=Math.max(16,Math.min(120,camDist+e.deltaY*0.04));},{passive:false});
+function resize(){var w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+window.addEventListener("resize",resize);
+
+var tgt=new THREE.Vector3();
+function loop(){
+  requestAnimationFrame(loop);
+  if(autoSpin) rotY+=0.0016;
+  // camera orbit around moving target
+  tgt.lerp(camTarget,0.05);
+  var cx=Math.sin(rotY)*Math.cos(rotX)*camDist, cy=Math.sin(rotX)*camDist, cz=Math.cos(rotY)*Math.cos(rotX)*camDist;
+  camera.position.set(tgt.x+cx,tgt.y+cy,tgt.z+cz); camera.lookAt(tgt);
+  // node flares decay
+  for(var i=0;i<nodes.length;i++){var n=nodes[i];
+    if(n.flare>0){ n.flare*=0.94; var k=Math.min(1,n.flare);
+      n.spr.material.color.copy(n.base).lerp(FLARE,k); n.spr.scale.setScalar(2.1+k*3.2); n.spr.material.opacity=0.9+k*0.1;
+      if(n.flare<0.02){n.flare=0;n.spr.material.color.copy(n.base);n.spr.scale.setScalar(2.1);n.spr.material.opacity=.92;}
+    }
+  }
+  // pulses travel
+  for(var p=pulses.length-1;p>=0;p--){var pu=pulses[p];pu.t+=0.016;
+    if(pu.t<0){pu.spr.material.opacity=0;continue;}
+    var u=pu.t/pu.dur;
+    if(u>=1){world.remove(pu.spr);pulses.splice(p,1);continue;}
+    pu.spr.position.lerpVectors(pu.from,pu.to,u);
+    pu.spr.material.opacity=Math.sin(u*Math.PI); // fade in/out
+  }
+  renderer.render(scene,camera);
+}
+
+/* ============================ boot ============================ */
+var sid="anon-"+Math.random().toString(36).slice(2,8);
+document.getElementById("sid").textContent=sid;
+(function presets(){var box=document.getElementById("presets");
+  PRESETS.forEach(function(p){var b=document.createElement("button");b.className="chain-btn";
+    b.innerHTML='<span class="hops">'+p.path.length+' hops</span>'+p.label;
+    b.onclick=function(){document.getElementById("q").value=p.start+" > "+p.path.join(" > ");fireChain(p.start,p.path);};
+    box.appendChild(b);});
+})();
+document.getElementById("go").onclick=function(){runQuery(document.getElementById("q").value);};
+document.getElementById("q").addEventListener("keydown",function(e){if(e.key==="Enter")runQuery(this.value);});
+
+function seed(){
+  if(ENGINE==="wasm"){ EX.syn_reset(); FACTS.forEach(function(t){wAdd(t);}); }
+  else { MFACTS=[]; FACTS.forEach(mAdd); }
+  buildGraph(); resize(); loop();
+}
+function setEngine(name){ENGINE=name;var e=document.getElementById("engName");e.textContent=(name==="wasm"?"Rust core (WebAssembly)":"JS mirror");e.style.color=name==="wasm"?"#34d399":"#f5b454";}
+function bootMirror(msg){ setEngine("mirror"); if(msg){var b=document.getElementById("banner");b.style.display="block";b.textContent=msg;} seed(); }
+
+(function boot(){
+  if(location.protocol==="file:"){ bootMirror("served from file:// — using the JS mirror. Host over http(s) to run the real Rust core."); return; }
+  var url="neuron_core.wasm";
+  var ok=function(res){EX=res.instance.exports; if(!EX.syn_reset){bootMirror("wasm core is an older build — using the JS mirror.");return;} setEngine("wasm"); seed();};
+  var fail=function(){bootMirror("");};
+  if(WebAssembly.instantiateStreaming){
+    WebAssembly.instantiateStreaming(fetch(url),{}).then(ok).catch(function(){
+      fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(fail);
+    });
+  } else {
+    fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(fail);
+  }
+})();
+</script>
+</body>
+</html>
