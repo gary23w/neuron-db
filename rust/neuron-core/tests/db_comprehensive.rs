@@ -114,6 +114,35 @@ fn fallback_does_not_fabricate_on_true_miss() {
     assert_eq!(db.get("u", "what is the weather in Tokyo?"), None);
 }
 
+// ---------- synonym bridging (true synonyms, not just morphology) ----------
+
+#[test]
+fn synonym_recall_reports_to_manager() {
+    let db = NeuronDB::open(&tmp(), 500);
+    db.observe("u", "Dana reports to Marisol");
+    assert_eq!(db.get("u", "who is Dana's manager?").as_deref(), Some("Marisol"));
+}
+
+#[test]
+fn synonym_recall_lives_in_city() {
+    let db = NeuronDB::open(&tmp(), 500);
+    db.observe("u", "Dana lives in Lisbon");
+    assert_eq!(db.get("u", "what city is Dana in?").as_deref(), Some("Lisbon"));
+}
+
+#[test]
+fn synonym_chain_owner_then_manager() {
+    // facts stored with synonyms (owned by / reports to); query uses owner / manager
+    let db = NeuronDB::open(&tmp(), 5000);
+    db.observe_many("o", &[
+        "project Aurora is owned by Dana".into(),
+        "Dana reports to Marisol".into(),
+        "Marisol works in the JST timezone".into(),
+    ]);
+    let (v, _) = db.recall_chain("o", "Aurora", &["owner".into(), "manager".into()]);
+    assert_eq!(v.as_deref(), Some("Marisol"));
+}
+
 // ---------- recall_chain: server-side multi-hop ----------
 
 #[test]
