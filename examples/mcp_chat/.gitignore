@@ -1,0 +1,4 @@
+﻿neuron-mcp.exe
+*.db
+*.db-*
+__pycache__/
