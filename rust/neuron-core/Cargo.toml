@@ -19,6 +19,7 @@ default = []
 sqlite = ["dep:rusqlite"]
 secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:getrandom"]
 server = ["sqlite"]
+mcp = ["sqlite"]
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
@@ -37,6 +38,11 @@ required-features = ["sqlite"]
 name = "serve"
 path = "src/serve_bin.rs"
 required-features = ["server"]
+
+[[bin]]
+name = "neuron-mcp"
+path = "src/mcp_bin.rs"
+required-features = ["mcp"]
 
 [profile.release]
 opt-level = 3
@@ -68,4 +74,8 @@ required-features = ["sqlite"]
 
 [[example]]
 name = "scenario_bench"
+required-features = ["sqlite"]
+
+[[example]]
+name = "llm_memory_bench"
 required-features = ["sqlite"]
