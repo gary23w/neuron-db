@@ -24,7 +24,7 @@ fn llm_reply(memory: &str, message: &str) -> String {
 }
 
 fn main() {
-    let db = NeuronDB::open("/tmp/neuron_chatbot.db", 500);
+    let db = NeuronDB::open(&std::env::temp_dir().join("neuron_chatbot.db").to_string_lossy(), 500);
     let user = "user:alice";
 
     // A conversation. Statements get remembered; questions recall + inject.

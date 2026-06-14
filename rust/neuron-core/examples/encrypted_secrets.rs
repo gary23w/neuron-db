@@ -4,7 +4,7 @@
 use neuron_core::secure::SecureNeuronDB;
 
 fn main() {
-    let v = SecureNeuronDB::open("/tmp/neuron_vault.db");
+    let v = SecureNeuronDB::open(&std::env::temp_dir().join("neuron_vault.db").to_string_lossy());
     v.put("alice", "alice-secret", "wifi password", "hunter2").unwrap();
     v.put("alice", "alice-secret", "api token", "tok_abc123").unwrap();
 

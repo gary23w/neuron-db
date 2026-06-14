@@ -84,3 +84,13 @@ required-features = ["sqlite"]
 [[example]]
 name = "book_ingest"
 required-features = ["sqlite", "semantic"]
+
+# no-LLM, no-model examples — the default std-only store as a plain app database
+[[example]]
+name = "plastic_adaptive"
+
+[[example]]
+name = "plastic_bench"
+
+[[example]]
+name = "sharded_scale"

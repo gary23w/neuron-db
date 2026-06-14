@@ -3,7 +3,7 @@
 use neuron_core::db::NeuronDB;
 
 fn main() {
-    let db = NeuronDB::open("/tmp/neuron_quickstart.db", 500);
+    let db = NeuronDB::open(&std::env::temp_dir().join("neuron_quickstart.db").to_string_lossy(), 500);
 
     // INSERT: state facts in plain language
     db.observe("user:42", "the plan is pro");
