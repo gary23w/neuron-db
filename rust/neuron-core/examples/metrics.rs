@@ -114,6 +114,16 @@ fn main() {
         for _ in 0..iters { std::hint::black_box(s.embed("the thing that connects me to the internet")); }
         let emb = t.elapsed().as_nanos() as f64 / iters as f64 / 1000.0;
         println!("\n[semantic] train {:.0} words/s ;  embed a query: {:.2} us ;  vocab {} words", words as f64 / train_s, emb, s.vocab());
+
+        // fuzzy recall over N facts: uncached rank() re-embeds every fact each query; rank_cached()
+        // caches fact vectors (lazy) -> warm call pays the embed once, later calls are dot-only.
+        let cands: Vec<String> = (0..5_000).map(|i| format!("memo {} on the wifi router and the internet network connection", i)).collect();
+        let q = "the wifi router and the internet network";
+        let t = Instant::now(); std::hint::black_box(s.rank(q, &cands)); let uncached = t.elapsed().as_micros();
+        let t = Instant::now(); std::hint::black_box(s.rank_cached(q, &cands)); let warm = t.elapsed().as_micros();
+        let t = Instant::now(); std::hint::black_box(s.rank_cached(q, &cands)); let cached = t.elapsed().as_micros();
+        println!("[semantic] fuzzy rank over {} facts: rank() {} us | rank_cached warm {} us | rank_cached CACHED {} us  (cache {} facts, {:.1} MB)",
+                 cands.len(), uncached, warm, cached, s.cached_embeddings(), s.bytes() as f64 / 1e6);
     }
 
     println!("\n== done ==");

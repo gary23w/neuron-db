@@ -123,8 +123,8 @@ impl NeuronDB {
         };
         if facts.is_empty() { return None; }
         let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
-        let s = self.sem.lock().unwrap();
-        let ranked = s.rank(query, &texts);
+        let mut s = self.sem.lock().unwrap();
+        let ranked = s.rank_cached(query, &texts);
         match ranked.first() {
             Some(&(i, score)) if score >= self.sem_threshold => {
                 let (fact, value) = facts[i].clone();

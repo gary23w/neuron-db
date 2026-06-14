@@ -80,6 +80,7 @@ pub struct SemanticSpace {
     ctx: HashMap<String, Vec<f32>>,   // word -> dense context vector
     cnt: HashMap<String, u32>,        // word -> occurrence count (for picking top words)
     tokens_seen: u64,
+    emb_cache: HashMap<String, (Vec<f32>, u64)>, // fact text -> (unit embedding, tokens_seen when cached)
 }
 impl Default for SemanticSpace { fn default() -> Self { Self::new() } }
 
@@ -94,13 +95,19 @@ pub struct Projection {
 }
 
 impl SemanticSpace {
-    pub fn new() -> Self { SemanticSpace { ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0 } }
+    pub fn new() -> Self { SemanticSpace { ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new() } }
     pub fn vocab(&self) -> usize { self.ctx.len() }
     pub fn count(&self, w: &str) -> u32 { self.cnt.get(w).copied().unwrap_or(0) }
     pub fn tokens(&self) -> u64 { self.tokens_seen }
     pub fn dim(&self) -> usize { DIM }
-    /// approximate resident bytes of the space (DIM f32 per word + key)
-    pub fn bytes(&self) -> usize { self.ctx.iter().map(|(k, _)| k.len() + DIM * 4 + 48).sum() }
+    /// approximate resident bytes of the space (DIM f32 per word + key), incl. the fact
+    /// embedding cache (DIM f32 per cached fact) that powers fast fuzzy recall.
+    pub fn bytes(&self) -> usize {
+        self.ctx.iter().map(|(k, _)| k.len() + DIM * 4 + 48).sum::<usize>()
+            + self.emb_cache.iter().map(|(k, _)| k.len() + DIM * 4 + 48).sum::<usize>()
+    }
+    /// number of fact embeddings currently cached (the fast-fuzzy-recall index).
+    pub fn cached_embeddings(&self) -> usize { self.emb_cache.len() }
 
     /// add the sparse random index vector of `word` into `target`
     fn add_index(target: &mut [f32], word: &str) {
@@ -224,6 +231,38 @@ impl SemanticSpace {
         let mut scored: Vec<(usize, f32)> = cands.iter().enumerate().filter_map(|(i, c)| {
             self.embed(c).map(|e| (i, e.iter().zip(&q).map(|(p, r)| p * r).sum::<f32>()))
         }).collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored
+    }
+
+    /// Precompute + cache the embedding of a fact (call at ingest). This is what turns the
+    /// fuzzy-recall path from O(N) re-embeddings per query into O(N) dot products: each fact's
+    /// vector is computed once and scored thereafter. Cheap at write time; ~DIM*4 bytes/fact.
+    pub fn cache_embed(&mut self, text: &str) {
+        if let Some(e) = self.embed(text) { self.emb_cache.insert(text.to_string(), (e, self.tokens_seen)); }
+    }
+    /// Drop the embedding cache (e.g. after a large retrain) so it rebuilds against the new space.
+    pub fn clear_cache(&mut self) { self.emb_cache.clear(); }
+
+    /// Rank candidates by cosine to the query, reusing cached candidate embeddings. The query is
+    /// always embedded fresh; a candidate is re-embedded only if it's uncached or the space has
+    /// more than doubled since it was cached (a cheap drift bound). After warm-up this is O(N)
+    /// dot products instead of O(N) embeddings — the "fast fuzzy recall" path.
+    pub fn rank_cached(&mut self, query: &str, cands: &[String]) -> Vec<(usize, f32)> {
+        let q = match self.embed(query) { Some(q) => q, None => return Vec::new() };
+        let ts = self.tokens_seen;
+        // pass 1 (&mut): ensure every candidate has a fresh-enough cached embedding
+        for c in cands {
+            let need = match self.emb_cache.get(c) { Some((_, ep)) => ts >= ep.saturating_mul(2), None => true };
+            if need { if let Some(e) = self.embed(c) { self.emb_cache.insert(c.clone(), (e, ts)); } }
+        }
+        // pass 2 (read-only): score against the cached vectors, no per-fact re-embed, no clones
+        let mut scored: Vec<(usize, f32)> = Vec::with_capacity(cands.len());
+        for (i, c) in cands.iter().enumerate() {
+            if let Some((e, _)) = self.emb_cache.get(c) {
+                scored.push((i, e.iter().zip(&q).map(|(p, r)| p * r).sum::<f32>()));
+            }
+        }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored
     }
