@@ -90,13 +90,20 @@ harness routes to that document's scope. Then "summarize the first blog" → doc
 the document OUT of the context window (a stub) so the answer comes from recall, not free-ridden
 context. (Implemented in the two-pane lab; uses `recall_blended` for semantic-ranked blocks.)
 
-### Recall ranking — engage the semantic layer for every query
+### Recall ranking — neurons first, semantic as an opt-in signal
 
-Plain block recall ranks by lexical cue-overlap, which ties on `ov=1` keyword hits and returns
-a jumble for broad/narrative queries. `recall_blended` (feature `semantic`) ranks the scope's
-facts by semantic cosine (cached embeddings) with a lexical boost, so "tell me about X" returns
-the facts that are actually *about* X. Build the MCP server with `--features "mcp semantic"` to
-get it; it falls back to lexical otherwise.
+The default `recall` ranks by **associative cue-overlap** over the stem index — the neuron
+substrate, which is what actually builds structure. For broad/narrative queries that tie on
+`ov=1` keyword hits, two stronger paths exist:
+
+- **`recall_associative`** — spreading activation over the shared-entity graph. Seeds on cue
+  matches, then flows activation along *discriminative* shared stems (rare entities link strongly,
+  hub words are ignored), so it surfaces facts that share no words with the query but are wired to
+  a match. This is association, not ranking — it traverses structure the raw text never stated.
+- **`recall(rank:"semantic")`** — `recall_blended` (feature `semantic`): semantic cosine over
+  cached int8 embeddings plus a lexical boost. Honest framing: the semantic space is a *ranking
+  signal*, not memory — it creates no neurons and can be dropped without losing a fact. It earns
+  its keep only as an opt-in tie-smoother for broad recall; it is no longer the silent default.
 
 ### Scoping
 
@@ -161,16 +168,21 @@ or Python runtime, no separate HTTP process — one binary the client launches.
 
 | tool | input | returns (MCP text content) |
 |---|---|---|
-| `recall` | `{scope, query, k?}` | top-k facts as a memory block to inject (`- fact` lines), or "No memories found" |
+| `recall` | `{scope, query, k?, rank?}` | top-k facts as a memory block (`- fact` lines). Default rank is lexical/associative; `rank:"semantic"` opts into semantic ranking for broad/narrative queries |
+| `recall_associative` | `{scope, query, k?, hops?}` | spreading-activation block: facts that match the cue (`*`) plus associates reached by shared-entity links (`-`) — surfaces connections keyword recall misses |
 | `recall_value` | `{scope, query}` | the single isolated value for a direct question, or `(no memory)` |
 | `recall_chain` | `{scope, start, path:[…]}` | walks a chain of relations server-side and returns the final value + trail (see §3a) |
 | `remember` | `{scope, text}` or `{scope, facts:[…]}` | `Stored N fact(s)` |
+| `note` | `{scope, kind, text, key?}` | mint a TYPED neuron — `kind` ∈ fact/user/instruction/stance/var; returns the stored address (so a save can't be hallucinated). `var` requires `key` and upserts |
+| `recall_var` | `{scope, key}` | the exact value of a named variable set via `note(kind=var)`, or `(unset: key)` |
 | `forget` | `{scope, match?}` | `Forgot N; M remain` (omit `match` to clear the scope) |
 | `stats` | `{scope}` | `scope holds N fact(s) …` |
 
-> Note: `recall_value` is the single-best cue recall (no separate exact-key/KV tier yet),
-> and writes append rather than supersede (consolidation is still future work). Everything
-> else maps onto the `NeuronDB` methods covered in `BENCHMARKS.md`.
+> Typed neurons are scope conventions, not a schema change: `note` routes to `{scope}::instr`,
+> `{scope}::stance`, `{scope}::var` sub-scopes. A harness re-injects the instruction/stance
+> neurons into the system prompt each turn (the "instructions batch"), so a standing rule survives
+> the rolling window. `note(kind=var)` returns the stored address, which is what stops a model from
+> claiming a save it never performed. Everything maps onto `NeuronDB` methods (see `BENCHMARKS.md`).
 
 ### 3a. recall_chain — infinite hops at no model cost
 
@@ -274,8 +286,9 @@ server (`/v1/{scope}/recall_many`, `/observe`, `/forget`) — see `API.md`.
 
 ## 5. Status
 
-Implemented today: the `neuron-mcp` stdio server with `recall` / `recall_value` /
-`recall_chain` / `remember` / `forget` / `stats`, backed by the durable `NeuronDB`, with
+Implemented today: the `neuron-mcp` stdio server with `recall` / `recall_associative` /
+`recall_value` / `recall_chain` / `remember` / `note` (typed neurons) / `recall_var` / `forget` /
+`stats`, backed by the durable `NeuronDB`, with
 unit + end-to-end tests. Verified live (gpt-4o-mini, `COMPARISON.md` §6): **100% accuracy at
 1, 2, and 3 hops, on both aligned and synonym-misaligned vocabulary**, each in a constant 2
 LLM calls at any depth, flat ~1.1k tokens at any memory size. The needle benchmark holds at
