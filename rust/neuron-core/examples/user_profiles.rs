@@ -3,7 +3,7 @@
 use neuron_core::db::NeuronDB;
 
 fn main() {
-    let db = NeuronDB::open("/tmp/neuron_profiles.db", 500);
+    let db = NeuronDB::open(&std::env::temp_dir().join("neuron_profiles.db").to_string_lossy(), 500);
 
     // onboard a few users
     for (uid, plan, theme) in [("u:1", "pro", "dark"), ("u:2", "free", "light"), ("u:3", "enterprise", "dark")] {
