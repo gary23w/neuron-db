@@ -94,13 +94,12 @@ impl PlasticNeuron {
         let mut bk = (-1i64, -1f64, -1i64, -1i64, -1i64, -1i64);
         for i in order {
             let e = &self.base.episodes[i];
-            let es: HashSet<&String> = e.s.iter().collect();
-            let mut ov = cue.iter().filter(|c| es.contains(c)).count();
+            let mut ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
             let es_pet = e.s.iter().any(|s| pets().contains(s));
             if ov < 1 && pet_query && es_pet { ov = 1; }
             if ov < 1 { continue; }
             if e.s.iter().any(|s| rel_s().contains(s) && !cue.contains(s)) && !(pet_query && es_pet) { continue; }
-            if cue.iter().any(|s| rel_s().contains(s) && !es.contains(s)) && !(pet_query && es_pet) { continue; }
+            if cue.iter().any(|s| rel_s().contains(s) && e.s.binary_search(s).is_err()) && !(pet_query && es_pet) { continue; }
             let exact_ov = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
             let selfp = if name_query && e.self_flag { 1 } else { 0 };
             let subj = if cue.contains(&e.head) { 1 } else { 0 };
@@ -110,10 +109,9 @@ impl PlasticNeuron {
         }
         let bi = best?;
         let (fact, sset, id) = { let e = &self.base.episodes[bi]; (e.t.clone(), e.s.clone(), e.id) };
-        let bes: HashSet<&String> = sset.iter().collect();
-        let mut cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
+        let mut cov = cue.iter().filter(|c| sset.binary_search(c).is_ok()).count() as f64 / (cue.len().max(1) as f64);
         if pet_query && sset.iter().any(|s| pets().contains(s)) { cov = 1.0; }
-        let overlap = cue.iter().filter(|c| bes.contains(c)).count();
+        let overlap = cue.iter().filter(|c| sset.binary_search(c).is_ok()).count();
         let exact_n = bk.0 as usize;
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(&self.base.episodes[bi], &cue, want_num);
@@ -153,13 +151,12 @@ impl PlasticNeuron {
         let mut act: HashMap<i64, f64> = HashMap::new();
         for i in order {
             let e = &self.base.episodes[i];
-            let es: HashSet<&String> = e.s.iter().collect();
-            let mut ov = cue.iter().filter(|c| es.contains(c)).count();
+            let mut ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
             let es_pet = e.s.iter().any(|s| pets().contains(s));
             if ov < 1 && pet_query && es_pet { ov = 1; }
             if ov < 1 { continue; }
             if e.s.iter().any(|s| rel_s().contains(s) && !cue.contains(s)) && !(pet_query && es_pet) { continue; }
-            if cue.iter().any(|s| rel_s().contains(s) && !es.contains(s)) && !(pet_query && es_pet) { continue; }
+            if cue.iter().any(|s| rel_s().contains(s) && e.s.binary_search(s).is_err()) && !(pet_query && es_pet) { continue; }
             if e.id < 0 { continue; }
             *act.entry(e.id).or_insert(0.0) += ov as f64 * self.eff(e.id).max(1e-6);
         }
