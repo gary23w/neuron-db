@@ -213,6 +213,15 @@ fn pick_value(ep: &Episode, cue: &HashSet<String>, want_num: bool) -> (String, b
     let mut pool: Vec<String> = ep.c.iter().filter(|c| { let st = stem1(&c.to_lowercase()); !cue.contains(&st) }).cloned().collect();
     if want_num { let nums: Vec<String> = pool.iter().filter(|c| is_num(c)).cloned().collect(); if !nums.is_empty() { pool = nums; } }
     if pool.is_empty() { return (expand_value(&ep.t, &ep.v), true); }
+    // The value normally follows the subject+relation. If any candidate sits AFTER the cue,
+    // prefer those — this stops a leading structural word ("project Graus status is paused"
+    // -> "project") from beating a short value. Numeric recall keeps proximity instead, since
+    // a number can precede its cue ("12 engineers" -> "how many engineers").
+    if !want_num && !cue_pos.is_empty() && pool.len() > 1 {
+        let last_cue = *cue_pos.iter().max().unwrap();
+        let after: Vec<String> = pool.iter().filter(|c| pos_of(c) > last_cue).cloned().collect();
+        if !after.is_empty() { pool = after; }
+    }
     if want_num && !cue_pos.is_empty() && pool.len() > 1 {
         pool.sort_by_key(|c| { let p = pos_of(c) as i64; cue_pos.iter().map(|&q| { let q=q as i64; ((p-q).abs(), if p<=q {0} else {1}) }).min().unwrap() });
     }
