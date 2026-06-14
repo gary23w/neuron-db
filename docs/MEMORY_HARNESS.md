@@ -124,14 +124,50 @@ or Python runtime, no separate HTTP process — one binary the client launches.
 |---|---|---|
 | `recall` | `{scope, query, k?}` | top-k facts as a memory block to inject (`- fact` lines), or "No memories found" |
 | `recall_value` | `{scope, query}` | the single isolated value for a direct question, or `(no memory)` |
+| `recall_chain` | `{scope, start, path:[…]}` | walks a chain of relations server-side and returns the final value + trail (see §3a) |
 | `remember` | `{scope, text}` or `{scope, facts:[…]}` | `Stored N fact(s)` |
 | `forget` | `{scope, match?}` | `Forgot N; M remain` (omit `match` to clear the scope) |
 | `stats` | `{scope}` | `scope holds N fact(s) …` |
 
-> Note vs. the original four-tool sketch: `recall_value` is the single-best cue recall (the
-> Rust core has no separate exact-key/KV tier yet — tier-1 in §2 is future work), and writes
-> append rather than supersede (supersede/dedup is the consolidation work in §2). Everything
-> else maps directly onto the `NeuronDB` methods covered in `BENCHMARKS.md`.
+> Note: `recall_value` is the single-best cue recall (no separate exact-key/KV tier yet),
+> and writes append rather than supersede (consolidation is still future work). Everything
+> else maps onto the `NeuronDB` methods covered in `BENCHMARKS.md`.
+
+### 3a. recall_chain — infinite hops at no model cost
+
+A relational question ("the timezone of the manager of the owner of Aurora") normally
+forces the LLM to chain recalls: recall the owner, *wait for it*, recall that person's
+manager, *wait*, recall their timezone — **N hops = N+1 model round-trips.** That's the only
+real cost of depth (see `COMPARISON.md` §3).
+
+`recall_chain` collapses that into **one** model call. The LLM passes the starting entity
+and the ordered relations; the server walks the chain itself, resolving each
+`"<current> <relation>"` by recall in microseconds, and returns the final value plus the
+trail:
+
+```
+recall_chain(scope, start="Aurora", path=["owner","manager","timezone"])
+  -> "WET  (via Aurora -> Marisol -> Dana -> WET)"
+```
+
+Each hop is one neuron recall (tens of µs, see `SYNAPSE.md`) with **zero model round-trips
+between hops**, so a 3-hop or a 30-hop answer costs the LLM the same: one call to form the
+path, one to phrase the answer. A hop only advances if the relation actually appears in the
+recalled fact (root-normalized), so a broken chain reports where it stopped instead of
+silently drifting. This is "infinite hops at no LLM cost": depth is paid in microseconds by
+the synapse, not in model turns.
+
+### 3b. Fuzzy recall — fixing the lexical gap
+
+Recall is lexical: a query whose words don't stem-match the stored facts can miss
+(`COMPARISON.md` §4, where misaligned vocabulary scored 17%). neuron-db now adds a
+**morphological fallback** that runs *only when exact-stem recall finds nothing*: it
+normalizes both the query and the stored facts to a suffix-stripped root
+(`owner`/`owned`/`owns` → `own`) and also expands synonyms via the alias map, then scans for
+a root match. Because it triggers only on a miss, the warm fast path keeps its flat
+microsecond cost; the fallback just widens recall's reach so phrasing variance no longer
+silently drops a fact. (A full embedding-based semantic tier remains the option for true
+paraphrase beyond morphology.)
 
 ### Conventions the LLM follows
 
@@ -193,9 +229,11 @@ server (`/v1/{scope}/recall_many`, `/observe`, `/forget`) — see `API.md`.
 ## 5. Status
 
 Implemented today: the `neuron-mcp` stdio server with `recall` / `recall_value` /
-`remember` / `forget` / `stats`, backed by the durable `NeuronDB`, with unit + end-to-end
-tests. Verified: needle-in-haystack recall stays 100% and ~16 µs flat up to 50k stored facts
-(`BENCHMARKS.md` §5.4), so the injected block is small and accurate regardless of store size.
+`recall_chain` / `remember` / `forget` / `stats`, backed by the durable `NeuronDB`, with
+unit + end-to-end tests. Verified: needle-in-haystack recall stays 100% and ~16 µs flat up
+to 50k stored facts (`BENCHMARKS.md` §5.4); multi-hop via `recall_chain` (§3a) costs the LLM
+a constant 2 calls at any depth; and the morphological fallback (§3b) closes the worst of
+the lexical gap (the `owner`/`owned`/`owns` class) with no change to the warm fast path.
 
-Future work (from §2): the exact-key KV tier, supersede-on-write, dedup/consolidation
-(`/sleep`), and the optional semantic fallback.
+Future work: a true embedding-based semantic tier (for paraphrase beyond morphology), an
+exact-key KV tier, and supersede-on-write / dedup consolidation (`/sleep`).

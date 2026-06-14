@@ -76,6 +76,15 @@ can form the next query) plus **one neuron recall** (microseconds — see `SYNAP
 In other words: chaining doesn't cost memory, it costs model turns. Minimizing hops is a
 prompt/schema concern, not a neuron-db performance concern.
 
+> **Update — `recall_chain` removes the per-hop model cost.** The server now offers a
+> multi-hop tool: the LLM passes one `(start, path)` and the synapse walks the whole chain
+> server-side in microseconds (each hop a recall; a hop only advances if the relation
+> actually matched the recalled fact, so broken chains report where they stopped). That
+> turns an N-hop answer from **N+1 model calls into 2** (one to form the path, one to phrase
+> the answer) — depth is now paid in microseconds, not model turns. "Infinite hops at no LLM
+> cost." See `MEMORY_HARNESS.md` §3a. The lexical sensitivity in §4 is likewise softened by
+> a morphological recall fallback (`owner`/`owned`/`owns` unify) — `MEMORY_HARNESS.md` §3b.
+
 ---
 
 ## 4. neuron-db vs markdown-dump

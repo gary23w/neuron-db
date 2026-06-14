@@ -104,9 +104,10 @@ fn tool_err(id: &str, text: &str) -> String {
 // tools/list payload. Each entry MUST be a single line: MCP stdio framing is one JSON
 // message per physical line, so a response may never contain a raw newline. Names use
 // snake_case for broad client compatibility.
-const TOOL_DEFS: [&str; 5] = [
+const TOOL_DEFS: [&str; 6] = [
 r#"{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc - isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}}"#,
+r#"{"name":"recall_chain","description":"Answer a multi-hop question in ONE call by walking a chain of relations server-side (no extra round-trips, any depth). Give the starting entity and the ordered relations to follow. Example: start 'Aurora', path ['owner','manager','timezone'] returns the timezone of the manager of the owner of Aurora.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"start":{"type":"string","description":"the entity to start from, e.g. 'Aurora' or 'Marisol'"},"path":{"type":"array","items":{"type":"string"},"description":"ordered relations to follow, e.g. ['owner','manager','timezone']"}},"required":["scope","start","path"]}}"#,
 r#"{"name":"remember","description":"Store durable facts the user stated, in plain language ('my plan is pro'). Call this AFTER a turn for anything worth remembering. Accepts one fact via 'text' or many via 'facts'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"text":{"type":"string","description":"a single fact to store"},"facts":{"type":"array","items":{"type":"string"},"description":"several facts to store at once"}},"required":["scope"]}}"#,
 r#"{"name":"forget","description":"Delete remembered facts. With 'match', removes facts containing that substring; without it, clears the whole scope.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"match":{"type":"string","description":"substring to match (omit to clear the entire scope)"}},"required":["scope"]}}"#,
 r#"{"name":"stats","description":"Report how many facts a memory scope holds.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"}},"required":["scope"]}}"#,
@@ -150,6 +151,19 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             let q = json_field(body, "query").unwrap_or_default();
             if q.is_empty() { (tool_err(id, "recall_value needs a query"), 0) }
             else { match db.get(&scope, &q) { Some(v) => (tool_text(id, &v), 1), None => (tool_text(id, "(no memory)"), 0) } }
+        }
+        "recall_chain" => {
+            let start = json_field(body, "start").unwrap_or_default();
+            let path = json_array(body, "path");
+            if start.is_empty() || path.is_empty() { (tool_err(id, "recall_chain needs 'start' and 'path'"), 0) }
+            else {
+                let (val, trail) = db.recall_chain(&scope, &start, &path);
+                let text = match val {
+                    Some(v) => format!("{}  (via {})", v, trail.join(" -> ")),
+                    None => format!("chain broke after: {}", trail.join(" -> ")),
+                };
+                (tool_text(id, &text), path.len())
+            }
         }
         "remember" => {
             let mut texts = json_array(body, "facts");
@@ -235,9 +249,17 @@ mod tests {
     fn tools_list_has_all_tools() {
         let db = NeuronDB::open(&tmp(), 500);
         let r = handle_line(&db, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").unwrap();
-        for t in ["recall","recall_value","remember","forget","stats"] {
+        for t in ["recall","recall_value","recall_chain","remember","forget","stats"] {
             assert!(r.contains(&format!("\"name\":\"{}\"", t)), "missing tool {}", t);
         }
+    }
+
+    #[test]
+    fn recall_chain_walks_relations() {
+        let db = NeuronDB::open(&tmp(), 5000);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"remember\",\"arguments\":{\"scope\":\"o\",\"facts\":[\"project Aurora owner is Marisol\",\"Marisol manager is Dana\",\"Dana timezone is WET\"]}}}");
+        let r = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_chain\",\"arguments\":{\"scope\":\"o\",\"start\":\"Aurora\",\"path\":[\"owner\",\"manager\",\"timezone\"]}}}").unwrap();
+        assert!(r.contains("WET"), "3-hop chain should resolve to WET, got {}", r);
     }
 
     #[test]
