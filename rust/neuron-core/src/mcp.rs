@@ -100,14 +100,17 @@ fn tool_err(id: &str, text: &str) -> String {
     result(id, &format!("{{\"content\":[{{\"type\":\"text\",\"text\":\"{}\"}}],\"isError\":true}}", json_escape(text)))
 }
 
-// tools/list payload (the tool array). Names use snake_case for broad client compatibility.
-const TOOLS: &str = r#"[
-{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc — isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"}},"required":["scope","query"]}},
-{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}},
-{"name":"remember","description":"Store durable facts the user stated, in plain language ('my plan is pro'). Call this AFTER a turn for anything worth remembering. Accepts one fact via 'text' or many via 'facts'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"text":{"type":"string","description":"a single fact to store"},"facts":{"type":"array","items":{"type":"string"},"description":"several facts to store at once"}},"required":["scope"]}},
-{"name":"forget","description":"Delete remembered facts. With 'match', removes facts containing that substring; without it, clears the whole scope.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"match":{"type":"string","description":"substring to match (omit to clear the entire scope)"}},"required":["scope"]}},
-{"name":"stats","description":"Report how many facts a memory scope holds.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"}},"required":["scope"]}}
-]"#;
+// tools/list payload. Each entry MUST be a single line: MCP stdio framing is one JSON
+// message per physical line, so a response may never contain a raw newline. Names use
+// snake_case for broad client compatibility.
+const TOOL_DEFS: [&str; 5] = [
+r#"{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc - isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"}},"required":["scope","query"]}}"#,
+r#"{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}}"#,
+r#"{"name":"remember","description":"Store durable facts the user stated, in plain language ('my plan is pro'). Call this AFTER a turn for anything worth remembering. Accepts one fact via 'text' or many via 'facts'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"text":{"type":"string","description":"a single fact to store"},"facts":{"type":"array","items":{"type":"string"},"description":"several facts to store at once"}},"required":["scope"]}}"#,
+r#"{"name":"forget","description":"Delete remembered facts. With 'match', removes facts containing that substring; without it, clears the whole scope.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"match":{"type":"string","description":"substring to match (omit to clear the entire scope)"}},"required":["scope"]}}"#,
+r#"{"name":"stats","description":"Report how many facts a memory scope holds.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"}},"required":["scope"]}}"#,
+];
+fn tools_array() -> String { format!("[{}]", TOOL_DEFS.join(",")) }
 
 fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
     let name = json_field(body, "name").unwrap_or_default();
@@ -162,7 +165,7 @@ fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
                 "{{\"protocolVersion\":\"{}\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"neuron-db\",\"version\":\"0.1.0\"}}}}",
                 json_escape(&pv))))
         }
-        "tools/list" => Some(result(&id, &format!("{{\"tools\":{}}}", TOOLS))),
+        "tools/list" => Some(result(&id, &format!("{{\"tools\":{}}}", tools_array()))),
         "tools/call" => Some(tool_call(db, &id, line)),
         "ping" => Some(result(&id, "{}")),
         m if m.starts_with("notifications/") => None,
@@ -215,6 +218,24 @@ mod tests {
         let r = handle_line(&db, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").unwrap();
         for t in ["recall","recall_value","remember","forget","stats"] {
             assert!(r.contains(&format!("\"name\":\"{}\"", t)), "missing tool {}", t);
+        }
+    }
+
+    #[test]
+    fn every_response_is_a_single_line() {
+        // MCP stdio framing: a response must never contain a raw newline (it breaks
+        // line-reading clients). Memory-block text with newlines must be json-escaped.
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"remember\",\"arguments\":{\"scope\":\"u\",\"facts\":[\"my plan is pro\",\"my city is Halifax\"]}}}");
+        let cases = [
+            "{\"id\":1,\"method\":\"initialize\"}",
+            "{\"id\":2,\"method\":\"tools/list\"}",
+            "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"recall\",\"arguments\":{\"scope\":\"u\",\"query\":\"plan and city\",\"k\":5}}}",
+        ];
+        for c in cases {
+            let r = handle_line(&db, c).unwrap();
+            assert!(!r.contains('\n'), "response had a raw newline: {}", r);
+            assert!(!r.contains('\r'), "response had a raw CR: {}", r);
         }
     }
 
