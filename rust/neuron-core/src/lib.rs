@@ -424,6 +424,7 @@ pub mod turn;
 #[cfg(feature = "secure")] pub mod secure;
 #[cfg(feature = "server")] pub mod server;
 #[cfg(feature = "mcp")] pub mod mcp;
+#[cfg(feature = "semantic")] pub mod semantic;
 pub mod cortex;
 pub mod bpe;
 pub mod model;
