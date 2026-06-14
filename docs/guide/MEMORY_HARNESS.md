@@ -59,6 +59,24 @@ literally the gary-neuron-chat architecture with the human user replaced by an L
 Two model-facing operations matter: **retrieve before generating** and **write after**.
 Everything else is policy around those two.
 
+### Passive encoding — don't let the model gate storage
+
+The biggest failure mode in practice is leaving *what to store* up to the model. Given only a
+`remember` tool, an LLM stores erratically — it skips most of what the user says and will tell
+you "I can only store what you explicitly ask me to remember." A real hippocampus doesn't work
+that way: it encodes the experience stream automatically, and salience/consolidation curate
+later.
+
+So the **harness — not the model — should auto-observe each user message** into the scope
+before the model runs. `observe` already drops questions and dedups exact restatements, so it
+captures statements and skips noise on its own. The model's job then narrows to **retrieval**
+(`recall` / `recall_chain`), with `remember` reserved for emphasis or a model-authored
+conclusion. Storage becomes continuous and reliable regardless of whether the model "bothers."
+
+This is the recommended wiring; the reference implementation is `examples/mcp-chat/`, and a
+two-pane live harness (chat on the left, the neuron-db memory firing on the right, with passive
+auto-capture on by default) demonstrates it end to end.
+
 ### Scoping
 
 One neuron per memory scope, addressed by id: `user:{id}`, `agent:{id}`, `session:{id}`,
