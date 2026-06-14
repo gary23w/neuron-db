@@ -130,7 +130,7 @@ fn surprise(w: &str, i: usize) -> f64 {
 }
 
 #[derive(Clone, Debug)]
-pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64 }
+pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32 }
 
 #[derive(Clone, Debug)]
 pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
@@ -195,7 +195,7 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
         }
     }
     let mut raw: Vec<String> = cont.into_iter().collect(); raw.sort(); raw.dedup();
-    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, pos, head, self_flag: self_name, id: -1 })
+    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, pos, head, self_flag: self_name, id: -1, strength: 1.0 })
 }
 fn w_clone(raw: &str) -> String { clip(raw) }
 
@@ -470,18 +470,55 @@ impl Neuron {
         }).collect()
     }
 
-    /// minimal persistence: "<flag>\t<text>" per line; index rebuilt on load
+    /// Persistence: "<flag>\t<text>\t<strength>" per line; index rebuilt on load. Strength carries
+    /// accumulated salience (e.g. a stance that intensified with repetition) durably across restarts.
     pub fn dump(&self) -> String {
-        self.episodes.iter().map(|e| format!("{}\t{}", if e.self_flag {1} else {0}, e.t)).collect::<Vec<_>>().join("\n")
+        self.episodes.iter()
+            .map(|e| format!("{}\t{}\t{}", if e.self_flag {1} else {0}, e.t, e.strength))
+            .collect::<Vec<_>>().join("\n")
     }
     pub fn load(blob: &str, max_facts: usize) -> Self {
         let mut n = Neuron::new(max_facts);
         for line in blob.split('\n') {
             if line.is_empty() { continue; }
-            let text = line.splitn(2,'\t').nth(1).unwrap_or("");
-            if let Some(e) = encode(text, None) { n.episodes.push(e); }
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() < 2 { continue; }
+            // trailing field is the strength iff it parses as f32 (>=3 fields); else legacy "flag\ttext"
+            // (and any tabs that were inside the text are preserved by the fallback join).
+            let (text, strength) = if parts.len() >= 3 {
+                match parts[parts.len() - 1].parse::<f32>() {
+                    Ok(s) => (parts[1..parts.len() - 1].join("\t"), s),
+                    Err(_) => (parts[1..].join("\t"), 1.0),
+                }
+            } else { (parts[1].to_string(), 1.0) };
+            if let Some(mut e) = encode(&text, None) { e.strength = strength; n.episodes.push(e); }
         }
         n
+    }
+
+    /// Reinforce the stance whose text begins "<topic>:" (case-insensitive), accumulating its
+    /// strength by `bump`; if none exists, create it at strength `bump`. This is how a disposition
+    /// intensifies with repeated exposure — and because strength is persisted (see dump), the
+    /// accumulation survives restarts. Returns (new_strength, created_new).
+    pub fn reinforce_prefix(&mut self, topic: &str, feeling: &str, bump: f32) -> (f32, bool) {
+        let pat = format!("{}:", topic.trim().to_lowercase());
+        let stored = format!("{}: {}", topic.trim(), feeling.trim());
+        match self.episodes.iter().position(|e| e.t.to_lowercase().starts_with(&pat)) {
+            Some(i) => {
+                let s = self.episodes[i].strength + bump;
+                if let Some(mut e) = encode(&stored, None) {   // refine wording, carry strength
+                    self.episodes.remove(i); self.index = None; // removal shifts indices -> rebuild
+                    e.strength = s; self.episodes.push(e);
+                } else {
+                    self.episodes[i].strength = s;             // unencodable refinement: just intensify
+                }
+                (s, false)
+            }
+            None => match encode(&stored, None) {
+                Some(mut e) => { e.strength = bump; self.episodes.push(e); (bump, true) }
+                None => (0.0, true),
+            },
+        }
     }
     pub fn fact_count(&self) -> usize { self.episodes.len() }
     pub(crate) fn invalidate_index(&mut self) { self.index = None; }

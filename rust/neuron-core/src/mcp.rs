@@ -111,7 +111,7 @@ r#"{"name":"recall_associative","description":"Spreading-activation recall: star
 r#"{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_chain","description":"Answer a multi-hop question in ONE call by walking a chain of relations server-side (no extra round-trips, any depth). Give the starting entity and the ordered relations to follow. Example: start 'Aurora', path ['owner','manager','timezone'] returns the timezone of the manager of the owner of Aurora.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"start":{"type":"string","description":"the entity to start from, e.g. 'Aurora' or 'Marisol'"},"path":{"type":"array","items":{"type":"string"},"description":"ordered relations to follow, e.g. ['owner','manager','timezone']"}},"required":["scope","start","path"]}}"#,
 r#"{"name":"remember","description":"Store durable facts the user stated, in plain language ('my plan is pro'). Call this AFTER a turn for anything worth remembering. Accepts one fact via 'text' or many via 'facts'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"text":{"type":"string","description":"a single fact to store"},"facts":{"type":"array","items":{"type":"string"},"description":"several facts to store at once"}},"required":["scope"]}}"#,
-r#"{"name":"note","description":"Mint a TYPED memory neuron. Use when you or the user want to save/keep/set something durably. kind: 'fact' (a world fact), 'user' (a durable fact about the user), 'instruction' (a standing rule you must keep following - re-shown to you every turn), 'stance' (your OWN opinion/feeling/side-thought about a topic), 'var' (a NAMED value to read back later with recall_var; REQUIRES key). You have NOT saved anything until this returns a stored address.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"kind":{"type":"string","enum":["fact","user","instruction","stance","var"],"description":"the neuron type"},"text":{"type":"string","description":"the content to store (for kind=var, the value)"},"key":{"type":"string","description":"required for kind=var: the variable name"}},"required":["scope","kind","text"]}}"#,
+r#"{"name":"note","description":"Mint a TYPED memory neuron. Use when you or the user want to save/keep/set something durably. kind: 'fact' (a world fact), 'user' (a durable fact about the user), 'instruction' (a standing rule you must keep following - re-shown to you every turn), 'stance' (your OWN opinion/feeling/side-thought about a topic - pass key=<topic> so re-noting the same topic INTENSIFIES the stance over time instead of duplicating it), 'var' (a NAMED value to read back later with recall_var; REQUIRES key). You have NOT saved anything until this returns a stored address.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"kind":{"type":"string","enum":["fact","user","instruction","stance","var"],"description":"the neuron type"},"text":{"type":"string","description":"the content to store (for kind=var, the value; for kind=stance, the feeling)"},"key":{"type":"string","description":"required for kind=var (the variable name); for kind=stance, the topic to accumulate intensity on"}},"required":["scope","kind","text"]}}"#,
 r#"{"name":"recall_var","description":"Read back the exact value of a named variable set earlier with note(kind=var). Returns the value or '(unset: key)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"key":{"type":"string","description":"the variable name"}},"required":["scope","key"]}}"#,
 r#"{"name":"forget","description":"Delete remembered facts. With 'match', removes facts containing that substring; without it, clears the whole scope.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"match":{"type":"string","description":"substring to match (omit to clear the entire scope)"}},"required":["scope"]}}"#,
 r#"{"name":"stats","description":"Report how many facts a memory scope holds.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"}},"required":["scope"]}}"#,
@@ -195,6 +195,20 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                         let w = db.observe(&sub, &format!("{} is {}", key, text.trim()));
                         if w > 0 { (tool_text(id, &format!("Set var [{}] {} = {}", sub, key, text.trim())), 1) }
                         else { (tool_text(id, &format!("(not stored: '{}' value too short to encode)", key)), 0) }
+                    }
+                } else if kind == "stance" {
+                    // keyed stance accumulates intensity on repetition (a disposition deepening over
+                    // time), persisted durably; an unkeyed stance is a plain one-off note.
+                    let key = json_field(body, "key").unwrap_or_default();
+                    let key = key.trim();
+                    if key.is_empty() {
+                        let w = db.observe(&sub, text.trim());
+                        if w > 0 { (tool_text(id, &format!("Noted stance [{}]: {}", sub, text.trim())), 1) }
+                        else { (tool_text(id, &format!("(already noted) stance [{}]", sub)), 0) }
+                    } else {
+                        let (s, created) = db.note_stance(&sub, key, text.trim());
+                        let verb = if created { "Formed" } else { "Intensified" };
+                        (tool_text(id, &format!("{} stance on {} (intensity x{}) [{}]: {}", verb, key, s as i64, sub, text.trim())), 1)
                     }
                 } else {
                     let w = db.observe(&sub, text.trim());
@@ -367,6 +381,18 @@ mod tests {
         // shares no word with the query
         assert!(r.contains("Marisol manages"), "spreading should surface the associate, got {}", r);
         assert!(r.contains("activated ("), "got {}", r);
+    }
+
+    #[test]
+    fn note_stance_keyed_accumulates_intensity() {
+        let db = NeuronDB::open(&tmp(), 500);
+        let r1 = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"a\",\"kind\":\"stance\",\"key\":\"unserialize auth\",\"text\":\"I distrust cookie-fed unserialize calls\"}}}").unwrap();
+        assert!(r1.contains("Formed stance") && r1.contains("intensity x1"), "got {}", r1);
+        let r2 = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"a\",\"kind\":\"stance\",\"key\":\"unserialize auth\",\"text\":\"another CVE proves the pattern is dangerous\"}}}").unwrap();
+        assert!(r2.contains("Intensified") && r2.contains("intensity x2"), "got {}", r2);
+        // accumulation must not duplicate: the stance sub-scope holds a single (intensified) neuron
+        let s = handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"a::stance\"}}}").unwrap();
+        assert!(s.contains("1 fact"), "stance must accumulate into one neuron, got {}", s);
     }
 
     #[test]

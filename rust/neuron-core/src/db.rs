@@ -183,6 +183,21 @@ impl NeuronDB {
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
     }
+    /// Record/intensify a stance about `topic`. Re-stating the same topic accumulates its strength
+    /// (a disposition that deepens with repetition), persisted durably. Returns (new_strength, new).
+    pub fn note_stance(&self, nid: &str, topic: &str, feeling: &str) -> (f32, bool) {
+        let out = {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(nid).unwrap();
+            let r = e.n.reinforce_prefix(topic, feeling, 1.0);
+            Self::persist(conn, nid, e);
+            r
+        };
+        #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(feeling);
+        out
+    }
     pub fn get(&self, nid: &str, query: &str) -> Option<String> { self.recall(nid, query).map(|h| h.value) }
     /// Multi-hop traversal, server-side: start at `start` and follow each relation in `path`,
     /// resolving "<current> <relation>" by recall at every step. The whole chain fires in
