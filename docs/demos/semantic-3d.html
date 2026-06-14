@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>neuron-db · semantic space in N dimensions</title>
+<meta name="description" content="The real neuron-db semantic space, learned in your browser from a corpus and projected from 256 dimensions with in-WASM PCA. Words cluster by meaning; switch which principal components map to X/Y/Z to fly through multiple dimensions of meaning.">
+<style>
+  :root{--bg:#05060c;--ink:#e9eef7;--mid:#aeb8cc;--dim:#7d869b;--faint:#5b6478;--accent:#5eead4;--accent2:#7c9cff;--pink:#f472b6;--amber:#f5b454;--line:#1c2435;--panel:rgba(11,14,22,.84);--mono:ui-monospace,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #cv{position:fixed;inset:0;display:block}
+  .ov{position:fixed;z-index:5}
+  #top{top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:13px 18px;background:linear-gradient(180deg,rgba(5,6,12,.92),transparent)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:730;font-size:16px;letter-spacing:-.01em}
+  .brand b{color:var(--accent)} .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+  .eng{margin-left:auto;font:11px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:3px 8px;background:rgba(10,14,22,.6)}
+  #panel{top:62px;left:18px;width:320px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(10px);padding:16px;box-shadow:0 24px 60px -30px #000}
+  #panel h1{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}
+  #panel .sub{font-size:12.5px;color:var(--mid);margin:0 0 14px;line-height:1.5}
+  .lab{font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:14px 0 8px}
+  .axes{display:grid;grid-template-columns:18px 1fr 54px;gap:7px;align-items:center;margin-bottom:7px}
+  .axes .ax{font:13px var(--mono);font-weight:700}
+  .axes .axx{color:#fb7185}.axes .axy{color:#34d399}.axes .axz{color:#7c9cff}
+  select{width:100%;background:#0a0e16;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:7px 8px;font:12px var(--mono)}
+  select:focus{outline:none;border-color:var(--accent)}
+  .axes .pv{font:11px var(--mono);color:var(--dim);text-align:right}
+  .qrow{display:flex;gap:7px;margin-top:6px}
+  #q{flex:1;min-width:0;background:#0a0e16;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:8px 10px;font:12px var(--mono)}
+  #q:focus{outline:none;border-color:var(--accent)}
+  #go{background:var(--accent);color:#04211c;border:none;border-radius:8px;padding:0 12px;font-weight:700;cursor:pointer}
+  .hint{font:11px var(--mono);color:var(--faint);margin-top:8px;line-height:1.5}
+  #info{bottom:18px;left:18px;width:320px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(10px);padding:13px 16px;box-shadow:0 24px 60px -30px #000}
+  #info .h{font:11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent2);margin-bottom:7px}
+  #word{font-size:16px;font-weight:700;color:var(--ink)} #word .c{font:11px var(--mono);color:var(--dim);font-weight:400}
+  #near{font:12.5px var(--mono);color:var(--mid);margin-top:6px;line-height:1.7;min-height:18px}
+  #near b{color:var(--accent)}
+  #help{bottom:18px;right:18px;font:11.5px var(--mono);color:var(--dim);text-align:right;line-height:1.7;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 13px;backdrop-filter:blur(8px)}
+  #help b{color:var(--mid)}
+  #banner{top:62px;left:50%;transform:translateX(-50%);background:#2a1620;border:1px solid #5b2740;color:#ffd9e4;padding:9px 14px;border-radius:9px;font:12px var(--mono);display:none;max-width:80vw;text-align:center}
+  #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font:13px var(--mono);color:var(--dim);z-index:6}
+  @media(max-width:760px){#panel{top:54px;left:8px;right:8px;width:auto;max-height:46vh;overflow:auto}#info{left:8px;right:8px;width:auto;bottom:8px}#help{display:none}}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="load">learning the semantic space &amp; projecting 256 → 3 dimensions…</div>
+<div class="ov" id="top">
+  <span class="brand"><span class="dot"></span> neuron<b>-db</b> · semantic space</span>
+  <span class="eng" id="eng">engine: <b id="engName">loading…</b></span>
+</div>
+<div class="ov" id="banner"></div>
+<div class="ov" id="panel" style="display:none">
+  <h1>Meaning, in many dimensions</h1>
+  <p class="sub">Every point is a <b>word</b>. Its position is its <b>context vector</b> — learned only from how the word is used in a corpus — projected from <b>256-D</b> by PCA running inside the WASM core. Words near each other <i>mean</i> similar things. Re-map the axes to fly through different dimensions of meaning.</p>
+  <div class="lab">axes — which principal component?</div>
+  <div class="axes"><span class="ax axx">X</span><select id="selX"></select><span class="pv" id="pvX"></span></div>
+  <div class="axes"><span class="ax axy">Y</span><select id="selY"></select><span class="pv" id="pvY"></span></div>
+  <div class="axes"><span class="ax axz">Z</span><select id="selZ"></select><span class="pv" id="pvZ"></span></div>
+  <div class="lab">find a word</div>
+  <div class="qrow"><input id="q" placeholder="whale, internet, music…" autocomplete="off" spellcheck="false"><button id="go">go</button></div>
+  <div class="hint">hover a point to see its nearest neighbours · drag to orbit · scroll to zoom</div>
+</div>
+<div class="ov" id="info" style="display:none">
+  <div class="h">nearest in meaning</div>
+  <div id="word">— hover a word —</div>
+  <div id="near"></div>
+</div>
+<div class="ov" id="help" style="display:none">
+  <div><b>words</b> <span id="nW">0</span> · <b>dims</b> 256 → <span id="nK">6</span> PCs</div>
+  <div>projected by in-WASM PCA</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+/* ===== a compact multi-domain corpus: dense within-domain co-occurrence -> clusters ===== */
+var CORPUS = [
+"The internet connects computers worldwide; a router shares wifi so a laptop can browse the web online.",
+"Software runs on the computer processor; the program code compiles into an app that the operating system executes.",
+"Online networks route data packets through servers; the website loads in the browser over the wireless connection.",
+"A developer writes code, debugs the software, and deploys the app to a cloud server on the network.",
+"The whale dives deep in the ocean; the ship sails the sea while sailors hunt the great sperm whale.",
+"Waves crash on the shore as the boat floats; the captain steers the vessel across the blue ocean water.",
+"Fish swim beneath the sea; the tide and the current move the salt water around the coral and the reef.",
+"The sailor on the ship watched the whale surface near the boat in the cold deep ocean.",
+"The chef chopped onion and garlic, then simmered the soup with salt, basil, and fresh tomato in the pot.",
+"A good recipe bakes the bread in the oven; the cook stirs the sauce and tastes the spicy hot dish.",
+"In the kitchen the chef fried the egg, boiled the rice, and seasoned the meal with pepper and herbs.",
+"Dinner was a warm soup with garlic bread; the recipe needs onion, tomato, basil, and a pinch of salt.",
+"The planet orbits the star; the telescope reveals the moon, the galaxy, and distant planets in deep space.",
+"Astronomers study the cosmos; a rocket launches into orbit to explore the planet, the moon, and the sun.",
+"The galaxy holds billions of stars; gravity pulls the planet around the sun across the dark vacuum of space.",
+"A comet streaks past the moon while the spacecraft orbits the red planet under the light of distant stars.",
+"The band played music; the guitar, drums, and piano filled the song with rhythm, melody, and harmony.",
+"The singer's voice carried the tune; the orchestra of violin and cello performed the symphony on stage.",
+"A catchy melody and a strong beat make the song; the musician strums the guitar and sings the chorus.",
+"At the concert the drummer kept the rhythm while the pianist and the guitarist played a beautiful melody.",
+"The bank lends money; the investor buys stocks and bonds while the market price of shares rises and falls.",
+"Profit and revenue grow the business; the company reports earnings as the economy and the dollar fluctuate.",
+"A trader watches the stock market; interest rates affect the loan, the debt, and the value of the currency.",
+"The budget tracks income and expenses; savings in the account earn interest as the investment gains value.",
+"The doctor examined the patient; the nurse measured the heart rate while medicine treated the illness and pain.",
+"In the hospital the surgeon operated; the lungs, the brain, and the blood were checked for signs of disease.",
+"A healthy diet and exercise keep the body strong; the muscles, bones, and the heart need rest and good food.",
+"The patient took the pill for the fever; the doctor diagnosed the infection and prescribed the right treatment.",
+"Love and family bring joy; the mother and father raised the child with kindness, warmth, and gentle care.",
+"Friendship and trust grow with time; happiness, laughter, and a warm hug ease the sadness and the fear.",
+"The couple felt deep love; their wedding was full of joy, family, friends, laughter, and happy tears.",
+"A child laughs with delight; the parents share their happiness, hope, and love with the whole family."
+].join(" ");
+
+/* ===== wasm glue ===== */
+var te=new TextEncoder(), td=new TextDecoder(), EX=null;
+function wbytes(s){var b=te.encode(s);var p=EX.alloc(b.length);new Uint8Array(EX.memory.buffer,p,b.length).set(b);return [p,b.length];}
+function wread(n){return td.decode(new Uint8Array(EX.memory.buffer,EX.answer_ptr(),n));}
+function semLearn(t){var a=wbytes(t);EX.sem_learn(a[0],a[1]);}
+function semProject(n,k){var nn=EX.sem_project(n,k);return parseProj(wread(nn));}
+function semNeighbors(w,k){var a=wbytes(w);var nn=EX.sem_neighbors(a[0],a[1],k);
+  return wread(nn).split("\n").filter(function(x){return x.length;}).map(function(l){var p=l.split("\t");return {w:p[0],cos:+p[1]};});}
+function parseProj(blob){
+  var lines=blob.split("\n").filter(function(x){return x.length;});
+  var h=lines[0].split("\t"); var k=+h[1];
+  var variance=h[2].split(",").map(Number); var total=+h[3];
+  var words=[], counts=[], clusters=[], coords=[];
+  for(var i=1;i<lines.length;i++){var p=lines[i].split("\t"); if(p.length<4)continue;
+    words.push(p[0]); counts.push(+p[1]); clusters.push(+p[2]); coords.push(p[3].split(",").map(Number));}
+  return {n:words.length,k:k,variance:variance,total:total,words:words,counts:counts,clusters:clusters,coords:coords};
+}
+
+/* ===== scene ===== */
+var cv=document.getElementById("cv");
+var renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+var scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x05060c,0.0035);
+var camera=new THREE.PerspectiveCamera(60,1,0.1,4000); camera.position.set(0,0,260);
+var world=new THREE.Group(); scene.add(world);
+
+function glowTex(){var c=document.createElement("canvas");c.width=c.height=64;var x=c.getContext("2d");
+  var g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.4,"rgba(255,255,255,.55)");g.addColorStop(1,"rgba(255,255,255,0)");
+  x.fillStyle=g;x.fillRect(0,0,64,64);return new THREE.CanvasTexture(c);}
+var GLOW=glowTex();
+
+var PROJ=null, AX=[0,1,2], pts=null, posCur=null, posTarget=null, colorsArr=null, animT=1, labels=[];
+var CLUSTER_COLORS=[0x5eead4,0x7c9cff,0xf472b6,0x34d399,0xf5b454,0xfb7185,0x60a5fa,0xa78bfa,0x2dd4bf,0xfca5a5,0xfacc15,0x4ade80];
+
+// scale each PC to a comparable range
+var SPAN=120, scaleK=[];
+function computeScales(){
+  scaleK=[];
+  for(var d=0; d<PROJ.k; d++){
+    var mn=1e18,mx=-1e18; for(var i=0;i<PROJ.n;i++){var v=PROJ.coords[i][d]; if(v<mn)mn=v; if(v>mx)mx=v;}
+    var c=(mn+mx)/2, half=Math.max(1e-6,(mx-mn)/2); scaleK.push({c:c,s:SPAN/half});
+  }
+}
+function targetPos(i){
+  return [ (PROJ.coords[i][AX[0]]-scaleK[AX[0]].c)*scaleK[AX[0]].s,
+           (PROJ.coords[i][AX[1]]-scaleK[AX[1]].c)*scaleK[AX[1]].s,
+           (PROJ.coords[i][AX[2]]-scaleK[AX[2]].c)*scaleK[AX[2]].s ];
+}
+
+function buildCloud(){
+  computeScales();
+  var n=PROJ.n;
+  var geo=new THREE.BufferGeometry();
+  posCur=new Float32Array(n*3); posTarget=new Float32Array(n*3); colorsArr=new Float32Array(n*3);
+  var maxc=Math.max.apply(null,PROJ.counts);
+  for(var i=0;i<n;i++){
+    var t=targetPos(i); posCur[i*3]=t[0];posCur[i*3+1]=t[1];posCur[i*3+2]=t[2];
+    posTarget[i*3]=t[0];posTarget[i*3+1]=t[1];posTarget[i*3+2]=t[2];
+    // colour by TRUE 256-D cluster; brighter for more frequent words
+    var b=0.55+0.45*Math.sqrt(PROJ.counts[i]/maxc);
+    var col=new THREE.Color(CLUSTER_COLORS[PROJ.clusters[i]%CLUSTER_COLORS.length]).multiplyScalar(b);
+    colorsArr[i*3]=col.r;colorsArr[i*3+1]=col.g;colorsArr[i*3+2]=col.b;
+  }
+  geo.setAttribute("position",new THREE.BufferAttribute(posCur,3));
+  geo.setAttribute("color",new THREE.BufferAttribute(colorsArr,3));
+  var mat=new THREE.PointsMaterial({size:13,map:GLOW,vertexColors:true,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true});
+  if(pts){world.remove(pts);} pts=new THREE.Points(geo,mat); world.add(pts);
+  // labels: top ~110 by frequency
+  labels.forEach(function(l){world.remove(l.spr);}); labels=[];
+  var order=PROJ.words.map(function(_,i){return i;}).sort(function(a,b){return PROJ.counts[b]-PROJ.counts[a];});
+  for(var r=0;r<Math.min(60,n);r++){ var i2=order[r]; labels.push({i:i2,spr:textSprite(PROJ.words[i2])}); world.add(labels[labels.length-1].spr); }
+  positionLabels();
+  document.getElementById("nW").textContent=n;
+  document.getElementById("nK").textContent=PROJ.k;
+}
+function textSprite(txt){
+  var c=document.createElement("canvas"),x=c.getContext("2d");var f=26;x.font="600 "+f+"px ui-sans-serif,system-ui";
+  var w=x.measureText(txt).width;c.width=w+8;c.height=f+8;x.font="600 "+f+"px ui-sans-serif,system-ui";
+  x.fillStyle="rgba(233,238,247,.92)";x.textBaseline="middle";x.fillText(txt,4,c.height/2);
+  var tex=new THREE.CanvasTexture(c);var m=new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false,depthTest:false});
+  var s=new THREE.Sprite(m);s.scale.set(c.width/c.height*7,7,1);return s;
+}
+function positionLabels(){ labels.forEach(function(l){var i=l.i;l.spr.position.set(posCur[i*3],posCur[i*3+1]+5,posCur[i*3+2]);}); }
+
+/* ===== neighbours: TRUE 256-D cosine, from the WASM core (not the projection) ===== */
+var linkGeo=null, links=null, hoverNb=[];
+function showNeighbors(i){
+  var nb=semNeighbors(PROJ.words[i],8);   // honest neighbours in full 256-D space
+  document.getElementById("word").innerHTML=PROJ.words[i]+' <span class="c">· seen '+PROJ.counts[i]+'×</span>';
+  document.getElementById("near").innerHTML=nb.length? nb.map(function(p){return '<b>'+p.w+'</b> '+p.cos.toFixed(2);}).join(" · ") : '(none)';
+  hoverNb=[]; nb.forEach(function(p){var j=PROJ.words.indexOf(p.w); if(j>=0) hoverNb.push(j);});
+  updateLinks(i);
+}
+function updateLinks(i){
+  var seg=[]; for(var m=0;m<hoverNb.length;m++){var j=hoverNb[m];
+    seg.push(posCur[i*3],posCur[i*3+1],posCur[i*3+2],posCur[j*3],posCur[j*3+1],posCur[j*3+2]);}
+  if(links){world.remove(links);}
+  linkGeo=new THREE.BufferGeometry();linkGeo.setAttribute("position",new THREE.Float32BufferAttribute(seg,3));
+  links=new THREE.LineSegments(linkGeo,new THREE.LineBasicMaterial({color:0x5eead4,transparent:true,opacity:.55,blending:THREE.AdditiveBlending,depthWrite:false}));
+  world.add(links);
+}
+
+/* ===== axis controls ===== */
+function fillSelectors(){
+  ["selX","selY","selZ"].forEach(function(id,ax){
+    var sel=document.getElementById(id); sel.innerHTML="";
+    for(var d=0;d<PROJ.k;d++){var o=document.createElement("option");o.value=d;
+      o.textContent="PC"+(d+1)+"  ("+(PROJ.variance[d]/PROJ.total*100).toFixed(1)+"% var)";sel.appendChild(o);}
+    sel.value=AX[ax];
+    sel.onchange=function(){AX[ax]=+sel.value;remap();updatePV();};
+  });
+  updatePV();
+}
+function updatePV(){
+  document.getElementById("pvX").textContent=(PROJ.variance[AX[0]]/PROJ.total*100).toFixed(1)+"%";
+  document.getElementById("pvY").textContent=(PROJ.variance[AX[1]]/PROJ.total*100).toFixed(1)+"%";
+  document.getElementById("pvZ").textContent=(PROJ.variance[AX[2]]/PROJ.total*100).toFixed(1)+"%";
+}
+function remap(){ for(var i=0;i<PROJ.n;i++){var t=targetPos(i);posTarget[i*3]=t[0];posTarget[i*3+1]=t[1];posTarget[i*3+2]=t[2];} animT=0; }
+
+/* ===== controls + loop ===== */
+var dist=260,rx=0.2,ry=0,drag=false,lx,ly,spin=true;
+cv.addEventListener("pointerdown",function(e){drag=true;spin=false;lx=e.clientX;ly=e.clientY;});
+window.addEventListener("pointerup",function(){drag=false;});
+window.addEventListener("pointermove",onMove);
+cv.addEventListener("wheel",function(e){e.preventDefault();dist=Math.max(60,Math.min(900,dist+e.deltaY*0.25));},{passive:false});
+var ray=new THREE.Raycaster(); ray.params.Points.threshold=6; var mouse=new THREE.Vector2(), hover=-1;
+function onMove(e){
+  if(drag){ry+=(e.clientX-lx)*0.005;rx+=(e.clientY-ly)*0.005;rx=Math.max(-1.4,Math.min(1.4,rx));lx=e.clientX;ly=e.clientY;return;}
+  if(!pts)return;
+  mouse.x=(e.clientX/innerWidth)*2-1; mouse.y=-(e.clientY/innerHeight)*2+1;
+  ray.setFromCamera(mouse,camera); var hit=ray.intersectObject(pts);
+  if(hit.length){ var i=hit[0].index; if(i!==hover){hover=i;showNeighbors(i);} }
+}
+function resize(){renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();}
+window.addEventListener("resize",resize);
+function loop(){
+  requestAnimationFrame(loop);
+  if(spin) ry+=0.0012;
+  if(pts && animT<1){ animT=Math.min(1,animT+0.04); var e=1-Math.pow(1-animT,3);
+    for(var p=0;p<posCur.length;p++) posCur[p]+=(posTarget[p]-posCur[p])*0.18;
+    pts.geometry.attributes.position.needsUpdate=true; positionLabels();
+    if(hover>=0) updateLinks(hover);
+  }
+  var cx=Math.sin(ry)*Math.cos(rx)*dist, cy=Math.sin(rx)*dist, cz=Math.cos(ry)*Math.cos(rx)*dist;
+  camera.position.set(cx,cy,cz); camera.lookAt(0,0,0);
+  renderer.render(scene,camera);
+}
+
+/* ===== boot ===== */
+function setEng(n){var e=document.getElementById("engName");e.textContent=n==="wasm"?"Rust core (WebAssembly)":"unavailable";e.style.color=n==="wasm"?"#34d399":"#fb7185";}
+function start(){
+  // learn the corpus (repeat to strengthen co-occurrence stats), then project 256 -> 6 PCs
+  EX.sem_reset();
+  for(var r=0;r<24;r++) semLearn(CORPUS);
+  PROJ=semProject(450,8);
+  if(!PROJ||!PROJ.n){ fail("the semantic space came back empty"); return; }
+  document.getElementById("load").style.display="none";
+  document.getElementById("panel").style.display="";
+  document.getElementById("info").style.display="";
+  document.getElementById("help").style.display="";
+  fillSelectors(); buildCloud(); resize(); loop();
+  document.getElementById("go").onclick=focusWord;
+  document.getElementById("q").addEventListener("keydown",function(e){if(e.key==="Enter")focusWord();});
+}
+function focusWord(){
+  var w=document.getElementById("q").value.trim().toLowerCase(); if(!w)return;
+  var i=PROJ.words.indexOf(w); if(i<0){document.getElementById("near").innerHTML='<span style="color:#fb7185">not in the projected vocabulary</span>';return;}
+  hover=i; showNeighbors(i); spin=false;
+  // point camera toward it
+  var t=[posCur[i*3],posCur[i*3+1],posCur[i*3+2]]; ry=Math.atan2(t[0],t[2]); rx=0.2; dist=140;
+}
+function fail(msg){document.getElementById("load").style.display="none";var b=document.getElementById("banner");b.style.display="block";b.textContent=msg;setEng("dead");}
+(function boot(){
+  if(location.protocol==="file:"){ fail("served from file:// — host over http(s) to run the Rust core (the docs site does)."); return; }
+  var url="neuron_core.wasm";
+  var ok=function(res){EX=res.instance.exports; if(!EX.sem_project){fail("this wasm build lacks the semantic exports; rebuild with --features semantic");return;} setEng("wasm"); start();};
+  if(WebAssembly.instantiateStreaming){ WebAssembly.instantiateStreaming(fetch(url),{}).then(ok).catch(function(){
+      fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(function(){fail("failed to load the wasm core");}); });
+  } else { fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(function(){fail("failed to load the wasm core");}); }
+})();
+</script>
+</body>
+</html>

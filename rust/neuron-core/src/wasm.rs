@@ -3,7 +3,7 @@
 use crate::Neuron;
 use crate::model::GaryModel;
 
-static mut BUF: [u8; 16384] = [0u8; 16384];
+static mut BUF: [u8; 262144] = [0u8; 262144];
 static mut BUFLEN: usize = 0;
 
 // ---- persistent in-browser store, for the live "synapse" visualization ----
@@ -123,4 +123,48 @@ pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
     let b = ans.as_bytes(); let n = b.len().min(256);
     unsafe { for i in 0..n { BUF[i] = b[i]; } BUFLEN = n; }
     n
+}
+
+// ---- semantic space exports (feature `semantic`), for the in-browser PCA visualization ----
+#[cfg(feature = "semantic")]
+mod sem_exports {
+    use super::{input, put, BUF};
+    use crate::semantic::SemanticSpace;
+    static mut SEM: Option<SemanticSpace> = None;
+    #[allow(static_mut_refs)]
+    fn sem() -> &'static mut SemanticSpace { unsafe { SEM.get_or_insert_with(SemanticSpace::new) } }
+
+    /// Reset the semantic space (call before learning a fresh corpus).
+    #[no_mangle] pub extern "C" fn sem_reset() { unsafe { SEM = Some(SemanticSpace::new()); } }
+    /// Learn co-occurrence from a span of text.
+    #[no_mangle] pub extern "C" fn sem_learn(ptr: *const u8, len: usize) { sem().train(&input(ptr, len)); }
+    /// vocabulary size of the learned space.
+    #[no_mangle] pub extern "C" fn sem_vocab() -> usize { sem().vocab() }
+
+    /// TRUE 256-D cosine nearest neighbours of one word (honest neighbours, not the
+    /// projection). Writes up to `k` lines "word\tcosine" to BUF; returns its length.
+    #[no_mangle]
+    pub extern "C" fn sem_neighbors(ptr: *const u8, len: usize, k: usize) -> usize {
+        let near = sem().nearest(&input(ptr, len), k);
+        let mut s = String::new();
+        for (w, cos) in near { s.push_str(&format!("{}\t{:.3}\n", w, cos)); }
+        put(&s)
+    }
+
+    /// PCA-project the top `top_n` words onto the top `k` principal components and write a
+    /// blob to BUF; returns its length. Format (tab/comma/newline text):
+    ///   line 0:  "<n>\t<k>\t<var0,var1,...,var(k-1)>\t<total_variance>"
+    ///   line i:  "<word>\t<count>\t<cluster>\t<c0,c1,...,c(k-1)>"   (cluster from TRUE 256-D k-means)
+    #[no_mangle]
+    pub extern "C" fn sem_project(top_n: usize, k: usize) -> usize {
+        let p = sem().project(top_n, k);
+        let vars: Vec<String> = p.variance.iter().map(|v| format!("{:.5}", v)).collect();
+        let mut s = format!("{}\t{}\t{}\t{:.5}\n", p.words.len(), k, vars.join(","), p.total_variance);
+        for (i, w) in p.words.iter().enumerate() {
+            let coords: Vec<String> = p.coords[i].iter().map(|c| format!("{:.4}", c)).collect();
+            s.push_str(&format!("{}\t{}\t{}\t{}\n", w, sem().count(w), p.clusters[i], coords.join(",")));
+            if s.len() > unsafe { BUF.len() } - 256 { break; }
+        }
+        put(&s)
+    }
 }

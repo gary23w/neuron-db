@@ -31,6 +31,12 @@ fallback**: when lexical recall misses, the scope's facts are ranked in the sema
 and the best is returned if it clears a similarity threshold. The lexical fast path is
 untouched — the fallback only fires on a miss.
 
+See the space itself — the 3D demo (`docs/demos/semantic-3d.html`) trains it in your browser
+and projects the 256-D word vectors to 3 of the top-8 principal components (PCA computed in
+the WASM core); words cluster by meaning and you can re-map the X/Y/Z axes to fly through
+different dimensions. Clusters and nearest-neighbour links there are computed in the **true
+256-D** space, not the projection.
+
 This directly mirrors the neuroscience: meaning is **distributed** (co-occurrence vectors),
 **contextual** (the query's other words shape its embedding), and **integrative** (cues sum
 into one concept vector). It is also self-strengthening: the more text it sees, the better
