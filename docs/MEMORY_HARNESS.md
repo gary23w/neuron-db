@@ -157,17 +157,24 @@ recalled fact (root-normalized), so a broken chain reports where it stopped inst
 silently drifting. This is "infinite hops at no LLM cost": depth is paid in microseconds by
 the synapse, not in model turns.
 
-### 3b. Fuzzy recall — fixing the lexical gap
+### 3b. Fuzzy recall — closing the lexical gap
 
-Recall is lexical: a query whose words don't stem-match the stored facts can miss
-(`COMPARISON.md` §4, where misaligned vocabulary scored 17%). neuron-db now adds a
-**morphological fallback** that runs *only when exact-stem recall finds nothing*: it
-normalizes both the query and the stored facts to a suffix-stripped root
-(`owner`/`owned`/`owns` → `own`) and also expands synonyms via the alias map, then scans for
-a root match. Because it triggers only on a miss, the warm fast path keeps its flat
-microsecond cost; the fallback just widens recall's reach so phrasing variance no longer
-silently drops a fact. (A full embedding-based semantic tier remains the option for true
-paraphrase beyond morphology.)
+Recall is lexical: a query whose words don't match the stored facts can miss
+(`COMPARISON.md` §4, where misaligned vocabulary scored 17%). neuron-db closes that with a
+two-part fallback that runs *only when the relation doesn't fully bind*, so the warm fast
+path keeps its flat microsecond cost:
+
+1. **Morphological root** — both query and facts normalize to a suffix-stripped root, so
+   `owner`/`owned`/`owns` → `own` and `dependency`/`depends` → `depend`.
+2. **Synonym canonicalization** — a curated synonym→canonical ontology applied to *both*
+   sides, so a fact stored as `reports to` and a query asking for `manager` both canonicalize
+   to the same word (likewise `lives in`↔`city`, `boss`/`supervisor`/`lead`↔`manager`).
+
+This is not a learned embedder — it's a deterministic, zero-cost ontology — but it closes the
+relation-synonym class that the gap was made of. With it, the misaligned-vocabulary benchmark
+goes from 17% to **100%** through `recall_chain` (`COMPARISON.md` §6). Open-vocabulary
+paraphrase ("the thing I use to get online" → wifi) would still want an embedding tier; the
+relation synonyms that matter for entity memory are handled.
 
 ### Conventions the LLM follows
 
@@ -230,10 +237,10 @@ server (`/v1/{scope}/recall_many`, `/observe`, `/forget`) — see `API.md`.
 
 Implemented today: the `neuron-mcp` stdio server with `recall` / `recall_value` /
 `recall_chain` / `remember` / `forget` / `stats`, backed by the durable `NeuronDB`, with
-unit + end-to-end tests. Verified: needle-in-haystack recall stays 100% and ~16 µs flat up
-to 50k stored facts (`BENCHMARKS.md` §5.4); multi-hop via `recall_chain` (§3a) costs the LLM
-a constant 2 calls at any depth; and the morphological fallback (§3b) closes the worst of
-the lexical gap (the `owner`/`owned`/`owns` class) with no change to the warm fast path.
+unit + end-to-end tests. Verified live (gpt-4o-mini, `COMPARISON.md` §6): **100% accuracy at
+1, 2, and 3 hops, on both aligned and synonym-misaligned vocabulary**, each in a constant 2
+LLM calls at any depth, flat ~1.1k tokens at any memory size. The needle benchmark holds at
+100% and ~16 µs to 50k facts (`BENCHMARKS.md` §5.4).
 
-Future work: a true embedding-based semantic tier (for paraphrase beyond morphology), an
-exact-key KV tier, and supersede-on-write / dedup consolidation (`/sleep`).
+Future work: an embedding tier for open-vocabulary paraphrase (the relation-synonym class is
+already handled, §3b), an exact-key KV tier, and supersede-on-write / dedup (`/sleep`).
