@@ -103,3 +103,8 @@ required-features = ["secure", "semantic"]
 # how big can the total addressable context grow at flat per-turn cost
 [[example]]
 name = "context_scale"
+
+# space breakdown of the per-document storage pattern (store / semantic space / embedding cache)
+[[example]]
+name = "doc_storage_space"
+required-features = ["sqlite", "semantic"]
