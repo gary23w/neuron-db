@@ -4,26 +4,32 @@ The fast reimplementation of the neuron — the associative memory at the heart 
 [neuron-db](https://github.com/gary23w/neuron-db). Standard library only, no
 dependencies, builds offline.
 
-This is the **`rust` branch refactor** of the Python prototype (preserved on the
-`python-prototype` branch). Same behavior, ~7× faster creation and ~5× faster recall, and
-a single static binary with true multi-core concurrency (no GIL).
+The Rust core is the **canonical implementation** (on `main`); a Python reference — including
+the gary-neuron cortex bridge and training tooling — is preserved on the `legacy-python`
+branch. Same behavior, ~7× faster creation and ~5× faster recall, a single static binary, and
+true multi-core concurrency (no GIL).
 
 ```bash
-cargo test            # 6 parity tests: recall, value isolation, abstention,
-                      # relation binding, 400/400 distinct-key scale, dump/load
-cargo run --release --bin bench
+cargo test                                                   # default (std-only) store tests
+cargo test --features "sqlite secure server mcp semantic"    # every tier
+cargo run --release --bin bench                              # microbenchmark
 ```
 
-## Status
+## Tiers (Cargo features)
 
-| ported | not yet |
-|---|---|
-| store: observe / recall / value-isolation / abstention | SQLite database layer |
-| stem index, relation-binding, multi-number isolation | encrypted tier (SecureNeuronDB) |
-| minimal serialize / load | HTTP server, MCP tools |
+| feature | tier | what it adds |
+|---|---|---|
+| *(default)* | `Neuron` · `PlasticNeuron` · `NeuronRouter` | in-memory associative store, plasticity, sharding — std-only, wasm-clean |
+| `sqlite` | `NeuronDB` + `neuron` CLI | durable scopes in one SQLite file |
+| `secure` | `SecureNeuronDB` | AES-256-GCM values; per-scope secret supplied per call, never stored |
+| `server` | HTTP server + `serve` | one endpoint per scope over a std `TcpListener` |
+| `mcp` | `neuron-mcp` | stdio MCP server: `recall` / `recall_chain` / `remember` / `forget` / `stats` |
+| `semantic` | `SemanticSpace` | corpus-distributional fuzzy recall (Random Indexing, no model, no deps) |
 
-Roadmap to parity and the LLM memory-bank harness is in
-[`docs/MEMORY_HARNESS.md`](../docs/MEMORY_HARNESS.md) on `main`.
+Tests live in `tests/` (recall, db_tier, secure_tier, router, turn, plastic, inference,
+db_comprehensive, semantic_tier). Server-side multi-hop (`recall_chain`), the book-ingestion
+test (`examples/book_ingest.rs`), and the LLM memory-bank harness are documented in
+[`docs/guide/MEMORY_HARNESS.md`](../../docs/guide/MEMORY_HARNESS.md).
 
 ## API
 

@@ -24,7 +24,7 @@ to an OpenAI model that has neuron-db mounted as memory over MCP.
 | Transport | `neuron-mcp` (native stdio MCP server) ↔ Python client ↔ OpenAI |
 | Model | `gpt-4o-mini`, temperature 0 |
 | Session | 11 turns: direct lookups, multi-field rundowns, a full-profile summary, an update, and an abstention |
-| Harness | `examples/mcp_chat/app_sim.py` (seeds the store, runs the session, measures) |
+| Harness | `examples/mcp-chat/app_sim.py` (seeds the store, runs the session, measures) |
 
 The 700 facts live in neuron-db, **not** in the model's context. Each turn the model
 pulls only the handful it needs via `recall`/`recall_value`. That is the whole point:
@@ -43,7 +43,7 @@ Reproduce:
 ```sh
 cargo build --release --features mcp --bin neuron-mcp     # build the server
 export OPENAI_API_KEY=sk-...
-python examples/mcp_chat/app_sim.py                       # seed + run + measure
+python examples/mcp-chat/app_sim.py                       # seed + run + measure
 ```
 
 ---
