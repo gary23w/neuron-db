@@ -270,9 +270,13 @@ impl Neuron {
     }
 
     pub fn observe(&mut self, text: &str) -> usize {
-        if text.trim().is_empty() || text.contains('?') { return 0; }
+        if text.trim().is_empty() { return 0; }
         let mut n = 0;
-        for s in sentences(text, 24) {
+        // Split into sentences first, then keep DECLARATIVES and skip questions per-sentence —
+        // so a paragraph of prose is captured comprehensively, not dropped wholesale just because
+        // it contains a question. Cap is high so long pasted text is ingested, not truncated.
+        for s in sentences(text, 400) {
+            if s.contains('?') { continue; } // questions aren't facts
             if let Some(e) = encode(&s, None) { self.episodes.push(e); n += 1; }
         }
         if self.episodes.len() > self.max_facts {
