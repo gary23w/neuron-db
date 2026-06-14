@@ -115,14 +115,87 @@ can't fail on an external service.
 
 ## 3. The MCP server
 
-A thin MCP server over the Rust core exposes four tools. Small surface on purpose — an LLM
-should not need to learn a query language.
+A thin MCP server over the Rust core exposes a small set of tools — an LLM should not need
+to learn a query language. This is **implemented** as `neuron-mcp` (`src/mcp.rs`,
+`src/mcp_bin.rs`), a native std-only stdio JSON-RPC 2.0 server embedding `NeuronDB`. No Node
+or Python runtime, no separate HTTP process — one binary the client launches.
 
-| tool | input | output |
+| tool | input | returns (MCP text content) |
 |---|---|---|
-| `memory.recall` | `{scope, query, k?}` | ranked `[{value, fact, tier, confidence}]` or `[]` |
-| `memory.get` | `{scope, key}` | exact value or null |
-| `memory.write` | `{scope, text}` or `{scope, key, value}` | `{stored, superseded}` |
-| `memory.forget` | `{scope, match}` | `{removed}` |
+| `recall` | `{scope, query, k?}` | top-k facts as a memory block to inject (`- fact` lines), or "No memories found" |
+| `recall_value` | `{scope, query}` | the single isolated value for a direct question, or `(no memory)` |
+| `remember` | `{scope, text}` or `{scope, facts:[…]}` | `Stored N fact(s)` |
+| `forget` | `{scope, match?}` | `Forgot N; M remain` (omit `match` to clear the scope) |
+| `stats` | `{scope}` | `scope holds N fact(s) …` |
 
-Conventions th
+> Note vs. the original four-tool sketch: `recall_value` is the single-best cue recall (the
+> Rust core has no separate exact-key/KV tier yet — tier-1 in §2 is future work), and writes
+> append rather than supersede (supersede/dedup is the consolidation work in §2). Everything
+> else maps directly onto the `NeuronDB` methods covered in `BENCHMARKS.md`.
+
+### Conventions the LLM follows
+
+- **Recall before generating.** When the user refers to something they may have said
+  before, call `recall` (or `recall_value` for a direct field) and inject the returned block
+  into context as grounded evidence — don't guess.
+- **Write after the turn.** For anything durable the user stated, call `remember`. Keep each
+  fact a short plain-language statement (`my plan is pro`); store distinct subjects so cues
+  stay selective (see the O(candidates) result in `BENCHMARKS.md`).
+- **One scope per memory owner.** Pass `user:{id}` / `session:{id}` / `agent:{id}` — scopes
+  are fully isolated, so multi-tenant memory needs no extra plumbing.
+- **Abstention is a feature.** A miss returns "No memories found" / `(no memory)`, never a
+  fabricated value. Treat that as "I don't have this stored," not an error.
+
+## 4. Mounting it
+
+Build the server:
+
+```sh
+cargo build --release --features mcp --bin neuron-mcp
+```
+
+Register it with any MCP client (Claude Desktop, Claude Code, Cursor, …). Example client
+config:
+
+```json
+{
+  "mcpServers": {
+    "neuron-memory": {
+      "command": "/abs/path/to/neuron-mcp",
+      "env": { "NEURON_MCP_DB": "/abs/path/to/memory.db", "NEURON_MAX_FACTS": "100000" }
+    }
+  }
+}
+```
+
+Environment:
+
+| var | default | meaning |
+|---|---|---|
+| `NEURON_MCP_DB` | `neuron-memory.db` | SQLite file the memory persists to |
+| `NEURON_MAX_FACTS` | `100000` | per-scope fact cap (oldest evicted past it) |
+
+Transport is newline-delimited JSON-RPC 2.0 on stdin/stdout; the server handles
+`initialize`, `tools/list`, `tools/call`, `ping`, and ignores notifications. Smoke-test it
+without a client by piping messages:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"remember","arguments":{"scope":"user:1","text":"my plan is pro"}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall_value","arguments":{"scope":"user:1","query":"what plan am i on?"}}}' \
+  | neuron-mcp
+```
+
+For non-MCP / API-only agents, the same recall→inject→write loop is available over the HTTP
+server (`/v1/{scope}/recall_many`, `/observe`, `/forget`) — see `API.md`.
+
+## 5. Status
+
+Implemented today: the `neuron-mcp` stdio server with `recall` / `recall_value` /
+`remember` / `forget` / `stats`, backed by the durable `NeuronDB`, with unit + end-to-end
+tests. Verified: needle-in-haystack recall stays 100% and ~16 µs flat up to 50k stored facts
+(`BENCHMARKS.md` §5.4), so the injected block is small and accurate regardless of store size.
+
+Future work (from §2): the exact-key KV tier, supersede-on-write, dedup/consolidation
+(`/sleep`), and the optional semantic fallback.
