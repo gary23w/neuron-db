@@ -15,7 +15,7 @@ contexts mean ("you shall know a word by the company it keeps").
 
 ## 2. The mechanism: a corpus-distributional semantic space
 
-We build a continuous **semantic space** with *Random Indexing* (`src/semantic.rs`) — a
+We build a continuous **semantic space** with *Random Indexing* (`rust/neuron-core/src/semantic.rs`) — a
 cheap, incremental alternative to word2vec/LSA, pure Rust, **no model, no dependencies**:
 
 - every word owns a fixed **sparse random index vector** (256-dim, 12 nonzeros, derived
@@ -49,7 +49,7 @@ preferred when it matches, and a truly unrelated query still abstains.
 
 ## 3. The book test — can it remember a book?
 
-Harness: `examples/book_ingest.rs`. Corpus: 5 public-domain Project Gutenberg books
+Harness: `rust/neuron-core/examples/book_ingest.rs`. Corpus: 5 public-domain Project Gutenberg books
 (Moby-Dick, Pride and Prejudice, Sherlock Holmes, Frankenstein, The Picture of Dorian Gray).
 
 ### Storage & ingestion (thesis-scale)

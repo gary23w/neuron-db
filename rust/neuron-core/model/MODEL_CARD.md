@@ -29,36 +29,32 @@ the store retrieves a small working set, this cortex generates the answer over i
 ## Files
 
 ```
-cortex.npz            float32 weights (P/ keys; gpt-numpy layout)
-petite_vocab.json     byte-level BPE vocab (2048)
+cortex.bin            packed weight tensors (gpt-numpy layout; see manifest.tsv)
+manifest.tsv          weight tensor manifest (name/shape/offset) for cortex.bin
+vocab.tsv             byte-level BPE vocab (2048)
 petite_merges.txt     BPE merges
 config.json           E/H/L/BLK, vocab, param count, trained step
 ```
 
 ## Use
 
-```python
-from huggingface_hub import snapshot_download
-import numpy as np, gpt_numpy as G            # gpt_numpy.py from gary-neuron-chat / neuron-db
-from tokenizers import ByteLevelBPETokenizer
+The neuron-db Rust crate **bundles this model into the binary** (`include_bytes!`), so there
+are no files to load at runtime. Build it from the working set the store retrieved:
 
-d = snapshot_download("gary23w/gary-neuron-emergent")
-z = np.load(f"{d}/cortex.npz", allow_pickle=True)
-P = {k[2:]: z[k] for k in z.files if k.startswith("P/")}
-CFG = dict(E=96, H=4, L=8, BLK=384)
-tok = ByteLevelBPETokenizer(f"{d}/petite_vocab.json", f"{d}/petite_merges.txt")
+```rust
+use neuron_core::model::GaryModel;
 
-# feed it a working set + a question, greedily decode:
-ids = tok.encode("U: the launch is on Friday\nG: noted.\nU: when is the launch?\nG:").ids
-# ... forward + argmax loop -> "Friday"
+let m = GaryModel::embedded();                 // cortex + tokenizer, baked in at compile time
+let facts = vec!["the launch is on Friday".to_string()];
+let answer = m.think(&facts, "when is the launch?", 10);   // -> "Friday"
 ```
 
-Or point neuron-db's bridge at a checkout:
+The `think` binary (`rust/neuron-core/src/think.rs`) is a thin CLI over the same call.
 
-```
-export NEURON_MODEL_DIR=<this download dir>
-python -c "from neuron_db.bridge import GaryNeuronBridge; b=GaryNeuronBridge(); ..."
-```
+> **Legacy (removed):** the original prototype loaded these files in Python via
+> `gpt_numpy` and a `neuron_db.bridge` helper (`from neuron_db.bridge import
+> GaryNeuronBridge`). That Python code is gone from the main tree — it's preserved only on
+> the `legacy-python` branch. The Rust crate above is the supported path.
 
 ## Honest notes
 

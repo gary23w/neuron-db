@@ -56,7 +56,8 @@ that returns all the values of a neuron — only `recall`, which returns one.
 
 ## Porting the engine elsewhere
 
-`neuron.py` has no dependencies and no I/O, so the same logic runs:
+The core `Neuron` engine (`rust/neuron-core/src/lib.rs`) has no dependencies and no I/O, so
+the same logic runs:
 
 - **SQLite** (this repo) — a row per neuron.
 - **Postgres** — a `pgrx` (Rust) extension: a `neuron` column type plus

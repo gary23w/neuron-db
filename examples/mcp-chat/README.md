@@ -1,4 +1,4 @@
-# mcp_chat — give an LLM long-term memory via neuron-db (MCP)
+# mcp-chat — give an LLM long-term memory via neuron-db (MCP)
 
 A tiny CLI chat client (Python stdlib only) that connects an OpenAI model to the
 **neuron-db MCP server** (`neuron-mcp`). It launches the server over stdio, performs the
@@ -43,7 +43,7 @@ python app_sim.py        # seeds, runs ~11 turns, prints a synapse timing report
 ```
 
 Result: recall fires in a median ~20–40 µs over 700 facts (~0.2 ms round-trip) vs ~1.8 s
-for the model — memory is ~tens-of-thousands× faster. Full write-up: `docs/SYNAPSE.md`.
+for the model — memory is ~tens-of-thousands× faster. Full write-up: `docs/guide/SYNAPSE.md`.
 
 ## Measured (gpt-4o-mini, `--demo`)
 
@@ -51,7 +51,7 @@ A 7-turn session (state facts → recall them → update a fact → recall again
 unknown): **10 tool calls, 100% correct** — the model stored each fact, recalled by direct
 and paraphrased queries, the updated plan won via recency, and it abstained on the unknown
 instead of fabricating. This session also surfaced and fixed a real MCP framing bug
-(multi-line `tools/list` response); see `docs/MEMORY_HARNESS.md`.
+(multi-line `tools/list` response); see `docs/guide/MEMORY_HARNESS.md`.
 
 ## Notes
 
