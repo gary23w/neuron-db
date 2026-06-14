@@ -96,6 +96,22 @@ fn limitation_single_content_word_fact_dropped() {
     assert_eq!(db.observe("u", "my country is US"), 0); // "us" is a stopword, "country" lone content word
 }
 
+// ---------- value follows the relation (no leading structural word leaks) ----------
+
+#[test]
+fn value_after_cue_not_leading_word() {
+    // "project Graus status is paused": recall must return the value after the relation,
+    // not the leading word "project" (a short lowercase value used to lose the tie).
+    let db = NeuronDB::open(&tmp(), 500);
+    db.observe("o", "project Graus status is paused");
+    assert_eq!(db.get("o", "Graus status").as_deref(), Some("paused"));
+    db.observe("o", "project Helix owner is Bjorn");
+    assert_eq!(db.get("o", "Helix owner").as_deref(), Some("Bjorn"));
+    // numeric recall still works (number can precede its cue noun)
+    db.observe("o", "the team has 12 engineers");
+    assert_eq!(db.get("o", "how many engineers are there?").as_deref(), Some("12"));
+}
+
 // ---------- morphological fallback (fixes the lexical owner/owned/owns gap) ----------
 
 #[test]
