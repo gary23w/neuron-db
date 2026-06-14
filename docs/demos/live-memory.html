@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>neuron-db · live in your browser</title>
+<meta name="description" content="The real neuron-db Rust core and emergence cortex, compiled to WebAssembly and running entirely in your browser. Tell it facts, ask them back.">
+<style>
+  :root{
+    --bg:#0a0c12;--panel:#0f1216;--panel2:#15191f;--line:#20262e;--line2:#2b333d;
+    --ink:#eef1f4;--mid:#9aa4b0;--dim:#6b7480;--faint:#5b6478;
+    --accent:#5eead4;--accent2:#7c9cff;--pink:#f472b6;--green:#34d399;--amber:#f5b454;--red:#fb7185;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+  a{color:var(--accent2);text-decoration:none}
+  .mono{font-family:var(--mono)}
+  /* header */
+  header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+  header h1{font-size:14.5px;margin:0;font-weight:680;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+  header h1 b{color:var(--accent)}
+  header h1 svg{display:block}
+  .pills{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .pill{font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid);display:flex;align-items:center;gap:6px}
+  .pill b{color:var(--accent)}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+  .dot.on{background:var(--green);box-shadow:0 0 7px var(--green)}.dot.off{background:var(--amber)}.dot.err{background:var(--red)}
+  /* main two-pane */
+  main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
+  .pane{display:flex;flex-direction:column;min-height:0;min-width:0}
+  .pane.chat{border-right:1px solid var(--line)}
+  .pane h2{margin:0;padding:10px 16px;font:11.5px var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--dim);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex:none}
+  .pane h2 .c{color:var(--mid)}.pane h2 .c b{color:var(--accent)}
+  /* chat */
+  .feed{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:11px}
+  .msg{max-width:84%;padding:9px 13px;border-radius:13px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word;animation:pop .2s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  .msg.you{align-self:flex-end;background:#1b3a6b;color:#eaf1ff;border:1px solid #25497f;border-bottom-right-radius:4px}
+  .msg.bot{align-self:flex-start;background:var(--panel2);border:1px solid var(--line2);border-bottom-left-radius:4px}
+  .msg.bot .meta{display:block;margin-top:6px;font:11px var(--mono);color:var(--faint)}
+  .msg.sys{align-self:center;background:transparent;border:1px dashed var(--line2);color:var(--dim);font:12px var(--mono);max-width:92%;text-align:center}
+  .msg.bot .ans{color:var(--accent);font-weight:600}
+  .msg.bot.idk .ans{color:var(--amber)}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;padding:0 16px 10px}
+  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;padding:5px 11px;color:var(--mid);cursor:pointer;transition:.15s}
+  .chip:hover{color:var(--accent);border-color:var(--accent)}
+  .chip.q{color:var(--accent2)}.chip.q:hover{border-color:var(--accent2)}
+  .composer{flex:none;display:flex;gap:9px;padding:12px 16px;border-top:1px solid var(--line);background:var(--panel)}
+  .composer input{flex:1;background:var(--bg);border:1px solid var(--line2);border-radius:10px;color:var(--ink);font:14px var(--sans);padding:10px 13px;outline:none}
+  .composer input:focus{border-color:var(--accent)}
+  .composer button{background:var(--accent);color:#04211c;border:none;border-radius:10px;font:680 14px var(--sans);padding:0 18px;cursor:pointer}
+  .composer button:disabled{opacity:.5;cursor:not-allowed}
+  /* memory pane */
+  .mem-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border-bottom:1px solid var(--line);flex:none}
+  .mem-stats .s{background:var(--panel);padding:12px 14px;text-align:center}
+  .mem-stats .s .v{font:680 19px var(--mono);color:var(--ink)}
+  .mem-stats .s .v small{font-size:12px;color:var(--dim);font-weight:400}
+  .mem-stats .s .k{font:11px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+  .mem-list{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:8px}
+  .fact{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:8px;padding:9px 12px;font-size:13.5px;animation:pop .2s ease}
+  .fact.new{border-left-color:var(--green);box-shadow:0 0 0 1px rgba(52,211,153,.18)}
+  .fact .t{font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;margin-bottom:3px}
+  .empty{color:var(--dim);font:13px var(--mono);text-align:center;margin-top:30px;line-height:1.7}
+  /* banner */
+  .banner{display:none;padding:10px 16px;background:rgba(245,180,84,.1);border-bottom:1px solid var(--line2);color:var(--amber);font:12.5px var(--mono);flex:none}
+  .banner.show{display:block}
+  .banner a{color:var(--amber);text-decoration:underline}
+  /* footer note */
+  .foot{flex:none;padding:7px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .foot a{color:var(--dim)}
+  @media(max-width:760px){
+    main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+    .pane.chat{border-right:none;border-bottom:1px solid var(--line)}
+    .pills{width:100%;margin-left:0}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>
+    <svg width="20" height="20" viewBox="0 0 32 32"><circle cx="16" cy="16" r="4.6" fill="#5eead4"/><circle cx="6" cy="7" r="2.3" fill="#7c9cff"/><circle cx="26" cy="9" r="2.3" fill="#7c9cff"/><circle cx="7" cy="25" r="2.3" fill="#f472b6"/><circle cx="25" cy="24" r="2.3" fill="#34d399"/><g stroke="#5eead4" stroke-width="1.1" opacity=".55"><line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/><line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g></svg>
+    neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· live in your browser</span>
+  </h1>
+  <div class="pills">
+    <span class="pill"><span class="dot off" id="wasmDot"></span><span id="wasmState">loading core…</span></span>
+    <span class="pill">module <b id="wasmSize">1.4 MB</b></span>
+    <span class="pill">selftest <b id="selftest">—</b></span>
+  </div>
+</header>
+
+<div class="banner" id="banner"></div>
+
+<main>
+  <section class="pane chat">
+    <h2>conversation <span class="c">Rust core + emergence cortex, <b>0</b> network calls</span></h2>
+    <div class="feed" id="feed"></div>
+    <div class="chips" id="chips"></div>
+    <div class="composer">
+      <input id="input" placeholder="state a fact, or ask a question…" autocomplete="off" disabled>
+      <button id="send" disabled>Send</button>
+    </div>
+  </section>
+
+  <section class="pane mem">
+    <h2>what neuron-db remembers <span class="c"><b id="factN">0</b> facts</span></h2>
+    <div class="mem-stats">
+      <div class="s"><div class="v" id="stFacts">0</div><div class="k">facts</div></div>
+      <div class="s"><div class="v" id="stBytes">0 <small>B</small></div><div class="k">serialized ≈48 B/fact</div></div>
+      <div class="s"><div class="v" id="stLat">— <small>ms</small></div><div class="k">last recall</div></div>
+    </div>
+    <div class="mem-list" id="memList">
+      <div class="empty" id="memEmpty">no facts yet.<br>tell neuron-db something on the left,<br>then ask it back.</div>
+    </div>
+  </section>
+</main>
+
+<div class="foot">
+  <span>everything runs client-side · no server, no API key · the model is baked into the .wasm</span>
+  <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">github.com/gary23w/neuron-db ↗</a>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var feed=document.getElementById('feed'), input=document.getElementById('input'),
+      sendBtn=document.getElementById('send'), chips=document.getElementById('chips'),
+      memList=document.getElementById('memList'), memEmpty=document.getElementById('memEmpty'),
+      banner=document.getElementById('banner');
+  var facts=[];           // the stored scope (source of truth for the UI)
+  var EX=null;            // wasm exports
+  var td=new TextDecoder(), te=new TextEncoder();
+  var QWORDS=['what','whats','where','who','when','how','which','why'];
+  var YNWORDS=['is','are','am','do','does','did','can','could','will','would','was','were','have','has'];
+
+  function el(cls,html){var d=document.createElement('div');d.className=cls;if(html!=null)d.innerHTML=html;return d;}
+  function esc(s){return s.replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+  function scroll(){feed.scrollTop=feed.scrollHeight;}
+
+  function bubble(kind,html){var b=el('msg '+kind,html);feed.appendChild(b);scroll();return b;}
+
+  /* ---- wasm core ---- */
+  function think(query, fz){
+    var input=[query].concat(fz).join("\n");
+    var bytes=te.encode(input);
+    var ptr=EX.alloc(bytes.length);
+    new Uint8Array(EX.memory.buffer, ptr, bytes.length).set(bytes);
+    var outlen=EX.run(ptr, bytes.length);
+    return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), outlen));
+  }
+
+  function isQuestion(t){
+    var s=t.trim().toLowerCase();
+    if(s.endsWith('?')) return true;
+    var w=s.split(/\s+/)[0].replace(/[^a-z]/g,'');
+    return QWORDS.indexOf(w)>=0 || YNWORDS.indexOf(w)>=0;
+  }
+
+  function serializedBytes(){ return facts.length*48; } // matches docs/STORAGE.md figure
+  function fmtBytes(n){ return n<1024 ? n+' <small>B</small>' : (n/1024).toFixed(1)+' <small>KB</small>'; }
+
+  function renderMemory(newIdx){
+    document.getElementById('factN').textContent=facts.length;
+    document.getElementById('stFacts').textContent=facts.length;
+    document.getElementById('stBytes').innerHTML=fmtBytes(serializedBytes());
+    if(!facts.length){ memEmpty.style.display=''; return; }
+    memEmpty.style.display='none';
+    memList.innerHTML='';
+    facts.forEach(function(f,i){
+      var row=el('fact'+(i===newIdx?' new':''),
+        '<div class="t"><span>scope: demo · #'+(i+1)+'</span><span>'+f.t+'</span></div>'+esc(f.text));
+      memList.appendChild(row);
+    });
+    memList.scrollTop=memList.scrollHeight;
+  }
+
+  function nowt(){var d=new Date();return d.toTimeString().slice(0,8);}
+
+  function handle(text){
+    text=text.trim(); if(!text) return;
+    bubble('you', esc(text));
+    if(!EX){ bubble('bot', 'the core is still loading…'); return; }
+
+    if(isQuestion(text)){
+      var t0=performance.now();
+      var ans=think(text, facts.map(function(f){return f.text;}));
+      var ms=(performance.now()-t0);
+      document.getElementById('stLat').innerHTML=ms.toFixed(1)+' <small>ms</small>';
+      var idk=/i don'?t know/i.test(ans);
+      bubble('bot'+(idk?' idk':''),
+        '<span class="ans">'+esc(ans)+'</span>'+
+        '<span class="meta">recall + cortex · '+ms.toFixed(1)+' ms · over '+facts.length+' fact'+(facts.length===1?'':'s')+'</span>');
+    } else {
+      facts.push({text:text, t:nowt()});
+      renderMemory(facts.length-1);
+      bubble('bot', '<span class="ans">noted.</span><span class="meta">stored as fact #'+facts.length+' · ~48 B serialized</span>');
+    }
+  }
+
+  /* ---- suggestion chips ---- */
+  var SUGGEST=[
+    {t:'the wifi password is vekam73', q:false},
+    {t:'the launch is on Friday', q:false},
+    {t:'only the first 84,512 participants get badges', q:false},
+    {t:'the api key is zeta-9931', q:false},
+    {t:'what is the wifi password?', q:true},
+    {t:'how many participants?', q:true},
+    {t:'what is the api key?', q:true}
+  ];
+  SUGGEST.forEach(function(s){
+    var c=el('chip'+(s.q?' q':''), (s.q?'? ':'+ ')+esc(s.t));
+    c.title=s.q?'ask':'state a fact';
+    c.addEventListener('click', function(){ if(input.disabled) return; handle(s.t); });
+    chips.appendChild(c);
+  });
+
+  /* ---- input wiring ---- */
+  function submit(){ var v=input.value; input.value=''; handle(v); }
+  sendBtn.addEventListener('click', submit);
+  input.addEventListener('keydown', function(e){ if(e.key==='Enter') submit(); });
+
+  function ready(){
+    input.disabled=false; sendBtn.disabled=false; input.focus();
+    bubble('sys','neuron-db core ready · model baked into a 1.4 MB .wasm · running locally');
+    bubble('bot','i\'m an associative memory running entirely in your browser. tell me facts in plain language, then ask them back. try the chips below, or type your own.');
+  }
+
+  function failOffline(why){
+    document.getElementById('wasmDot').className='dot err';
+    document.getElementById('wasmState').textContent='core unavailable';
+    banner.className='banner show';
+    banner.innerHTML='⚠ the WebAssembly core needs to be served over http(s). '+
+      (location.protocol==='file:'
+        ? 'You opened this from a local file. View it on the live site, or run <span style="color:var(--ink)">python3 -m http.server</span> in <span style="color:var(--ink)">docs/</span>.'
+        : esc(String(why)));
+    bubble('sys','core offline — '+(location.protocol==='file:'?'open over http to run live':'load failed'));
+  }
+
+  /* ---- load wasm (streaming, with arraybuffer fallback for non-wasm mime) ---- */
+  (function load(){
+    document.getElementById('wasmSize').textContent=(1447409/1048576).toFixed(1)+' MB';
+    function boot(instance){
+      EX=instance.exports;
+      var code=EX.selftest();
+      document.getElementById('wasmDot').className='dot on';
+      document.getElementById('wasmState').textContent='core ready';
+      document.getElementById('selftest').textContent=code+' ('+((code&1)?'store✓':'store✗')+' '+((code&2)?'cortex✓':'cortex✗')+')';
+      ready();
+    }
+    if(location.protocol==='file:'){ failOffline('file://'); return; }
+    var url='neuron_core.wasm';
+    if(WebAssembly.instantiateStreaming){
+      WebAssembly.instantiateStreaming(fetch(url),{})
+        .then(function(r){boot(r.instance);})
+        .catch(function(){ // fallback: some hosts send wrong mime
+          fetch(url).then(function(r){return r.arrayBuffer();})
+            .then(function(buf){return WebAssembly.instantiate(buf,{});})
+            .then(function(r){boot(r.instance);})
+            .catch(failOffline);
+        });
+    } else {
+      fetch(url).then(function(r){return r.arrayBuffer();})
+        .then(function(buf){return WebAssembly.instantiate(buf,{});})
+        .then(function(r){boot(r.instance);})
+        .catch(failOffline);
+    }
+  })();
+})();
+</script>
+</body>
+</html>
