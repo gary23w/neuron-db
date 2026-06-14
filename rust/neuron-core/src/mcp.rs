@@ -3,9 +3,10 @@
 //! client (Claude Desktop/Code, Cursor, ...) can mount this single binary and get a
 //! recall->inject->write memory loop with zero glue.
 //!
-//! Tools: recall (top-k memory block), recall_value (single value), remember, forget,
-//! stats. Std-only; reuses the same hand-rolled JSON approach as the HTTP server.
-//! Feature-gated behind `mcp` (which enables `sqlite`).
+//! Tools: recall (top-k block), recall_associative (spreading activation), recall_value,
+//! recall_chain, remember, note (typed neurons: fact/user/instruction/stance/var), recall_var,
+//! forget, stats. Std-only; reuses the same hand-rolled JSON approach as the HTTP server.
+//! Feature-gated behind `mcp` (which enables `sqlite` and `semantic`).
 use std::io::{self, BufRead, Write};
 use std::time::Instant;
 use crate::db::NeuronDB;
@@ -104,11 +105,14 @@ fn tool_err(id: &str, text: &str) -> String {
 // tools/list payload. Each entry MUST be a single line: MCP stdio framing is one JSON
 // message per physical line, so a response may never contain a raw newline. Names use
 // snake_case for broad client compatibility.
-const TOOL_DEFS: [&str; 6] = [
-r#"{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc - isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"}},"required":["scope","query"]}}"#,
+const TOOL_DEFS: [&str; 9] = [
+r#"{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier. Ranks by associative cue overlap; pass rank='semantic' for broad/narrative topics.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc - isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"},"rank":{"type":"string","enum":["lexical","semantic"],"description":"ranking strategy; default lexical (associative). Use semantic only for broad/narrative recall."}},"required":["scope","query"]}}"#,
+r#"{"name":"recall_associative","description":"Spreading-activation recall: starts from facts that match the query, then follows shared-entity links to surface RELATED facts that may share no words with the query. Use for 'what's connected to X' or to gather context around a topic.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"the topic or entity to activate from"},"k":{"type":"integer","description":"max facts to return (default 8)"},"hops":{"type":"integer","description":"link hops to spread (default 2)"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_chain","description":"Answer a multi-hop question in ONE call by walking a chain of relations server-side (no extra round-trips, any depth). Give the starting entity and the ordered relations to follow. Example: start 'Aurora', path ['owner','manager','timezone'] returns the timezone of the manager of the owner of Aurora.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"start":{"type":"string","description":"the entity to start from, e.g. 'Aurora' or 'Marisol'"},"path":{"type":"array","items":{"type":"string"},"description":"ordered relations to follow, e.g. ['owner','manager','timezone']"}},"required":["scope","start","path"]}}"#,
 r#"{"name":"remember","description":"Store durable facts the user stated, in plain language ('my plan is pro'). Call this AFTER a turn for anything worth remembering. Accepts one fact via 'text' or many via 'facts'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"text":{"type":"string","description":"a single fact to store"},"facts":{"type":"array","items":{"type":"string"},"description":"several facts to store at once"}},"required":["scope"]}}"#,
+r#"{"name":"note","description":"Mint a TYPED memory neuron. Use when you or the user want to save/keep/set something durably. kind: 'fact' (a world fact), 'user' (a durable fact about the user), 'instruction' (a standing rule you must keep following - re-shown to you every turn), 'stance' (your OWN opinion/feeling/side-thought about a topic), 'var' (a NAMED value to read back later with recall_var; REQUIRES key). You have NOT saved anything until this returns a stored address.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"kind":{"type":"string","enum":["fact","user","instruction","stance","var"],"description":"the neuron type"},"text":{"type":"string","description":"the content to store (for kind=var, the value)"},"key":{"type":"string","description":"required for kind=var: the variable name"}},"required":["scope","kind","text"]}}"#,
+r#"{"name":"recall_var","description":"Read back the exact value of a named variable set earlier with note(kind=var). Returns the value or '(unset: key)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"key":{"type":"string","description":"the variable name"}},"required":["scope","key"]}}"#,
 r#"{"name":"forget","description":"Delete remembered facts. With 'match', removes facts containing that substring; without it, clears the whole scope.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"match":{"type":"string","description":"substring to match (omit to clear the entire scope)"}},"required":["scope"]}}"#,
 r#"{"name":"stats","description":"Report how many facts a memory scope holds.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"}},"required":["scope"]}}"#,
 ];
@@ -136,18 +140,78 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if q.is_empty() { (tool_err(id, "recall needs a query"), 0) }
             else {
                 let k = json_num(body, "k").unwrap_or(5).clamp(1, 50) as usize;
-                // semantic-ranked block recall when available (topically coherent), else lexical
+                // default to lexical/associative recall; semantic is an explicit opt-in ranking signal
+                let _rank = json_field(body, "rank").unwrap_or_default();
                 #[cfg(feature = "semantic")]
-                let hits = db.recall_blended(&scope, &q, k);
+                let hits = if _rank == "semantic" { db.recall_blended(&scope, &q, k) } else { db.recall_many(&scope, &q, k) };
                 #[cfg(not(feature = "semantic"))]
                 let hits = db.recall_many(&scope, &q, k);
                 let n = hits.len();
                 if hits.is_empty() {
-                    (tool_text(id, &format!("No memories found in {} for \"{}\".", scope, q)), 0)
+                    (tool_text(id, &format!("No memories found for \"{}\".", q)), 0)
                 } else {
-                    let mut s = format!("Relevant memories in {} ({}):\n", scope, n);
+                    let mut s = format!("memories ({}):\n", n);
                     for h in &hits { s.push_str(&format!("- {}\n", h.fact)); }
                     (tool_text(id, s.trim_end()), n)
+                }
+            }
+        }
+        "recall_associative" => {
+            let q = json_field(body, "query").unwrap_or_default();
+            if q.is_empty() { (tool_err(id, "recall_associative needs a query"), 0) }
+            else {
+                let k = json_num(body, "k").unwrap_or(8).clamp(1, 50) as usize;
+                let hops = json_num(body, "hops").unwrap_or(2).clamp(1, 4) as usize;
+                let hits = db.recall_associative(&scope, &q, k, hops);
+                let n = hits.len();
+                if hits.is_empty() {
+                    (tool_text(id, &format!("No memories found for \"{}\".", q)), 0)
+                } else {
+                    let mut s = format!("activated ({}):\n", n);
+                    for h in &hits { s.push_str(&format!("{} {}\n", if h.seed { "*" } else { "-" }, h.fact)); }
+                    (tool_text(id, s.trim_end()), n)
+                }
+            }
+        }
+        "note" => {
+            let kind = json_field(body, "kind").unwrap_or_else(|| "fact".into());
+            let text = json_field(body, "text").unwrap_or_default();
+            if text.trim().is_empty() { (tool_err(id, "note needs 'text'"), 0) }
+            else {
+                let (suffix, label) = match kind.as_str() {
+                    "instruction" => ("::instr", "instruction"),
+                    "stance" => ("::stance", "stance"),
+                    "var" => ("::var", "var"),
+                    "user" => ("", "user fact"),
+                    _ => ("", "fact"),
+                };
+                let sub = format!("{}{}", scope, suffix);
+                if kind == "var" {
+                    let key = json_field(body, "key").unwrap_or_default();
+                    let key = key.trim();
+                    if key.is_empty() { (tool_err(id, "note kind=var needs 'key'"), 0) }
+                    else {
+                        db.forget(&sub, Some(&format!("{} is ", key)));   // upsert: drop any prior value for this key
+                        let w = db.observe(&sub, &format!("{} is {}", key, text.trim()));
+                        if w > 0 { (tool_text(id, &format!("Set var [{}] {} = {}", sub, key, text.trim())), 1) }
+                        else { (tool_text(id, &format!("(not stored: '{}' value too short to encode)", key)), 0) }
+                    }
+                } else {
+                    let w = db.observe(&sub, text.trim());
+                    if w > 0 { (tool_text(id, &format!("Noted {} [{}]: {}", label, sub, text.trim())), 1) }
+                    else { (tool_text(id, &format!("(already noted) {} [{}]", label, sub)), 0) }
+                }
+            }
+        }
+        "recall_var" => {
+            let key = json_field(body, "key").unwrap_or_default();
+            let key = key.trim();
+            if key.is_empty() { (tool_err(id, "recall_var needs 'key'"), 0) }
+            else {
+                let sub = format!("{}::var", scope);
+                match db.get(&sub, key) {
+                    Some(v) => (tool_text(id, &v), 1),
+                    None => (tool_text(id, &format!("(unset: {})", key)), 0),
                 }
             }
         }
@@ -255,9 +319,54 @@ mod tests {
     fn tools_list_has_all_tools() {
         let db = NeuronDB::open(&tmp(), 500);
         let r = handle_line(&db, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").unwrap();
-        for t in ["recall","recall_value","recall_chain","remember","forget","stats"] {
+        for t in ["recall","recall_associative","recall_value","recall_chain","remember","note","recall_var","forget","stats"] {
             assert!(r.contains(&format!("\"name\":\"{}\"", t)), "missing tool {}", t);
         }
+    }
+
+    #[test]
+    fn note_stores_typed_neuron_in_subscope() {
+        let db = NeuronDB::open(&tmp(), 500);
+        let r = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"user:1\",\"kind\":\"instruction\",\"text\":\"do not send markdown syntax\"}}}").unwrap();
+        assert!(r.contains("user:1::instr"), "got {}", r);
+        assert!(r.contains("do not send markdown"), "got {}", r);
+        let s = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"user:1::instr\"}}}").unwrap();
+        assert!(s.contains("1 fact"), "instruction sub-scope should hold 1 fact, got {}", s);
+    }
+
+    #[test]
+    fn note_var_upserts_and_recall_var_reads() {
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"deployRegion\",\"text\":\"us-west-2\"}}}");
+        let r = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"deployRegion\"}}}").unwrap();
+        assert!(r.contains("us-west-2"), "got {}", r);
+        // upsert: a second set replaces, not duplicates
+        handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"deployRegion\",\"text\":\"eu-central-1\"}}}");
+        let r2 = handle_line(&db, "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"deployRegion\"}}}").unwrap();
+        assert!(r2.contains("eu-central-1") && !r2.contains("us-west-2"), "upsert should replace, got {}", r2);
+        let s = handle_line(&db, "{\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"u::var\"}}}").unwrap();
+        assert!(s.contains("1 fact"), "var sub-scope should hold exactly 1 fact after upsert, got {}", s);
+    }
+
+    #[test]
+    fn note_var_missing_key_is_error_and_unset_reads_marker() {
+        let db = NeuronDB::open(&tmp(), 500);
+        let e = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"text\":\"x\"}}}").unwrap();
+        assert!(e.contains("\"isError\":true"), "var without key should error, got {}", e);
+        let u = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"nope\"}}}").unwrap();
+        assert!(u.contains("(unset: nope)"), "got {}", u);
+    }
+
+    #[test]
+    fn recall_associative_surfaces_word_disjoint_associate() {
+        let db = NeuronDB::open(&tmp(), 5000);
+        // a chain of facts linked by shared entities; the query word appears only in the first
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"remember\",\"arguments\":{\"scope\":\"o\",\"facts\":[\"project Phoenix is owned by Marisol\",\"Marisol manages the Atlas budget\",\"the Atlas budget is fourty thousand dollars\"]}}}");
+        let r = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_associative\",\"arguments\":{\"scope\":\"o\",\"query\":\"Phoenix\",\"hops\":2,\"k\":8}}}").unwrap();
+        // "Marisol" is one hop from the Phoenix seed via the shared entity, surfaced though it
+        // shares no word with the query
+        assert!(r.contains("Marisol manages"), "spreading should surface the associate, got {}", r);
+        assert!(r.contains("activated ("), "got {}", r);
     }
 
     #[test]
@@ -300,7 +409,7 @@ mod tests {
         let db = NeuronDB::open(&tmp(), 500);
         handle_line(&db, "{\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"remember\",\"arguments\":{\"scope\":\"u\",\"facts\":[\"my plan is pro\",\"my city is Halifax\"]}}}");
         let r = handle_line(&db, "{\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"recall\",\"arguments\":{\"scope\":\"u\",\"query\":\"my plan and city\",\"k\":3}}}").unwrap();
-        assert!(r.contains("Relevant memories"), "got {}", r);
+        assert!(r.contains("memories ("), "got {}", r);
     }
 
     #[test]

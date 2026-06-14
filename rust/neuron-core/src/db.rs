@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::{Neuron, Recall};
+use crate::{Neuron, Recall, Spread};
 use crate::turn::turn;
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS neurons (id TEXT PRIMARY KEY, facts TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0);";
@@ -175,6 +175,13 @@ impl NeuronDB {
         let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_many(query, k)
+    }
+    /// Spreading-activation recall: seeds on cue matches, then follows shared-entity links to
+    /// surface associated facts (see Neuron::recall_spreading). Association-based, not keyword/cosine.
+    pub fn recall_associative(&self, nid: &str, query: &str, k: usize, hops: usize) -> Vec<Spread> {
+        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
     }
     pub fn get(&self, nid: &str, query: &str) -> Option<String> { self.recall(nid, query).map(|h| h.value) }
     /// Multi-hop traversal, server-side: start at `start` and follow each relation in `path`,

@@ -134,6 +134,10 @@ pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Ve
 
 #[derive(Clone, Debug)]
 pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
+/// A spreading-activation hit: a fact reached by following shared-entity links from the cue.
+/// `seed` marks a fact that directly matched the query; the rest are associates surfaced by spread.
+#[derive(Debug, Clone)]
+pub struct Spread { pub fact: String, pub value: String, pub seed: bool, pub act: f64 }
 
 fn sentences(u: &str, cap: usize) -> Vec<String> {
     let mut parts = Vec::new(); let mut cur = String::new();
@@ -375,6 +379,57 @@ impl Neuron {
             Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo }
         }).collect();
         if out.is_empty() { self.root_scan(query, k) } else { out }
+    }
+
+    /// Spreading-activation recall over the shared-stem co-occurrence graph. Facts that match the
+    /// cue are seeded, then activation flows along DISCRIMINATIVE shared stems (rare entities link
+    /// strongly; common/hub stems are ignored) for `hops`, so facts that share no words with the
+    /// query but are wired to a match still surface. This is association-based recall — it traverses
+    /// structure the raw text never stated — not keyword or cosine ranking. Pure read of the index.
+    pub fn recall_spreading(&mut self, query: &str, k: usize, hops: usize) -> Vec<Spread> {
+        let cue: HashSet<String> = stems_s(&content(query));
+        if cue.is_empty() || self.episodes.is_empty() { return Vec::new(); }
+        self.ensure_index();
+        let idx = self.index.as_ref().unwrap();
+        let n = self.episodes.len();
+        let mut act = vec![0f64; n];
+        let mut seed = vec![false; n];
+        let mut frontier: Vec<usize> = Vec::new();
+        for s in &cue {
+            if let Some(v) = idx.get(s) {
+                for &j in v { if !seed[j] { seed[j] = true; frontier.push(j); } act[j] += 1.0; }
+            }
+        }
+        if frontier.is_empty() { return Vec::new(); }
+        let dfcap = ((n as f64) * 0.25).max(4.0) as usize;   // hub stems link too much to be discriminative
+        for _ in 0..hops {
+            let mut next: HashMap<usize, f64> = HashMap::new();
+            for &i in &frontier {
+                let ai = act[i];
+                for s in &self.episodes[i].s {
+                    if stopval_s().contains(s) { continue; }
+                    let posting = match idx.get(s) { Some(p) => p, None => continue };
+                    let df = posting.len();
+                    if df < 2 || df > dfcap { continue; }    // unique stem = no link; hub = skipped
+                    let w = 0.5 / df as f64;                 // rarer shared entity = stronger link
+                    for &j in posting { if j != i { *next.entry(j).or_insert(0.0) += ai * w; } }
+                }
+            }
+            frontier.clear();
+            for (j, add) in next {
+                let was = act[j];
+                act[j] += add;
+                if was == 0.0 { frontier.push(j); }          // newly lit -> spread on the next hop
+            }
+            if frontier.is_empty() { break; }
+        }
+        let mut order: Vec<usize> = (0..n).filter(|&i| act[i] > 0.0).collect();
+        order.sort_by(|&a, &b| act[b].partial_cmp(&act[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+        order.truncate(k);
+        order.into_iter().map(|i| {
+            let e = &self.episodes[i];
+            Spread { fact: e.t.clone(), value: e.v.clone(), seed: seed[i], act: act[i] }
+        }).collect()
     }
 
     /// Fuzzy fallback: a root-normalized linear scan used only when exact-stem recall finds
