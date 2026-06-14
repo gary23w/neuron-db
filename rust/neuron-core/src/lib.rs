@@ -53,6 +53,22 @@ fn stem1(w: &str) -> String {
     else { w }
 }
 fn stems<'a, I: IntoIterator<Item = &'a String>>(it: I) -> HashSet<String> { it.into_iter().map(|w| stem1(w)).collect() }
+/// Public morphological root (owner/owned/owns -> own). Used by recall_chain to verify a
+/// hop's relation actually appears in the recalled fact before advancing.
+pub fn root_token(w: &str) -> String { root(w) }
+/// Morphological root for the fuzzy fallback: strip a common suffix so owner/owned/owns
+/// normalize together. ONLY used on a primary recall miss, so it never affects the fast path.
+fn root(w: &str) -> String {
+    let base = w.trim_matches(|c: char| "?.!,;:'\"\u{2019}><)([]}{".contains(c)).to_lowercase();
+    let base = irr(&base).to_string();
+    const SUF: [&str; 12] = ["ization","ation","ments","ment","ness","ing","ion","ies","es","ed","er","s"];
+    for suf in SUF {
+        if base.len() >= suf.len() + 3 && base.ends_with(suf) {
+            return base[..base.len() - suf.len()].to_string();
+        }
+    }
+    base
+}
 fn stems_s(it: &HashSet<String>) -> HashSet<String> { it.iter().map(|w| stem1(w)).collect() }
 fn aliases() -> &'static HashMap<&'static str, &'static str> {
     static M: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -239,7 +255,7 @@ impl Neuron {
             let sc = (exact_ov, ov as i64, selfp, subj, spec, i as i64);
             if sc > bk { bk = sc; best = Some(i); }
         }
-        let bi = best?;
+        let bi = match best { Some(b) => b, None => return self.root_scan(query, 1).into_iter().next() };
         let e = &self.episodes[bi];
         let bes: HashSet<&String> = e.s.iter().collect();
         let mut cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
@@ -271,12 +287,42 @@ impl Neuron {
         scored.sort_by(|a,b| b.0.cmp(&a.0));
         scored.truncate(k);
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
-        scored.into_iter().map(|(sc,i)| {
+        let out: Vec<Recall> = scored.into_iter().map(|(sc,i)| {
             let e = &self.episodes[i];
             let bes: HashSet<&String> = e.s.iter().collect();
             let cov = cue.iter().filter(|c| bes.contains(c)).count() as f64 / (cue.len().max(1) as f64);
             let (val, echo) = pick_value(e, &cue, want_num);
             Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo }
+        }).collect();
+        if out.is_empty() { self.root_scan(query, k) } else { out }
+    }
+
+    /// Fuzzy fallback: a root-normalized linear scan used only when exact-stem recall finds
+    /// nothing. Unifies morphological variants (owner/owned/owns) and alias synonyms, so a
+    /// query whose words don't stem-match the stored facts can still recall. O(facts), but
+    /// only on a miss, so the warm fast path keeps its flat microsecond cost.
+    fn root_scan(&self, query: &str, k: usize) -> Vec<Recall> {
+        let qc = content(query);
+        if qc.is_empty() { return Vec::new(); }
+        let mut qroots: HashSet<String> = qc.iter().map(|w| root(w)).collect();
+        for w in &qc { if let Some(c) = aliases().get(w.as_str()) { qroots.insert(root(c)); } }
+        let want_num = qc.contains("many") || qc.contains("much") || qc.contains("number");
+        let mut scored: Vec<((i64,i64,i64), usize)> = Vec::new();
+        for (i, e) in self.episodes.iter().enumerate() {
+            let er: HashSet<String> = e.raw.iter().map(|w| root(w)).collect();
+            let ov = qroots.iter().filter(|r| er.contains(*r)).count() as i64;
+            if ov < 1 { continue; }
+            let spec = -(e.raw.len() as i64);
+            scored.push(((ov, spec, i as i64), i));
+        }
+        scored.sort_by(|a,b| b.0.cmp(&a.0));
+        scored.truncate(k);
+        scored.into_iter().map(|(sc, i)| {
+            let e = &self.episodes[i];
+            let cue: HashSet<String> = e.raw.iter().filter(|w| qroots.contains(&root(w))).map(|w| stem1(w)).collect();
+            let (val, echo) = pick_value(e, &cue, want_num);
+            let cov = sc.0 as f64 / qroots.len().max(1) as f64;
+            Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.0 as usize, exact: 0, echo }
         }).collect()
     }
 

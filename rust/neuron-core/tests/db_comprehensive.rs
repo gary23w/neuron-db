@@ -96,6 +96,48 @@ fn limitation_single_content_word_fact_dropped() {
     assert_eq!(db.observe("u", "my country is US"), 0); // "us" is a stopword, "country" lone content word
 }
 
+// ---------- morphological fallback (fixes the lexical owner/owned/owns gap) ----------
+
+#[test]
+fn morphological_fallback_bridges_owner_owned_owns() {
+    let db = NeuronDB::open(&tmp(), 500);
+    db.observe("u", "project Aurora is owned by Marisol");
+    // queries phrased with different morphology all recall Marisol via the root fallback
+    assert_eq!(db.get("u", "who is the owner of Aurora?").as_deref(), Some("Marisol"));
+    assert_eq!(db.get("u", "who owns Aurora?").as_deref(), Some("Marisol"));
+}
+
+#[test]
+fn fallback_does_not_fabricate_on_true_miss() {
+    let db = NeuronDB::open(&tmp(), 500);
+    db.observe("u", "my plan is pro");
+    assert_eq!(db.get("u", "what is the weather in Tokyo?"), None);
+}
+
+// ---------- recall_chain: server-side multi-hop ----------
+
+#[test]
+fn recall_chain_three_hops() {
+    let db = NeuronDB::open(&tmp(), 5000);
+    db.observe_many("o", &[
+        "project Aurora owner is Marisol".into(),
+        "Marisol manager is Dana".into(),
+        "Dana timezone is WET".into(),
+    ]);
+    let (val, trail) = db.recall_chain("o", "Aurora", &["owner".into(), "manager".into(), "timezone".into()]);
+    assert_eq!(val.as_deref(), Some("WET"));
+    assert_eq!(trail, vec!["Aurora", "Marisol", "Dana", "WET"]);
+}
+
+#[test]
+fn recall_chain_reports_break() {
+    let db = NeuronDB::open(&tmp(), 5000);
+    db.observe("o", "project Aurora owner is Marisol");
+    let (val, trail) = db.recall_chain("o", "Aurora", &["owner".into(), "manager".into()]);
+    assert_eq!(val, None);                       // Marisol's manager was never stored
+    assert_eq!(trail, vec!["Aurora", "Marisol"]); // trail shows where it stopped
+}
+
 // ---------- stemming precision ----------
 
 #[test]
