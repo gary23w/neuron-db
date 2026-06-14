@@ -79,6 +79,10 @@ impl NeuronDB {
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
+            // re-stating an identical fact shouldn't pile up duplicates (the model often calls
+            // remember again across turns). Exact-text dedup on the single-observe path; the
+            // batch path (observe_many) stays un-deduped so bulk ingest stays O(n).
+            if e.n.episodes.iter().any(|ep| ep.t == text) { return 0; }
             w = e.n.observe(text);
             Self::persist(conn, nid, e);
         }
