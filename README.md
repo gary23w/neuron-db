@@ -85,11 +85,15 @@ db.forget("user:42", Some("plan"));         // delete by substring
 - **Adaptive.** The plastic tier learns from use with O(1) scalar updates — no re-embedding,
   no re-indexing.
 
-The trade: it's scalar-first, lexical recall — not learned semantic similarity. It bridges
-morphology (`owner`/`owned`/`owns`) and a curated synonym ontology (`reports to`↔`manager`,
-`lives in`↔`city`) for free, but open-vocabulary paraphrase (`"the thing I use to get
-online"` → `"wifi password"`) would still want an embedding tier. In exchange you get
-microsecond recall, ~130× the density of a vector store, and no model on the hot path.
+Recall is scalar-first and layered: exact/stem cues, morphology (`owner`/`owned`/`owns`), a
+curated synonym ontology (`reports to`↔`manager`), and — with `--features semantic` — a
+**corpus-distributional semantic space** (Random Indexing, std-only, no model) that grounds
+meaning in co-occurrence so open-vocabulary paraphrase resolves too: trained on text,
+`"the thing I use to get online"` recalls the `wifi` fact. The fuzzy tier is a fallback, so
+the lexical path keeps its microsecond, ~130×-denser, no-model-on-the-hot-path profile. See
+**[docs/SEMANTIC.md](docs/SEMANTIC.md)** (incl. the book-ingestion test: 600k words in ~0.5s,
+~3 ms lexical recall over 29k facts, and a semantic space that learns `whale`→`ship/sea/sperm`
+from the text alone).
 
 ## Build
 
@@ -125,6 +129,7 @@ or an **[existing API](examples/guides/EXISTING_API.md)**.
 ## Docs
 
 - [docs/SYNAPSE.md](docs/SYNAPSE.md) — how fast recall fires for an LLM, measured
+- [docs/SEMANTIC.md](docs/SEMANTIC.md) — the fuzzy semantic space + the book-ingestion test
 - [docs/COMPARISON.md](docs/COMPARISON.md) — multi-hop + neuron-db vs the markdown-dump memory
 - [docs/MEMORY_HARNESS.md](docs/MEMORY_HARNESS.md) — mount as LLM memory; the MCP server & tools
 - [docs/API.md](docs/API.md) — data model and every operation (library / CLI / HTTP)

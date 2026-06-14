@@ -19,14 +19,37 @@ pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub
 
 struct Entry { n: Neuron, created: i64, turns: i64, used: u64 }
 struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
-pub struct NeuronDB { inner: Mutex<Inner>, max_facts: usize, cap: usize }
+pub struct NeuronDB {
+    inner: Mutex<Inner>, max_facts: usize, cap: usize,
+    #[cfg(feature = "semantic")] sem: Mutex<crate::semantic::SemanticSpace>,
+    #[cfg(feature = "semantic")] sem_threshold: f32,
+}
 
 impl NeuronDB {
     pub fn open(path: &str, max_facts: usize) -> Self {
         let conn = Connection::open(path).expect("open sqlite");
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
         conn.execute(SCHEMA, []).expect("schema");
-        NeuronDB { inner: Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }), max_facts, cap: 256 }
+        NeuronDB {
+            inner: Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }), max_facts, cap: 256,
+            #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
+            #[cfg(feature = "semantic")] sem_threshold: 0.20,
+        }
+    }
+
+    /// Train the semantic space on arbitrary background text (e.g. a book/corpus), so recall
+    /// can fall back to meaning when lexical cues miss. No-op unless built with `semantic`.
+    #[cfg(feature = "semantic")]
+    pub fn train_semantic(&self, text: &str) { self.sem.lock().unwrap().train(text); }
+    /// (vocab words, tokens seen, approx bytes) of the semantic space.
+    #[cfg(feature = "semantic")]
+    pub fn semantic_stats(&self) -> (usize, u64, usize) {
+        let s = self.sem.lock().unwrap(); (s.vocab(), s.tokens(), s.bytes())
+    }
+    /// The k nearest words to `word` in the learned semantic space (for inspection).
+    #[cfg(feature = "semantic")]
+    pub fn semantic_neighbors(&self, word: &str, k: usize) -> Vec<(String, f32)> {
+        self.sem.lock().unwrap().nearest(word, k)
     }
 
     /// Ensure `nid` is in the cache (load from sqlite on miss; evict LRU when over cap).
@@ -50,26 +73,65 @@ impl NeuronDB {
     }
 
     pub fn observe(&self, nid: &str, text: &str) -> usize {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
-        Self::ensure(inner, nid, self.max_facts, self.cap);
-        let Inner { conn, cache, .. } = inner;
-        let e = cache.get_mut(nid).unwrap();
-        let w = e.n.observe(text);
-        Self::persist(conn, nid, e); w
+        let w;
+        {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(nid).unwrap();
+            w = e.n.observe(text);
+            Self::persist(conn, nid, e);
+        }
+        #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(text);
+        w
     }
     /// Batch ingest: one load, many appends, one save. Amortizes the per-write commit.
     pub fn observe_many(&self, nid: &str, texts: &[String]) -> usize {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
-        Self::ensure(inner, nid, self.max_facts, self.cap);
-        let Inner { conn, cache, .. } = inner;
-        let e = cache.get_mut(nid).unwrap();
-        let mut w = 0; for t in texts { w += e.n.observe(t); }
-        Self::persist(conn, nid, e); w
+        let w;
+        {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(nid).unwrap();
+            let mut acc = 0; for t in texts { acc += e.n.observe(t); }
+            Self::persist(conn, nid, e); w = acc;
+        }
+        #[cfg(feature = "semantic")] { let mut s = self.sem.lock().unwrap(); for t in texts { s.train(t); } }
+        w
     }
     pub fn recall(&self, nid: &str, query: &str) -> Option<Recall> {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
-        Self::ensure(inner, nid, self.max_facts, self.cap);
-        inner.cache.get_mut(nid).unwrap().n.recall(query)
+        let lex = {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            inner.cache.get_mut(nid).unwrap().n.recall(query)
+        };
+        #[cfg(feature = "semantic")]
+        if lex.is_none() {
+            if let Some(r) = self.recall_semantic(nid, query) { return Some(r); }
+        }
+        lex
+    }
+    /// Semantic fallback: when lexical recall misses, rank the scope's facts in the semantic
+    /// space and return the best if it clears the similarity threshold. Resolves paraphrase
+    /// that shares no words with the stored fact ("the thing I use to get online" -> wifi).
+    #[cfg(feature = "semantic")]
+    pub fn recall_semantic(&self, nid: &str, query: &str) -> Option<Recall> {
+        let facts: Vec<(String, String)> = {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| (e.t.clone(), e.v.clone())).collect()
+        };
+        if facts.is_empty() { return None; }
+        let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
+        let s = self.sem.lock().unwrap();
+        let ranked = s.rank(query, &texts);
+        match ranked.first() {
+            Some(&(i, score)) if score >= self.sem_threshold => {
+                let (fact, value) = facts[i].clone();
+                Some(Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false })
+            }
+            _ => None,
+        }
     }
     pub fn recall_many(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
         let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
