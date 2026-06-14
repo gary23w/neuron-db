@@ -153,7 +153,9 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     if u.is_empty() { return None; }
     let cont = content(u);
     let has_digit = cont.iter().any(|w| w.chars().any(|c| c.is_ascii_digit()));
-    if cont.len() < 2 && !has_digit { return None; }
+    // need at least one content word (or a number), and at least 3 words total — so an explicit
+    // short fact like "i am tired" or "call me ace" is kept, but bare "ok" / "hello" is not.
+    if cont.is_empty() && !has_digit { return None; }
     if u.split_whitespace().count() < 3 && !has_digit { return None; }
     let uw = words(u);
     let selfish = (uw.contains("my")||uw.contains("i")||uw.contains("im")||uw.contains("mine"))
