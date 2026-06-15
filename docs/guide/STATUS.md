@@ -65,17 +65,39 @@ See **[BENCHMARKS.md](BENCHMARKS.md)** for methodology and the full tables.
   not cascading to typed sub-scopes, unknown-`kind` silent drop, and a JSON-array parser edge.
 - **Reference harness** (`neuron-chat-lab`): live two-pane lab — passive capture, a per-document
   register, and optional **reasoning-model** support so a deliberating model drives the tools itself.
+- **Measured head-to-head vs dense vectors** (`docs/guide/VS_VECTORS.md`): on one frozen dataset with
+  identical scoring, neuron-db is ~360× faster end-to-end and ties or wins every class except
+  zero-shot paraphrase (which the semantic re-rank closes to parity given a corpus). MCP round-trip
+  measured at ~0.5 ms over real stdio — the store is never the bottleneck; the model is.
+- **Cleanup:** a `cargo clippy` pass to industry standard (autofix + justified numeric-kernel allows)
+  and a fix for terse colon-delimited entries the min-word filter was dropping on first insert.
 
 ## What's next (the menu)
 
-- **Cross-restart persistence of the plastic graph.** Hebbian links + use-strength currently rebuild
-  per session; persist them so associations accumulate across restarts (true long-term adaptation).
+Grounded in a read of the real crate (`lib.rs` / `db.rs` / `router.rs` / `server.rs`):
+
+- **Persist the inverted index (the next build).** `dump()` discards the derived stems/positions, so
+  `Neuron::load` re-runs `encode()` and rebuilds the index on every cold scope reload — a cost the
+  "flat µs" story hides across the 256-scope LRU. Append an opt-in (`NEURON_PERSIST_INDEX`) V2 dump
+  section, backward-compatible via the existing tolerant trailing-field parser; pure std, ~2–3× disk
+  on the durable tier only.
+- **Scale out to a swarm — feasible today, no new deps.** Scopes are already the partition unit, so a
+  ~10-line consistent-hash placement + a `FederatedRouter` (a coordinator over remote `serve` nodes,
+  reusing the HTTP recall response's existing merge key over `std::net::TcpStream`) gives a real
+  cross-host fleet. Writes route to the deterministic owner → per-scope sequential consistency for
+  free. Two load-bearing rules: typed sub-scopes must co-locate with their parent (so a cascade
+  delete stays node-local), and chain/associative queries route by the start entity (the spreading
+  graph lives in one `Neuron`).
+- **Cross-restart persistence of the plastic graph + semantic space.** Hebbian links and the
+  Random-Indexing space are rebuilt per session; `dump`/`load` via the existing int8 quantize path
+  makes adaptation and meaning durable (true long-term memory, not a session cache).
+- **Recall explanations + confidence (S, high-trust).** The `coverage`/`overlap`/`exact` signals are
+  already computed and dropped at the MCP boundary — surface them as an opt-in verbose suffix and a
+  coarse high/med/low confidence label to back the honest-abstention story.
 - **Hub-cue recall.** Broad cues that match most facts are still O(N); an IDF/hub pre-filter
   (mirroring the spreading `dfcap`) would collapse them toward the selective ~µs path.
-- **`recall_blended` allocation.** Drop the O(N) per-query clone in the semantic block path
-  (borrow + clone only the top-k).
-- **Sharding at very large scale.** Route a huge per-user scope through `NeuronRouter` automatically.
-- **Onboarding.** More one-command MCP client configs and a crisper "deploy only neuron-db" path.
+- **Onboarding + ops.** Export/import + backup, per-call hybrid-rank tuning knobs, an atomic-counter
+  metrics endpoint, and more one-command MCP client configs.
 
 **North star:** a genuinely *infinite context* — the AI remembers everything, storage-bound, with
 recall that stays fast at any size. The items above are the path there.
