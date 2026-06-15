@@ -392,12 +392,14 @@ impl Neuron {
         self.ensure_index();
         let idx = self.index.as_ref().unwrap();
         let n = self.episodes.len();
-        let mut act = vec![0f64; n];
-        let mut seed = vec![false; n];
+        // sparse activation: cost tracks the ACTIVE set, not total facts (a large base scope with a
+        // narrow query lights only a handful of episodes — no O(N) allocation or final O(N) scan).
+        let mut act: HashMap<usize, f64> = HashMap::new();
+        let mut seed: HashSet<usize> = HashSet::new();
         let mut frontier: Vec<usize> = Vec::new();
         for s in &cue {
             if let Some(v) = idx.get(s) {
-                for &j in v { if !seed[j] { seed[j] = true; frontier.push(j); } act[j] += 1.0; }
+                for &j in v { if seed.insert(j) { frontier.push(j); } *act.entry(j).or_insert(0.0) += 1.0; }
             }
         }
         if frontier.is_empty() { return Vec::new(); }
@@ -405,7 +407,7 @@ impl Neuron {
         for _ in 0..hops {
             let mut next: HashMap<usize, f64> = HashMap::new();
             for &i in &frontier {
-                let ai = act[i];
+                let ai = act[&i];
                 for s in &self.episodes[i].s {
                     if stopval_s().contains(s) { continue; }
                     let posting = match idx.get(s) { Some(p) => p, None => continue };
@@ -417,18 +419,18 @@ impl Neuron {
             }
             frontier.clear();
             for (j, add) in next {
-                let was = act[j];
-                act[j] += add;
-                if was == 0.0 { frontier.push(j); }          // newly lit -> spread on the next hop
+                let e = act.entry(j).or_insert(0.0);
+                if *e == 0.0 { frontier.push(j); }           // newly lit -> spread on the next hop
+                *e += add;
             }
             if frontier.is_empty() { break; }
         }
-        let mut order: Vec<usize> = (0..n).filter(|&i| act[i] > 0.0).collect();
-        order.sort_by(|&a, &b| act[b].partial_cmp(&act[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+        let mut order: Vec<(usize, f64)> = act.into_iter().filter(|&(_, a)| a > 0.0).collect();
+        order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
         order.truncate(k);
-        order.into_iter().map(|i| {
+        order.into_iter().map(|(i, a)| {
             let e = &self.episodes[i];
-            Spread { fact: e.t.clone(), value: e.v.clone(), seed: seed[i], act: act[i] }
+            Spread { fact: e.t.clone(), value: e.v.clone(), seed: seed.contains(&i), act: a }
         }).collect()
     }
 
@@ -481,17 +483,18 @@ impl Neuron {
         let mut n = Neuron::new(max_facts);
         for line in blob.split('\n') {
             if line.is_empty() { continue; }
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() < 2 { continue; }
-            // trailing field is the strength iff it parses as f32 (>=3 fields); else legacy "flag\ttext"
-            // (and any tabs that were inside the text are preserved by the fallback join).
-            let (text, strength) = if parts.len() >= 3 {
-                match parts[parts.len() - 1].parse::<f32>() {
-                    Ok(s) => (parts[1..parts.len() - 1].join("\t"), s),
-                    Err(_) => (parts[1..].join("\t"), 1.0),
-                }
-            } else { (parts[1].to_string(), 1.0) };
-            if let Some(mut e) = encode(&text, None) { e.strength = strength; n.episodes.push(e); }
+            // line = "flag\ttext[\tstrength]". Slice past the flag, then peel an optional trailing
+            // strength only if the last tab-field parses as f32 — zero allocation per line, and any
+            // tabs that were inside legacy text are preserved (the strength peel just won't fire).
+            let after_flag = match line.find('\t') { Some(i) => &line[i + 1..], None => continue };
+            let (text, strength) = match after_flag.rfind('\t') {
+                Some(j) => match after_flag[j + 1..].parse::<f32>() {
+                    Ok(s) => (&after_flag[..j], s),
+                    Err(_) => (after_flag, 1.0),
+                },
+                None => (after_flag, 1.0),
+            };
+            if let Some(mut e) = encode(text, None) { e.strength = strength; n.episodes.push(e); }
         }
         n
     }
