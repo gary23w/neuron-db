@@ -548,6 +548,17 @@ impl Neuron {
             },
         }
     }
+    /// Multiplicatively decay the strength of every prefix-group EXCEPT `keep`, floored at `floor`.
+    /// Called when one group is reinforced so the ones not being revisited slowly fade — a
+    /// disposition that can shift over time instead of only ever hardening.
+    pub fn decay_prefix_others(&mut self, keep: &str, factor: f32, floor: f32) {
+        let pat = format!("{}:", keep.trim().to_lowercase());
+        for e in self.episodes.iter_mut() {
+            if !e.t.to_lowercase().starts_with(&pat) {
+                e.strength = (e.strength * factor).max(floor);
+            }
+        }
+    }
     /// Remove episodes whose text begins with `prefix` (case-insensitive). Anchored at the start,
     /// so removing "region is " never touches "deployRegion is …". Returns the removed count.
     pub fn forget_prefix(&mut self, prefix: &str) -> usize {
