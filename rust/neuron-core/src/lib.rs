@@ -52,7 +52,6 @@ fn stem1(w: &str) -> String {
     else if n >= 5 { w.chars().take(5).collect() }
     else { w }
 }
-fn stems<'a, I: IntoIterator<Item = &'a String>>(it: I) -> HashSet<String> { it.into_iter().map(|w| stem1(w)).collect() }
 /// Public morphological root (owner/owned/owns -> own). Used by recall_chain to verify a
 /// hop's relation actually appears in the recalled fact before advancing.
 pub fn root_token(w: &str) -> String { root(w) }
