@@ -183,6 +183,33 @@ impl NeuronDB {
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
     }
+    /// Upsert a named variable: anchored removal of any prior "{key} is …" (so distinct keys never
+    /// clobber each other — "region" must not delete "deployRegion"), then store "{key} is {value}".
+    /// Returns the number of facts written (0 if the value was too short to encode).
+    pub fn var_set(&self, nid: &str, key: &str, value: &str) -> usize {
+        let w;
+        {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(nid).unwrap();
+            e.n.forget_prefix(&format!("{} is ", key));
+            w = e.n.observe(&format!("{} is {}", key, value));
+            Self::persist(conn, nid, e);
+        }
+        #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(value);
+        w
+    }
+    /// Read a named variable's FULL value (everything after the first " is "), so multi-word values
+    /// and values that themselves contain " is " round-trip exactly — unlike cue-isolated recall.
+    pub fn var_get(&self, nid: &str, key: &str) -> Option<String> {
+        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        let kl = format!("{} is ", key.to_lowercase());
+        inner.cache.get(nid).unwrap().n.episodes.iter()
+            .find(|e| e.t.to_lowercase().starts_with(&kl))
+            .map(|e| match e.t.find(" is ") { Some(i) => e.t[i + 4..].trim().to_string(), None => e.t.clone() })
+    }
     /// Set (or clear, with an empty string) the mood override for a scope — the optional affective
     /// variable. When set it takes precedence over the auto-derived disposition in `affect`.
     pub fn set_mood(&self, nid: &str, emotion: &str) {
