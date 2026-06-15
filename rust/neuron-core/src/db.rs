@@ -187,6 +187,10 @@ impl NeuronDB {
     /// clobber each other — "region" must not delete "deployRegion"), then store "{key} is {value}".
     /// Returns the number of facts written (0 if the value was too short to encode).
     pub fn var_set(&self, nid: &str, key: &str, value: &str) -> usize {
+        let line = format!("{} is {}", key, value);
+        // ATOMIC: probe with the real writer (observe -> sentences -> encode) and only forget the old
+        // value if the new one will actually store, so an unencodable update never destroys the old.
+        if Neuron::new(self.max_facts).observe(&line) == 0 { return 0; }
         let w;
         {
             let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
@@ -194,7 +198,7 @@ impl NeuronDB {
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
             e.n.forget_prefix(&format!("{} is ", key));
-            w = e.n.observe(&format!("{} is {}", key, value));
+            w = e.n.observe(&line);
             Self::persist(conn, nid, e);
         }
         #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(value);
@@ -302,13 +306,29 @@ impl NeuronDB {
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
         let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
-        let Inner { conn, cache, .. } = inner;
-        let e = cache.get_mut(nid).unwrap();
-        let before = e.n.fact_count();
-        match m { Some(s) => { let s = s.to_lowercase(); e.n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&s)); }, None => e.n.episodes.clear() }
-        e.n.invalidate_index(); // removal shifts episode indices -> force a rebuild on next recall
-        let after = e.n.fact_count();
-        Self::persist(conn, nid, e);
+        let (before, after) = {
+            let Inner { conn, cache, .. } = &mut *inner;
+            let e = cache.get_mut(nid).unwrap();
+            let before = e.n.fact_count();
+            match m { Some(s) => { let s = s.to_lowercase(); e.n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&s)); }, None => e.n.episodes.clear() }
+            e.n.invalidate_index(); // removal shifts episode indices -> force a rebuild on next recall
+            let after = e.n.fact_count();
+            Self::persist(conn, nid, e);
+            (before, after)
+        };
+        // A full wipe (no match — the "forget me" path) cascades to the typed sub-scopes so stored
+        // variables (incl. secrets), standing instructions, stances, and mood aren't left behind.
+        // Done INLINE on the held lock — not via self.forget(), which would re-lock and deadlock.
+        if m.is_none() {
+            for suffix in ["::var", "::instr", "::stance", "::affect"] {
+                let sub = format!("{}{}", nid, suffix);
+                Self::ensure(inner, &sub, self.max_facts, self.cap);
+                let Inner { conn, cache, .. } = &mut *inner;
+                let e = cache.get_mut(&sub).unwrap();
+                e.n.episodes.clear(); e.n.invalidate_index();
+                Self::persist(conn, &sub, e);
+            }
+        }
         (before - after, after)
     }
     pub fn stats(&self, nid: &str) -> Stats {

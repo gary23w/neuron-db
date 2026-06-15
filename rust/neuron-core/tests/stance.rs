@@ -16,6 +16,17 @@ fn rm(p: &str) {
 }
 
 #[test]
+fn reinforce_prefix_unencodable_stores_nothing() {
+    // regression: a too-short stance must report not-stored (0.0, false) and create no phantom episode
+    use neuron_core::Neuron;
+    let mut n = Neuron::new(500);
+    let (s, created) = n.reinforce_prefix("x", "y", 1.0);
+    assert_eq!(s, 0.0);
+    assert!(!created);
+    assert_eq!(n.fact_count(), 0, "no phantom stance episode");
+}
+
+#[test]
 fn stance_strength_accumulates_and_survives_reopen() {
     let path = tmp();
     {

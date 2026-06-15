@@ -57,20 +57,23 @@ fn json_array(body: &str, key: &str) -> Vec<String> {
     let i = match body.find(&pat) { Some(i) => i, None => return vec![] };
     let after = &body[i + pat.len()..];
     let lb = match after.find('[') { Some(x) => x, None => return vec![] };
-    let rest = &after[lb + 1..];
-    let end = rest.find(']').unwrap_or(rest.len());
-    let chars: Vec<char> = rest[..end].chars().collect();
+    // scan from after '[' honoring string quoting — a ']' INSIDE an element must not end the array
+    let chars: Vec<char> = after[lb + 1..].chars().collect();
     let (mut out, mut j) = (Vec::new(), 0);
     while j < chars.len() {
-        if chars[j] == '"' {
-            let mut sb = String::new(); j += 1;
-            while j < chars.len() {
-                let c = chars[j];
-                if c == '\\' && j + 1 < chars.len() { let n = chars[j+1]; sb.push(match n {'n'=>'\n','t'=>'\t','r'=>'\r','"'=>'"','\\'=>'\\',o=>o}); j += 2; }
-                else if c == '"' { j += 1; break; } else { sb.push(c); j += 1; }
+        match chars[j] {
+            ']' => break,                  // real array terminator (we are not inside a string here)
+            '"' => {
+                let mut sb = String::new(); j += 1;
+                while j < chars.len() {
+                    let c = chars[j];
+                    if c == '\\' && j + 1 < chars.len() { let n = chars[j+1]; sb.push(match n {'n'=>'\n','t'=>'\t','r'=>'\r','"'=>'"','\\'=>'\\',o=>o}); j += 2; }
+                    else if c == '"' { j += 1; break; } else { sb.push(c); j += 1; }
+                }
+                out.push(sb);
             }
-            out.push(sb);
-        } else { j += 1; }
+            _ => j += 1,
+        }
     }
     out
 }
@@ -176,6 +179,11 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
         "note" => {
             let kind = json_field(body, "kind").unwrap_or_else(|| "fact".into());
             let text = json_field(body, "text").unwrap_or_default();
+            if !matches!(kind.as_str(), "fact"|"user"|"instruction"|"stance"|"var") {
+                // reject misspelled/hallucinated kinds loudly instead of silently filing a base-scope
+                // fact (which would drop e.g. a standing instruction on the floor)
+                return tool_err(id, &format!("unknown kind '{}'; valid: fact|user|instruction|stance|var", kind));
+            }
             if text.trim().is_empty() { (tool_err(id, "note needs 'text'"), 0) }
             else {
                 let (suffix, label) = match kind.as_str() {
@@ -206,8 +214,11 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                         else { (tool_text(id, &format!("(already noted) stance [{}]", sub)), 0) }
                     } else {
                         let (s, created) = db.note_stance(&sub, key, text.trim());
-                        let verb = if created { "Formed" } else { "Intensified" };
-                        (tool_text(id, &format!("{} stance on {} (intensity x{}) [{}]: {}", verb, key, s as i64, sub, text.trim())), 1)
+                        if s == 0.0 { (tool_text(id, "(not stored: stance text too short to encode)"), 0) }
+                        else {
+                            let verb = if created { "Formed" } else { "Intensified" };
+                            (tool_text(id, &format!("{} stance on {} (intensity x{}) [{}]: {}", verb, key, s as i64, sub, text.trim())), 1)
+                        }
                     }
                 } else {
                     let w = db.observe(&sub, text.trim());
@@ -412,6 +423,67 @@ mod tests {
         // shares no word with the query
         assert!(r.contains("Marisol manages"), "spreading should surface the associate, got {}", r);
         assert!(r.contains("activated ("), "got {}", r);
+    }
+
+    #[test]
+    fn note_unknown_kind_is_rejected() {
+        let db = NeuronDB::open(&tmp(), 500);
+        let e = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"instuction\",\"text\":\"never use markdown ever again please\"}}}").unwrap();
+        assert!(e.contains("\"isError\":true") && e.contains("unknown kind"), "got {}", e);
+        // and it must NOT have been silently filed into the base scope
+        let s = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"u\"}}}").unwrap();
+        assert!(s.contains("0 fact"), "misspelled kind must not write a base-scope fact, got {}", s);
+    }
+
+    #[test]
+    fn stance_too_short_is_not_stored() {
+        let db = NeuronDB::open(&tmp(), 500);
+        let r = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"stance\",\"key\":\"x\",\"text\":\"y\"}}}").unwrap();
+        assert!(r.contains("not stored"), "phantom stance must be reported as not stored, got {}", r);
+        let s = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"u::stance\"}}}").unwrap();
+        assert!(s.contains("0 fact"), "no episode should exist, got {}", s);
+    }
+
+    #[test]
+    fn forget_cascades_to_typed_subscopes() {
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"remember\",\"arguments\":{\"scope\":\"u\",\"text\":\"the wifi password is hunter2\"}}}");
+        handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"apikey\",\"text\":\"sk-secret-123\"}}}");
+        handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"instruction\",\"text\":\"always reply in plain prose only\"}}}");
+        handle_line(&db, "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"forget\",\"arguments\":{\"scope\":\"u\"}}}");
+        // a full wipe must leave NO secret var / instruction behind
+        let v = handle_line(&db, "{\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"apikey\"}}}").unwrap();
+        assert!(v.contains("(unset"), "var (secret) must be wiped by forget, got {}", v);
+        let i = handle_line(&db, "{\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"u::instr\"}}}").unwrap();
+        assert!(i.contains("0 fact"), "instructions must be wiped by forget, got {}", i);
+    }
+
+    #[test]
+    fn var_set_unencodable_update_preserves_old_value() {
+        // atomic upsert: an update whose "{key} is {value}" can't encode must NOT destroy the old
+        // value. Use a short key so a stopword value makes the whole line unencodable.
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"m\",\"text\":\"serious meaningful content here\"}}}");
+        // "m is ok" -> no content word, no digit -> unencodable -> must be rejected, old kept
+        handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"m\",\"text\":\"ok\"}}}");
+        let v = handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"m\"}}}").unwrap();
+        assert!(v.contains("serious meaningful content here"), "old value must survive a failed update, got {}", v);
+    }
+
+    #[test]
+    fn var_stopword_value_roundtrips() {
+        // a stopword-class value (on/off/yes/no...) must read back as the value, not the key
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"darkmode\",\"text\":\"on\"}}}");
+        let v = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"darkmode\"}}}").unwrap();
+        assert!(v.contains("on") && !v.contains("darkmode"), "got {}", v);
+    }
+
+    #[test]
+    fn json_array_keeps_bracket_inside_element() {
+        // a ']' inside a quoted element must not truncate a recall_chain path
+        let got = json_array("{\"path\":[\"a]b\",\"manager\",\"timezone\"]}", "path");
+        assert_eq!(got, vec!["a]b".to_string(), "manager".to_string(), "timezone".to_string()]);
     }
 
     #[test]
