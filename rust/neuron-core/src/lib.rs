@@ -28,7 +28,7 @@ fn irr(w: &str) -> &str {
         let v: Vec<&str> = pairs.split_whitespace().collect();
         let mut h = HashMap::new(); let mut i=0; while i+1<v.len() { h.insert(v[i], v[i+1]); i+=2; } h
     });
-    *m.get(w).unwrap_or(&w)
+    m.get(w).unwrap_or(&w)
 }
 
 fn w1(w: &str) -> String {
@@ -141,7 +141,7 @@ fn unesc(s: &str) -> String {
 fn surprise(w: &str, i: usize) -> f64 {
     let mut s = 0.0; let core = w.to_lowercase();
     if core.chars().any(|c| c.is_ascii_digit()) { s += 3.0; }
-    else if w.chars().next().map_or(false,|c| c.is_uppercase()) && i>0 { s += 2.0; }
+    else if w.chars().next().is_some_and(|c| c.is_uppercase()) && i>0 { s += 2.0; }
     if core.len() >= 7 { s += 0.6; }
     s
 }
@@ -161,7 +161,7 @@ fn sentences(u: &str, cap: usize) -> Vec<String> {
     let chars: Vec<char> = u.trim().chars().collect();
     for (i,&c) in chars.iter().enumerate() {
         cur.push(c);
-        let brk = matches!(c, '.'|'!'|'?'|';') && chars.get(i+1).map_or(true,|n| n.is_whitespace());
+        let brk = matches!(c, '.'|'!'|'?'|';') && chars.get(i+1).is_none_or(|n| n.is_whitespace());
         if brk || c=='\n' { let t=cur.trim().to_string(); if !t.is_empty(){parts.push(t);} cur.clear(); }
     }
     let t = cur.trim().to_string(); if !t.is_empty() { parts.push(t); }
@@ -194,7 +194,7 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     let mut keep: Vec<String> = cands.iter().take(5).map(|(w,_)| w.clone()).collect();
     for (w,_) in cands.iter().skip(5) {
         if keep.len() >= 10 { break; }
-        if is_num(w) || w.chars().next().map_or(false,|c| c.is_uppercase()) { keep.push(w.clone()); }
+        if is_num(w) || w.chars().next().is_some_and(|c| c.is_uppercase()) { keep.push(w.clone()); }
     }
     let self_name = selfish && stems_s(&cont).contains("name");
     let mut head = String::new();
@@ -224,7 +224,7 @@ fn expand_value(text: &str, val: &str) -> String {
     let mut idx = None;
     for (i,w) in toks.iter().enumerate() { if clip(w).to_lowercase()==vl { idx=Some(i); break; } }
     let i = match idx { Some(i)=>i, None=>return val.to_string() };
-    let is_cap = |w:&str| clip(w).chars().next().map_or(false,|c| c.is_uppercase());
+    let is_cap = |w:&str| clip(w).chars().next().is_some_and(|c| c.is_uppercase());
     if !is_cap(toks[i]) { return val.to_string(); }
     let blocked = |w:&str| { let wl = clip(w).to_lowercase(); stop().contains(wl.as_str()) || stopval().contains(wl.as_str()) };
     let (mut lo, mut hi) = (i, i);

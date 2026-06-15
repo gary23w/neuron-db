@@ -295,7 +295,7 @@ fn hyphenated_alphanumeric_value() {
 #[test]
 fn long_value_roundtrips() {
     let db = NeuronDB::open(&tmp(), 500);
-    let long: String = std::iter::repeat('x').take(300).collect();
+    let long: String = std::iter::repeat_n('x', 300).collect();
     db.observe("u", &format!("the token is {}", long));
     assert_eq!(db.get("u", "what is the token?").as_deref(), Some(long.as_str()));
 }

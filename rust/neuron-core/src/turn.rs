@@ -111,7 +111,7 @@ pub fn turn(n: &mut Neuron, u: &str) -> Turn {
         }
         if let Some(h) = &hit {
             let v = &h.value;
-            let cap = v.chars().next().map_or(false, |c| c.is_uppercase());
+            let cap = v.chars().next().is_some_and(|c| c.is_uppercase());
             let conf = is_num(v) || (cap && h.fact.split_whitespace().count() <= 6);
             if conf && !h.echo { return rr(&format!("{}.", v), "recall"); }
             if h.echo || h.fact.split_whitespace().count() > 6 {

@@ -67,7 +67,7 @@ fn main() {
     let total = db_bytes + sem_post as u64;
 
     println!("facts stored ......... {}", facts);
-    println!("");
+    println!();
     println!("1) SQLite store ...... {:>7.2} MB   {:>5.0} B/fact   {:>6.1} KB/doc   (just the sentence text)",
              db_bytes as f64 / 1e6, db_bytes as f64 / facts.max(1) as f64, db_bytes as f64 / ndocs as f64 / 1e3);
     println!("2) semantic space .... {:>7.2} MB   {} vocab words, {} tokens   (SHARED across all {} docs)",

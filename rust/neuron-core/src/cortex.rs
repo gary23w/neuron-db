@@ -1,9 +1,12 @@
+// Hand-written numeric kernels below index parallel weight/activation arrays by position; the
+// index-based loops mirror the reference math and read clearer than enumerate/zip chains.
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 //! Pure-Rust forward pass for the gary-neuron cortex (the emergence model, 8L/E96/384ctx).
 //! Mirrors the TypeScript port (which matched numpy to 0.0000 MSE). std-only.
 //! Weights load from the int8 blob + flat manifest bundled in model/.
 use std::collections::HashMap;
 
-const C: f32 = 0.797_884_56; const A: f32 = 0.044_715;
+const C: f32 = 0.797_884_6; const A: f32 = 0.044_715;
 fn gelu(x: f32) -> f32 { 0.5 * x * (1.0 + (C * (x + A * x * x * x)).tanh()) }
 
 pub struct Cfg { pub e: usize, pub h: usize, pub l: usize, pub blk: usize, pub vocab: usize }

@@ -4,6 +4,10 @@
 // pointer/len); access is single-threaded inside the wasm sandbox, so the static_mut_refs lint
 // (a Rust 2024 future-compat warning) is acknowledged and allowed for this module.
 #![allow(static_mut_refs)]
+// The exports take raw (ptr, len) pairs because that IS the C ABI the JS host calls them with;
+// the host guarantees a valid buffer for the given length, so the not_unsafe_ptr_arg_deref lint
+// (which would have us mark every export `unsafe`, changing the exported signature) is allowed here.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 use crate::Neuron;
 use crate::model::GaryModel;
 

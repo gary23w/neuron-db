@@ -30,7 +30,7 @@ fn multi_hop_surfaces_unshared_fact() {
     assert!(facts.iter().any(|f| f.contains("phoenix")), "seed must fire");
     let budget = res.iter().find(|r| r.fact.to_lowercase().contains("budget"));
     assert!(budget.is_some(), "2-hop associate not surfaced: {:?}", facts);
-    assert_eq!(budget.unwrap().seed, false, "budget should be reached by spreading, not a seed");
+    assert!(!budget.unwrap().seed, "budget should be reached by spreading, not a seed");
 }
 
 #[test]

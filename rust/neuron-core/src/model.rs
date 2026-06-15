@@ -1,3 +1,6 @@
+// Hand-written numeric kernels below index parallel weight/activation arrays by position; the
+// index-based loops mirror the reference math and read clearer than enumerate/zip chains.
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 //! GaryModel — the emergence cortex + tokenizer, BUNDLED in the binary (include_bytes!).
 //! Give it a working set (facts the store retrieved) and a question; it generates the answer.
 use crate::cortex::Cortex;
