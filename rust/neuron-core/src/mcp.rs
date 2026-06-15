@@ -245,7 +245,13 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
         "recall_value" => {
             let q = json_field(body, "query").unwrap_or_default();
             if q.is_empty() { (tool_err(id, "recall_value needs a query"), 0) }
-            else { match db.get(&scope, &q) { Some(v) => (tool_text(id, &v), 1), None => (tool_text(id, "(no memory)"), 0) } }
+            else {
+                // main scope first; on a miss, fall back across the user's document sub-scopes so a
+                // direct question still finds a value the user filed inside a shared document.
+                let v = db.get(&scope, &q)
+                    .or_else(|| db.recall_many_across(&scope, &q, 1).into_iter().next().map(|h| h.value));
+                match v { Some(v) => (tool_text(id, &v), 1), None => (tool_text(id, "(no memory)"), 0) }
+            }
         }
         "recall_chain" => {
             let start = json_field(body, "start").unwrap_or_default();
