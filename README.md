@@ -170,6 +170,7 @@ or an **[existing API](examples/guides/EXISTING_API.md)**.
 - [docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md) — how fast recall fires for an LLM, measured
 - [docs/guide/SEMANTIC.md](docs/guide/SEMANTIC.md) — the fuzzy semantic space + the book-ingestion test
 - [docs/guide/COMPARISON.md](docs/guide/COMPARISON.md) — multi-hop + neuron-db vs the markdown-dump memory
+- [docs/guide/VS_VECTORS.md](docs/guide/VS_VECTORS.md) — **fair, measured head-to-head vs dense-vector embeddings** (latency · footprint · per-class accuracy)
 - [docs/guide/MEMORY_HARNESS.md](docs/guide/MEMORY_HARNESS.md) — mount as LLM memory; the MCP server & tools
 - [docs/guide/API.md](docs/guide/API.md) — data model and every operation (library / CLI / HTTP)
 - [docs/guide/DEPLOY.md](docs/guide/DEPLOY.md) — build, install, Docker, env, backups

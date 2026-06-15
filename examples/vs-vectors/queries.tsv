@@ -1,0 +1,83 @@
+what is the stripe api key?	0	sk_9f3a2b71	exact-id
+what is the twilio api key?	1	sk_9f3b2a17	exact-id
+what is the sendgrid api key?	2	SG_4d8e10	exact-id
+what is the github api key?	3	ghp_22aa90	exact-id
+what is the aws api key?	4	AKIA7Z1Q4	exact-id
+what is the openai api key?	5	sk_proj_5b2c	exact-id
+what is the datadog api key?	6	dd_7e44c1	exact-id
+what is the slack api key?	7	xoxb_3391	exact-id
+what is the notion api key?	8	ntn_8842	exact-id
+what is the figma api key?	9	figd_1057	exact-id
+what is the stripe webhook secret?	10	whsec_7c1d	exact-id
+what is the twilio webhook secret?	11	whsec_7c1e	exact-id
+what is the github webhook secret?	12	whsec_44b2	exact-id
+what is the slack webhook secret?	13	whsec_44c2	exact-id
+what is the datadog webhook secret?	14	whsec_9001	exact-id
+what version is the kafka release?	15	v4.12.7	exact-id
+what version is the redis release?	16	v7.2.1	exact-id
+what version is the envoy release?	17	v1.29.3	exact-id
+what version is the vault release?	18	v1.15.0	exact-id
+what version is the nginx release?	19	v1.25.4	exact-id
+when is the atlas deadline?	20	march	exact-lex
+when is the orion deadline?	21	august	exact-lex
+when is the vega deadline?	22	november	exact-lex
+when is the lyra deadline?	23	june	exact-lex
+when is the draco deadline?	24	april	exact-lex
+what time is the backend standup?	25	0930	exact-lex
+what time is the frontend standup?	26	1015	exact-lex
+what time is the platform standup?	27	1100	exact-lex
+what time is the data standup?	28	1400	exact-lex
+what is the aspen room capacity?	29	18	exact-lex
+what is the cedar room capacity?	30	12	exact-lex
+what is the birch room capacity?	31	40	exact-lex
+what is the maple room capacity?	32	8	exact-lex
+what is the willow room capacity?	33	24	exact-lex
+who owns the quarterly report?	34	priya	exact-lex
+what region is the staging cluster in?	35	frankfurt	exact-lex
+what language is the billing service?	36	rust	exact-lex
+what is the mobile app store rating?	37	4.6	exact-lex
+when do they irrigate the elevated terrace plants?	38	dawn	paraphrase
+how many trainees does the company creator guide on days off?	39	three	paraphrase
+how long does the immunization stay effective?	40	nine	paraphrase
+what season does the port turn to ice?	41	midwinter	paraphrase
+when does the author write sections of the book?	42	sunrise	paraphrase
+what does the metal blend tolerate?	43	heat	paraphrase
+how frequently does the boat leave the dock?	44	quarter	paraphrase
+how often does the doctor perform procedures?	45	twice	paraphrase
+what region does the water source serve?	46	valley	paraphrase
+how regularly does the icy body come back?	47	seventy	paraphrase
+what does the bread shop throw away each evening?	48	loaves	paraphrase
+how much does the ice sheet shrink yearly?	49	meter	paraphrase
+where does the symphony group practice?	50	basement	paraphrase
+how quickly did the new venture exhaust its capital?	51	months	paraphrase
+what does the cure do to the poison immediately?	52	instantly	paraphrase
+what does the beacon help vessels navigate?	53	fog	paraphrase
+when did the trainee craft the sword?	54	overnight	paraphrase
+who does the abbey make beer for?	55	pilgrims	paraphrase
+when does the denver office open?	56	0700	distractor
+when does the austin office open?	57	0730	distractor
+when does the boston office open?	58	0800	distractor
+when does the seattle office open?	59	0830	distractor
+when does the miami office open?	60	0900	distractor
+when does the portland office open?	61	0930	distractor
+when does the dallas office open?	62	1000	distractor
+when does the atlanta office open?	63	1030	distractor
+when does the phoenix office open?	64	0715	distractor
+when does the newark office open?	65	0745	distractor
+when does the tucson office open?	66	0815	distractor
+when does the fresno office open?	67	0845	distractor
+what does the denver warehouse ship?	68	lumber	distractor
+what does the seattle warehouse ship?	71	glassware	distractor
+what does the dallas warehouse ship?	74	apparel	distractor
+what is the heroku api key?	NONE		none
+when is the perseus deadline?	NONE		none
+when does the london office open?	NONE		none
+what is the quantum room capacity?	NONE		none
+what version is the mariadb release?	NONE		none
+who owns the annual budget?	NONE		none
+what time is the design standup?	NONE		none
+what does the chicago warehouse ship?	NONE		none
+what is the paypal webhook secret?	NONE		none
+what region is the production cluster in?	NONE		none
+when is the titan deadline?	NONE		none
+what is the discord api key?	NONE		none
