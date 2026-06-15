@@ -315,7 +315,10 @@ fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
 pub fn serve_stdio() -> io::Result<()> {
     let path = std::env::var("NEURON_MCP_DB").unwrap_or_else(|_| "neuron-memory.db".into());
     let max = std::env::var("NEURON_MAX_FACTS").ok().and_then(|s| s.parse().ok()).unwrap_or(100_000);
-    let db = NeuronDB::open(&path, max);
+    // NEURON_FLUSH_EVERY>1 opts into write-behind (persist every N observes; flushed on Drop/evict).
+    // Default 1 = immediate per-write durability.
+    let flush = std::env::var("NEURON_FLUSH_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let db = NeuronDB::open_with_flush(&path, max, flush);
     eprintln!("neuron-db MCP server ready on stdio (db={}, max_facts={})", path, max);
     let stdin = io::stdin();
     let mut out = io::stdout();

@@ -110,6 +110,7 @@ Restart the client and the `recall` / `remember` / `forget` / `stats` tools appe
 | `NEURON_MCP_DB` | database file path | `neuron.db` |
 | `NEURON_MAX_FACTS` | per-scope fact cap | unbounded |
 | `NEURON_MCP_LOG` | `1` logs per-call synapse timing to stderr | off |
+| `NEURON_FLUSH_EVERY` | write-behind: persist a scope every N observes instead of every write (flushed on shutdown + eviction). `1` = immediate durability; higher = faster writes, up to N facts lost on a hard crash | `1` |
 
 The DB is the same SQLite file the CLI and server use, so you can inspect a model's memory with
 `neuron --db neuron.db list` while it runs. For the passive auto-capture / document-register
