@@ -58,9 +58,13 @@ identifiers — which a vector store cannot do; it retrieves a fact, then an LLM
   analog* of the dense embedder's internet-scale pretraining. So the result demonstrates the
   **mechanism** (a no-model re-rank can bridge paraphrase given relevant background text), not
   GPT-scale zero-shot coverage.
-- **Shared weakness:** on no-answer queries **both engines fail to abstain** (100% false-positive).
-  neuron-db answers on hub-word overlap (`api`, `key`); the embedder's baseline cosine clears any
-  sane threshold. This is the next thing to fix (an IDF/confidence gate — see below).
+- **Shared, fundamental weakness:** on no-answer queries **both engines fail to abstain** (100%
+  false-positive). neuron-db answers on hub-word overlap (`api`, `key`); the embedder's baseline
+  cosine clears any sane threshold. This is not a cheap win for either side: you cannot separate *"the
+  heroku api key?"* (no answer — abstain) from *"the thing I use to get online → wifi"* (legitimate
+  paraphrase — answer) **lexically**, because both have a specific term that isn't stored, and you
+  cannot separate them **semantically** either, because the no-answer query is genuinely similar to the
+  generic part of a stored fact. A measured experiment confirmed it (see below).
 
 ## Latency (per query)
 
@@ -103,9 +107,16 @@ written.
 
 ## What's next (ranked, from the design review)
 
-1. **IDF / hub-aware abstention** — require the winning candidate to share a *discriminative* (low
-   document-frequency) cue, not just hub words; abstain otherwise. Fixes the no-answer false-positive
-   measured above and tightens distractor precision. Cheap, pure ranking signal (`posting.len()` is df).
+1. **IDF / hub-aware abstention (validated, deferred).** Require the winning candidate to share a
+   *discriminative* (low document-frequency) cue, not just hub words; abstain otherwise. This was
+   prototyped and verified safe (all 131 tests green) and it **does** fix the false-positive on the
+   bare `Neuron` (lexical, wasm) tier. But it was **reverted**, not shipped: in a realistic
+   `--features semantic` deployment the `recall_semantic` fallback re-answers the query anyway (it
+   matches the generic part), so the end-to-end no-answer number is unchanged — and tightening the
+   semantic threshold to stop that would regress the paraphrase recall the blended mode just won. A
+   real fix needs **coordinated lexical + semantic gating** that distinguishes a discriminative miss
+   from a true zero-overlap paraphrase, without lowering paraphrase recall. That is a focused,
+   measured piece of work, not a one-liner — recorded here rather than shipped half-done.
 2. **Promote the semantic space from miss-only fallback to a confidence-gated top-k re-ranker** over
    the lexical candidates — closes *partial*-overlap paraphrase on the fast path. Does not help
    zero-overlap (no candidate lights up), which stays disclosed.
