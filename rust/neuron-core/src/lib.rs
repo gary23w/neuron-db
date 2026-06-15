@@ -176,8 +176,10 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     let has_digit = cont.iter().any(|w| w.chars().any(|c| c.is_ascii_digit()));
     // need at least one content word (or a number), and at least 3 words total — so an explicit
     // short fact like "i am tired" or "call me ace" is kept, but bare "ok" / "hello" is not.
+    // A ':' marks a deliberate structured entry (a typed neuron, e.g. a terse stance
+    // "bureaucracy: draining"), so it's exempt from the min-word heuristic — bare chatter has none.
     if cont.is_empty() && !has_digit { return None; }
-    if u.split_whitespace().count() < 3 && !has_digit { return None; }
+    if u.split_whitespace().count() < 3 && !has_digit && !u.contains(':') { return None; }
     let uw = words(u);
     let selfish = (uw.contains("my")||uw.contains("i")||uw.contains("im")||uw.contains("mine"))
         && !(uw.contains("her")||uw.contains("his")||uw.contains("its")||uw.contains("their")||uw.contains("your"));
