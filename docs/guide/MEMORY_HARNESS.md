@@ -173,16 +173,16 @@ or Python runtime, no separate HTTP process — one binary the client launches.
 | `recall_value` | `{scope, query}` | the single isolated value for a direct question, or `(no memory)` |
 | `recall_chain` | `{scope, start, path:[…]}` | walks a chain of relations server-side and returns the final value + trail (see §3a) |
 | `remember` | `{scope, text}` or `{scope, facts:[…]}` | `Stored N fact(s)` |
-| `note` | `{scope, kind, text, key?}` | mint a TYPED neuron — `kind` ∈ fact/user/instruction/stance/var; returns the stored address (so a save can't be hallucinated). `var` requires `key` and upserts |
+| `note` | `{scope, kind, text, key?}` | mint a TYPED neuron — `kind` ∈ fact/user/instruction/var; returns the stored address (so a save can't be hallucinated). `var` requires `key` and upserts |
 | `recall_var` | `{scope, key}` | the exact value of a named variable set via `note(kind=var)`, or `(unset: key)` |
 | `forget` | `{scope, match?}` | `Forgot N; M remain` (omit `match` to clear the scope) |
 | `stats` | `{scope}` | `scope holds N fact(s) …` |
 
-> Typed neurons are scope conventions, not a schema change: `note` routes to `{scope}::instr`,
-> `{scope}::stance`, `{scope}::var` sub-scopes. A harness re-injects the instruction/stance
-> neurons into the system prompt each turn (the "instructions batch"), so a standing rule survives
-> the rolling window. `note(kind=var)` returns the stored address, which is what stops a model from
-> claiming a save it never performed. Everything maps onto `NeuronDB` methods (see `BENCHMARKS.md`).
+> Typed neurons are scope conventions, not a schema change: `note` routes to `{scope}::instr` and
+> `{scope}::var` sub-scopes. A harness re-injects the instruction neurons into the system prompt each
+> turn (the "instructions batch"), so a standing rule survives the rolling window. `note(kind=var)`
+> returns the stored address, which is what stops a model from claiming a save it never performed.
+> Everything maps onto `NeuronDB` methods (see `BENCHMARKS.md`).
 
 ### 3a. recall_chain — infinite hops at no model cost
 
