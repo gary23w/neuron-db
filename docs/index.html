@@ -454,7 +454,7 @@
     </div>
 
     <div class="callout" style="margin-top:24px">
-      <b>Mount it in one line.</b> <span class="mono">neuron-mcp</span> is a native std-only stdio MCP server — point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets <span class="mono">remember</span> / <span class="mono">recall</span> / <span class="mono">recall_chain</span> as tools. No Node, no Python, no HTTP process. Recall stays microseconds whether the user has 10 facts or 10 million.
+      <b>Mount it in one line.</b> <span class="mono">neuron-mcp</span> is a native std-only stdio MCP server — point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets the full toolset: <span class="mono">recall</span> / <span class="mono">recall_associative</span> / <span class="mono">recall_chain</span> / <span class="mono">remember</span> / <span class="mono">note</span> (typed neurons) / <span class="mono">recall_var</span>. No Node, no Python, no HTTP process. Recall stays microseconds whether the user has 10 facts or 10 million.
     </div>
   </div>
 </section>
@@ -549,7 +549,7 @@
       <div class="card reveal">
         <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg" style="stroke:#7c9cff"><rect x="3" y="9" width="7" height="6" rx="1.5"/><rect x="14" y="4.5" width="7" height="6" rx="1.5"/><rect x="14" y="13.5" width="7" height="6" rx="1.5"/><path d="M10 12h2M12 7.5h2M12 16.5h2M12 7.5v9"/></svg></div>
         <h3>neuron-mcp <span class="tagm" style="color:#7c9cff;border-color:rgba(124,156,255,.3)">mcp</span></h3>
-        <p>A native std-only <b>stdio MCP server</b>. Point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets <span class="mono">remember</span> / <span class="mono">recall</span> / <span class="mono">recall_chain</span> / <span class="mono">forget</span> / <span class="mono">stats</span> as tools — no Node, no Python, no HTTP process.</p>
+        <p>A native std-only <b>stdio MCP server</b>. Point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets <span class="mono">recall</span> / <span class="mono">recall_associative</span> / <span class="mono">recall_chain</span> / <span class="mono">remember</span> / <span class="mono">note</span> / <span class="mono">recall_var</span> / <span class="mono">forget</span> / <span class="mono">stats</span> as tools — no Node, no Python, no HTTP process.</p>
         <div class="feat-code">cargo build --release --features mcp --bin neuron-mcp</div>
       </div>
     </div>
@@ -911,7 +911,7 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
 
         <div class="qs-panel" data-qs="mcp">
           <h3>MCP: mount it as an LLM's long-term memory</h3>
-          <p>Build the std-only stdio server and point any MCP client at it. The model gets <span class="mono">remember</span> / <span class="mono">recall</span> / <span class="mono">recall_chain</span> as tools; recall stays microseconds whether the user has 10 facts or 10 million.</p>
+          <p>Build the std-only stdio server and point any MCP client at it. The model gets <span class="mono">recall</span> / <span class="mono">recall_associative</span> / <span class="mono">recall_chain</span> / <span class="mono">remember</span> / <span class="mono">note</span> (typed neurons) / <span class="mono">recall_var</span> as tools; recall stays microseconds whether the user has 10 facts or 10 million.</p>
           <div class="terminal codeblock"><button class="copy">copy</button>
             <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">mcp</span></div>
 <pre><code><span class="tok-c"># build the native stdio MCP server (no Node, no Python)</span>
@@ -1106,6 +1106,7 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
 
   /* ---------- docs modal ---------- */
   var DOCS = [
+    {file:'STATUS.md',        title:'Status & roadmap', desc:'Where we are · what just shipped · what is next'},
     {file:'API.md',           title:'API reference',   desc:'Data model + every operation'},
     {file:'SYNAPSE.md',       title:'Synapse',         desc:'LLM recall speed, measured'},
     {file:'SEMANTIC.md',      title:'Semantic space',  desc:'Fuzzy meaning + the book test'},

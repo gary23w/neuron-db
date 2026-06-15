@@ -44,10 +44,12 @@ then recalling it costs ~10 µs/turn even at that size (incremental indexing). F
 **[docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md)** · scale + raw metrics:
 **[docs/guide/BENCHMARKS.md](docs/guide/BENCHMARKS.md)**.
 
-**Mount it in one line.** `neuron-mcp` is a native stdio MCP server with semantic-ranked recall
-built in — point any MCP client (Claude Desktop/Code, Cursor) at the binary and your model gets
-`remember` / `recall` / `recall_chain` as tools. No Node, no Python, no HTTP process. The binary
-prints its own paste-ready client config, so setup is two commands:
+**Mount it in one line.** `neuron-mcp` is a native stdio MCP server — point any MCP client
+(Claude Desktop/Code, Cursor) at the binary and your model gets the full memory toolset:
+`recall` / `recall_associative` (spreading activation) / `recall_chain` / `recall_value` /
+`remember` / `note` (typed neurons: fact·user·instruction·var) / `recall_var` / `forget` / `stats`.
+No Node, no Python, no HTTP process. The binary prints its own paste-ready client config, so
+setup is two commands:
 
 ```sh
 cargo install --path rust/neuron-core --features mcp   # builds + installs neuron-mcp
@@ -136,6 +138,7 @@ or an **[existing API](examples/guides/EXISTING_API.md)**.
 
 ## Docs
 
+- [docs/guide/STATUS.md](docs/guide/STATUS.md) — **where the project is, what just shipped, what's next**
 - [docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md) — how fast recall fires for an LLM, measured
 - [docs/guide/SEMANTIC.md](docs/guide/SEMANTIC.md) — the fuzzy semantic space + the book-ingestion test
 - [docs/guide/COMPARISON.md](docs/guide/COMPARISON.md) — multi-hop + neuron-db vs the markdown-dump memory

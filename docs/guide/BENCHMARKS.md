@@ -365,11 +365,47 @@ Reproduce: `python examples/mcp-chat/bench_compare.py --sizes 1000,6000 --chain`
 
 ## 9. Status
 
-- **107/107 tests pass** (`--features "sqlite secure server mcp semantic"`).
-- 3 original issues fixed (UTF-8 panic, arithmetic `?`, stemming false positives), each
-  with a regression test; recall hot path + index made ~4× / O(1)-incremental (§8).
-- Selective recall flat ~6 µs to 1,000,000 facts; per-turn LLM context flat (~1.1k tokens)
+- **131/131 tests pass** (`--features "sqlite secure server mcp semantic"`), 0 warnings on the
+  full and wasm32 builds.
+- 3 original issues fixed (UTF-8 panic, arithmetic `?`, stemming false positives), plus a later
+  adversarial-testing round (§10); recall hot path + index made ~4× / O(1)-incremental (§8).
+- Selective recall flat ~µs to 1,000,000 facts; per-turn LLM context flat (~1.1k tokens)
   while total memory grows unbounded; serialized density 32.5 bytes/fact (no embeddings).
 - wasm32 core still builds with no features (all changes are std-only, dependency-free).
-- Reproducible via `bench`, `db_bench`, `metrics`, `context_scale`, `scenario_bench`, and
-  `examples/mcp-chat/bench_compare.py`.
+- Reproducible via `bench`, `db_bench`, `metrics`, `context_scale`, `scenario_bench`,
+  `doc_storage_space`, and `examples/mcp-chat/bench_compare.py`. Project roadmap: **[STATUS.md](STATUS.md)**.
+
+## 10. Latest run — 2026-06-15 (release)
+
+Fresh `db_bench` + `doc_storage_space` on the current build, plus the capabilities added since §1–8.
+
+**Throughput & recall (`db_bench`, release)**
+
+| metric | result |
+|---|---|
+| single `observe`, fresh scope | 3,252 writes/s |
+| single `observe`, growing scope | 1,655 → 862 writes/s (blob-rewrite cost; opt-in write-behind closes it) |
+| batch `observe_many` (50k) | 234,515 writes/s |
+| recall, **selective cue** | 4.18 µs (1k) · 4.34 µs (10k) · 4.44 µs (50k) — **flat** |
+| recall, broad/hub cue | 205 µs · 2.07 ms · 10.6 ms (O(N); hub-filter is on the roadmap) |
+| `recall_chain` | ~12.2 µs/hop (flat to 50 hops) |
+| warm cache hit | 43.6 µs ; cold reload (200 facts) 0.80 ms |
+| reopen + load + index (50k) | 0.196 s |
+
+**Footprint with int8 (`doc_storage_space`, 100 docs / 4,000 facts)**
+
+| component | value |
+|---|---|
+| SQLite store (text) | 1.80 MB (~451 B/fact) |
+| semantic space + embedding cache | 11.38 MB → **4.11 MB** after `compact()` (int8) |
+| **total resident** | **13.18 MB → 5.91 MB** after compact (~2.2×) |
+| ingest | 4.2 MB/s, ~33k facts/s |
+
+**Scale (recall miss-path).** A lexical *miss* runs the morphological + semantic fallbacks; both are
+now capped to the most-recent 4,000 facts, so miss cost is **flat** as a scope grows (measured 1.06×
+over 2.4× the facts), while exact recall via the inverted index stays scope-independent.
+
+**Capabilities added since §1–8:** `recall_associative` (spreading activation); typed neurons via
+`note` (`fact`/`user`/`instruction`/`var`) + `recall_var`; semantic demoted to an opt-in ranking
+signal; int8 quantization; opt-in write-behind (`NEURON_FLUSH_EVERY`); allocation-free `load()` and
+index-on-load. Verified live with `gpt-4o-mini`, `o4-mini`, and `o3` driving the MCP tools.

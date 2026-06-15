@@ -39,7 +39,7 @@ fn pretokenize(text: &str) -> Vec<String> {
             if ["'s", "'t", "'m", "'d"].contains(&two.as_str()) { out.push(two); i += 2; continue; }
         }
         // " ?\p{L}+" / " ?\p{N}+" / " ?[^\s\p{L}\p{N}]+"
-        let (s, after) = if c == ' ' && i + 1 < n { (1usize, i + 1) } else { (0usize, i) };
+        let after = if c == ' ' && i + 1 < n { i + 1 } else { i };
         if after < n && is_letter(ch[after]) {
             let j = run(after, &is_letter); out.push(ch[i..j].iter().collect()); i = j; continue;
         }

@@ -1,5 +1,9 @@
 //! C-ABI exports so neuron-core runs as a raw WebAssembly module in a Cloudflare Worker
 //! (no wasm-bindgen, no external crates). JS instantiates this and calls the exports.
+// A single `static mut` buffer is the intentional shape for this no-bindgen C ABI (JS reads the
+// pointer/len); access is single-threaded inside the wasm sandbox, so the static_mut_refs lint
+// (a Rust 2024 future-compat warning) is acknowledged and allowed for this module.
+#![allow(static_mut_refs)]
 use crate::Neuron;
 use crate::model::GaryModel;
 
