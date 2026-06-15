@@ -162,12 +162,17 @@ impl NeuronDB {
     /// Semantic fallback: when lexical recall misses, rank the scope's facts in the semantic
     /// space and return the best if it clears the similarity threshold. Resolves paraphrase
     /// that shares no words with the stored fact ("the thing I use to get online" -> wifi).
+    /// BOUNDED: only the most-recent SEM_FALLBACK_CAP facts are ranked, so a lexical MISS stays
+    /// cheap as a scope grows across many chats (otherwise every miss is an O(N) embedding scan).
     #[cfg(feature = "semantic")]
     pub fn recall_semantic(&self, nid: &str, query: &str) -> Option<Recall> {
+        const SEM_FALLBACK_CAP: usize = 4000;
         let facts: Vec<(String, String)> = {
             let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
-            inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| (e.t.clone(), e.v.clone())).collect()
+            let eps = &inner.cache.get(nid).unwrap().n.episodes;
+            let start = eps.len().saturating_sub(SEM_FALLBACK_CAP);   // most-recent window only
+            eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect()
         };
         if facts.is_empty() { return None; }
         let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();

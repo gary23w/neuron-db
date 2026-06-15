@@ -465,7 +465,11 @@ impl Neuron {
         let want_num = qc.contains("many") || qc.contains("much") || qc.contains("number");
         let in_q = |w: &str| qroots.contains(&root(w)) || qroots.contains(&root(&canon(w)));
         let mut scored: Vec<((i64,i64,i64,i64), usize)> = Vec::new();
-        for (i, e) in self.episodes.iter().enumerate() {
+        // bound this fuzzy fallback to the most-recent window so a lexical MISS stays cheap as a
+        // scope grows across many chats (it only runs on a miss, but was O(N) over the whole scope).
+        const ROOT_SCAN_CAP: usize = 4000;
+        let start = self.episodes.len().saturating_sub(ROOT_SCAN_CAP);
+        for (i, e) in self.episodes.iter().enumerate().skip(start) {
             let mut er: HashSet<String> = HashSet::new();
             for w in &e.raw { er.insert(root(w)); er.insert(root(&canon(w))); }
             let ov = qroots.iter().filter(|r| er.contains(*r)).count() as i64;
