@@ -191,8 +191,7 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                     let key = key.trim();
                     if key.is_empty() { (tool_err(id, "note kind=var needs 'key'"), 0) }
                     else {
-                        db.forget(&sub, Some(&format!("{} is ", key)));   // upsert: drop any prior value for this key
-                        let w = db.observe(&sub, &format!("{} is {}", key, text.trim()));
+                        let w = db.var_set(&sub, key, text.trim());   // anchored upsert (no key collision)
                         if w > 0 { (tool_text(id, &format!("Set var [{}] {} = {}", sub, key, text.trim())), 1) }
                         else { (tool_text(id, &format!("(not stored: '{}' value too short to encode)", key)), 0) }
                     }
@@ -223,7 +222,7 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if key.is_empty() { (tool_err(id, "recall_var needs 'key'"), 0) }
             else {
                 let sub = format!("{}::var", scope);
-                match db.get(&sub, key) {
+                match db.var_get(&sub, key) {
                     Some(v) => (tool_text(id, &v), 1),
                     None => (tool_text(id, &format!("(unset: {})", key)), 0),
                 }
@@ -370,6 +369,28 @@ mod tests {
         assert!(r2.contains("eu-central-1") && !r2.contains("us-west-2"), "upsert should replace, got {}", r2);
         let s = handle_line(&db, "{\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"u::var\"}}}").unwrap();
         assert!(s.contains("1 fact"), "var sub-scope should hold exactly 1 fact after upsert, got {}", s);
+    }
+
+    #[test]
+    fn var_distinct_keys_do_not_clobber() {
+        // regression: setting "region" must NOT delete "deployRegion" (anchored, not substring, upsert)
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"deployRegion\",\"text\":\"eu-central-1\"}}}");
+        handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"region\",\"text\":\"us-west-2\"}}}");
+        let dr = handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"deployRegion\"}}}").unwrap();
+        assert!(dr.contains("eu-central-1"), "deployRegion must survive setting region, got {}", dr);
+        let rg = handle_line(&db, "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"region\"}}}").unwrap();
+        assert!(rg.contains("us-west-2"), "got {}", rg);
+    }
+
+    #[test]
+    fn var_value_containing_is_roundtrips_fully() {
+        // regression: a value with " is " (or multiple words) must round-trip exactly, not get
+        // cue-isolated down to a single token
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"var\",\"key\":\"motto\",\"text\":\"trust is earned not given\"}}}");
+        let m = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"recall_var\",\"arguments\":{\"scope\":\"u\",\"key\":\"motto\"}}}").unwrap();
+        assert!(m.contains("trust is earned not given"), "full value must round-trip, got {}", m);
     }
 
     #[test]

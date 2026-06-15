@@ -523,6 +523,17 @@ impl Neuron {
             },
         }
     }
+    /// Remove episodes whose text begins with `prefix` (case-insensitive). Anchored at the start,
+    /// so removing "region is " never touches "deployRegion is …". Returns the removed count.
+    pub fn forget_prefix(&mut self, prefix: &str) -> usize {
+        let pl = prefix.to_lowercase();
+        let before = self.episodes.len();
+        self.episodes.retain(|e| !e.t.to_lowercase().starts_with(&pl));
+        let removed = before - self.episodes.len();
+        if removed > 0 { self.index = None; self.index_len = usize::MAX; } // removals shift indices
+        removed
+    }
+
     pub fn fact_count(&self) -> usize { self.episodes.len() }
     pub(crate) fn invalidate_index(&mut self) { self.index = None; }
 
