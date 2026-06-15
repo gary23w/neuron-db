@@ -20,6 +20,17 @@ fn dump_load_preserves_strength() {
 }
 
 #[test]
+fn dump_load_roundtrips_text_with_tab_no_corruption() {
+    // a tab inside a stored fact must not be mistaken for a field separator (one fact stays one fact)
+    let mut n = Neuron::new(500);
+    n.observe("the export path is set to bin\tand cache folders here");
+    let mut n2 = Neuron::load(&n.dump(), 500);
+    assert_eq!(n2.fact_count(), 1, "a tab in text must not split or drop the fact");
+    assert!(n2.episodes[0].t.contains('\t'), "the tab must survive the dump/load roundtrip");
+    assert!(n2.recall("what is the export path?").is_some(), "recall works after load (index built in load)");
+}
+
+#[test]
 fn load_handles_legacy_and_numeric_text() {
     // legacy format had no strength field; both facts must load at strength 1.0
     let n = Neuron::load("0\tthe meeting is at 5\n0\tmy plan is pro", 1000);

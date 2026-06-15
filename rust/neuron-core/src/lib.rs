@@ -121,6 +121,24 @@ fn is_num(w: &str) -> bool {
     w.chars().any(|c| c.is_ascii_digit()) || numwords().contains(w.trim_matches(|c:char| "?.!,'\"()".contains(c)).to_lowercase().as_str())
 }
 fn clip(s: &str) -> String { s.trim_matches(|c:char| "?.!,;:'\"()[]{}".contains(c)).to_string() }
+/// Escape the record separators (tab/newline) and the escape char itself so a fact's text can
+/// never be mistaken for a field/record boundary in the dump format.
+fn esc(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() { match c { '\\' => o.push_str("\\\\"), '\t' => o.push_str("\\t"), '\n' => o.push_str("\\n"), c => o.push(c) } }
+    o
+}
+fn unesc(s: &str) -> String {
+    if !s.contains('\\') { return s.to_string(); }   // fast path: escape-free (incl. all legacy blobs)
+    let mut o = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() { Some('t') => o.push('\t'), Some('n') => o.push('\n'), Some('\\') => o.push('\\'), Some(x) => { o.push('\\'); o.push(x); }, None => o.push('\\') }
+        } else { o.push(c); }
+    }
+    o
+}
 fn surprise(w: &str, i: usize) -> f64 {
     let mut s = 0.0; let core = w.to_lowercase();
     if core.chars().any(|c| c.is_ascii_digit()) { s += 3.0; }
@@ -476,7 +494,7 @@ impl Neuron {
     /// accumulated salience (e.g. a stance that intensified with repetition) durably across restarts.
     pub fn dump(&self) -> String {
         self.episodes.iter()
-            .map(|e| format!("{}\t{}\t{}", if e.self_flag {1} else {0}, e.t, e.strength))
+            .map(|e| format!("{}\t{}\t{}", if e.self_flag {1} else {0}, esc(&e.t), e.strength))
             .collect::<Vec<_>>().join("\n")
     }
     pub fn load(blob: &str, max_facts: usize) -> Self {
@@ -494,8 +512,9 @@ impl Neuron {
                 },
                 None => (after_flag, 1.0),
             };
-            if let Some(mut e) = encode(text, None) { e.strength = strength; n.episodes.push(e); }
+            if let Some(mut e) = encode(&unesc(text), None) { e.strength = strength; n.episodes.push(e); }
         }
+        n.build_index();   // load is pure append -> build once here, so the first recall pays no O(N) rebuild
         n
     }
 
@@ -504,8 +523,9 @@ impl Neuron {
     /// intensifies with repeated exposure — and because strength is persisted (see dump), the
     /// accumulation survives restarts. Returns (new_strength, created_new).
     pub fn reinforce_prefix(&mut self, topic: &str, feeling: &str, bump: f32) -> (f32, bool) {
+        let feeling = feeling.split_whitespace().collect::<Vec<_>>().join(" "); // collapse to one tidy line
         let pat = format!("{}:", topic.trim().to_lowercase());
-        let stored = format!("{}: {}", topic.trim(), feeling.trim());
+        let stored = format!("{}: {}", topic.trim(), feeling);
         match self.episodes.iter().position(|e| e.t.to_lowercase().starts_with(&pat)) {
             Some(i) => {
                 let s = self.episodes[i].strength + bump;
@@ -519,7 +539,7 @@ impl Neuron {
             }
             None => match encode(&stored, None) {
                 Some(mut e) => { e.strength = bump; self.episodes.push(e); (bump, true) }
-                None => (0.0, true),
+                None => (0.0, false),   // nothing encoded/stored; strength 0 signals not-stored to callers
             },
         }
     }
