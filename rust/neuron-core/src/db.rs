@@ -17,24 +17,52 @@ pub struct TurnOut { pub reply: String, pub kind: String, pub wrote: usize, pub 
 #[derive(Debug, Clone)]
 pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub updated: i64, pub turns: i64 }
 
-struct Entry { n: Neuron, created: i64, turns: i64, used: u64 }
+struct Entry { n: Neuron, created: i64, turns: i64, used: u64, dirty: bool, writes: u32 }
 struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
 pub struct NeuronDB {
     inner: Mutex<Inner>, max_facts: usize, cap: usize,
+    flush_every: usize,   // 1 = persist every single observe (immediate durability); >1 = write-behind
     #[cfg(feature = "semantic")] sem: Mutex<crate::semantic::SemanticSpace>,
     #[cfg(feature = "semantic")] sem_threshold: f32,
 }
 
+impl Drop for NeuronDB {
+    /// Flush any write-behind buffers on shutdown so a clean exit never loses deferred writes.
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.inner.lock() {
+            let inner = &mut *g; let Inner { conn, cache, .. } = inner;
+            for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; } }
+        }
+    }
+}
+
 impl NeuronDB {
-    pub fn open(path: &str, max_facts: usize) -> Self {
+    /// Open with immediate per-write durability (every observe is persisted). The default.
+    pub fn open(path: &str, max_facts: usize) -> Self { Self::open_with_flush(path, max_facts, 1) }
+
+    /// Open with write-behind: a single observe defers the (O(scope)) SQLite blob rewrite, persisting
+    /// only every `flush_every` writes to a scope (and always on eviction, flush_all(), and Drop).
+    /// flush_every=1 keeps immediate durability; larger values trade up to `flush_every` facts of
+    /// crash-loss per scope for far higher single-observe throughput. Recall is unaffected (it reads
+    /// the in-memory cache); only on-disk durability is deferred.
+    pub fn open_with_flush(path: &str, max_facts: usize, flush_every: usize) -> Self {
         let conn = Connection::open(path).expect("open sqlite");
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
         conn.execute(SCHEMA, []).expect("schema");
         NeuronDB {
             inner: Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }), max_facts, cap: 256,
+            flush_every: flush_every.max(1),
             #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
             #[cfg(feature = "semantic")] sem_threshold: 0.20,
         }
+    }
+
+    /// Persist all scopes with unsaved (write-behind) changes. Call before shutdown for durability;
+    /// also run automatically on Drop and on LRU eviction.
+    pub fn flush_all(&self) {
+        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let Inner { conn, cache, .. } = inner;
+        for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; e.writes = 0; } }
     }
 
     /// Train the semantic space on arbitrary background text (e.g. a book/corpus), so recall
@@ -63,17 +91,30 @@ impl NeuronDB {
         let row = inner.conn.query_row("SELECT facts,created,updated,turns FROM neurons WHERE id=?1", params![nid],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))).ok();
         let entry = match row {
-            Some((blob, c, _u, t)) => Entry { n: Neuron::load(&blob, max_facts), created: c, turns: t, used: tick },
-            None => { let n = now_ms(); Entry { n: Neuron::new(max_facts), created: n, turns: 0, used: tick } }
+            Some((blob, c, _u, t)) => Entry { n: Neuron::load(&blob, max_facts), created: c, turns: t, used: tick, dirty: false, writes: 0 },
+            None => { let n = now_ms(); Entry { n: Neuron::new(max_facts), created: n, turns: 0, used: tick, dirty: false, writes: 0 } }
         };
         if inner.cache.len() >= cap {
-            if let Some(k) = inner.cache.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) { inner.cache.remove(&k); }
+            if let Some(k) = inner.cache.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) {
+                // persist-on-evict: under write-behind the LRU victim may hold unsaved writes —
+                // dropping it without persisting would be data loss.
+                if let Some(e) = inner.cache.get(&k) { if e.dirty { Self::persist(&inner.conn, &k, e); } }
+                inner.cache.remove(&k);
+            }
         }
         inner.cache.insert(nid.to_string(), entry);
     }
     fn persist(conn: &Connection, nid: &str, e: &Entry) {
         conn.execute("INSERT INTO neurons(id,facts,created,updated,turns) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts,updated=excluded.updated,turns=excluded.turns",
             params![nid, e.n.dump(), e.created, now_ms(), e.turns]).expect("save");
+    }
+    /// Persist now and clear the dirty/write-behind state (used by the immediate-durability paths).
+    fn persist_now(conn: &Connection, nid: &str, e: &mut Entry) { Self::persist(conn, nid, e); e.dirty = false; e.writes = 0; }
+    /// Mark a single-observe write: persist immediately when flush_every<=1, else defer until the
+    /// per-scope write count reaches the threshold (eviction/flush_all/Drop also flush).
+    fn touch(conn: &Connection, nid: &str, e: &mut Entry, flush_every: usize) {
+        e.dirty = true; e.writes = e.writes.saturating_add(1);
+        if flush_every <= 1 || (e.writes as usize) >= flush_every { Self::persist_now(conn, nid, e); }
     }
 
     pub fn observe(&self, nid: &str, text: &str) -> usize {
@@ -87,7 +128,7 @@ impl NeuronDB {
             // the batch path stays un-deduped so bulk ingest stays O(n).
             if e.n.episodes.iter().any(|ep| ep.t == text) { return 0; }
             w = e.n.observe(text);
-            Self::persist(conn, nid, e);
+            Self::touch(conn, nid, e, self.flush_every);   // write-behind aware (immediate when flush_every=1)
         }
         #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(text);
         w
