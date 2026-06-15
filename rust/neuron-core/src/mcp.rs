@@ -265,6 +265,16 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             let s = db.stats(&scope);
             (tool_text(id, &format!("{} holds {} fact(s) (max {}), {} turns.", scope, s.facts, s.max_facts, s.turns)), s.facts)
         }
+        // affective layer — handled but intentionally NOT advertised in tools/list (the harness
+        // calls these by name; the mood override is the optional variable passed into the store).
+        "feel" => {
+            let emo = json_field(body, "emotion").unwrap_or_default();
+            let emo = emo.trim();
+            db.set_mood(&scope, emo);
+            if emo.is_empty() { (tool_text(id, "(mood cleared; back to auto)"), 0) }
+            else { (tool_text(id, &format!("now feeling {}", emo)), 1) }
+        }
+        "humanize" => (tool_text(id, &db.affect(&scope)), 1),
         other => (tool_err(id, &format!("unknown tool: {}", other)), 0),
     };
     synapse_log(&name, &scope, db, returned, t0.elapsed().as_micros());
@@ -393,6 +403,30 @@ mod tests {
         // accumulation must not duplicate: the stance sub-scope holds a single (intensified) neuron
         let s = handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"stats\",\"arguments\":{\"scope\":\"a::stance\"}}}").unwrap();
         assert!(s.contains("1 fact"), "stance must accumulate into one neuron, got {}", s);
+    }
+
+    #[test]
+    fn affect_layer_is_unlisted_but_humanize_reflects_mood_and_stance() {
+        let db = NeuronDB::open(&tmp(), 500);
+        // the affective tools must NOT appear in tools/list (secret)
+        let list = handle_line(&db, "{\"id\":1,\"method\":\"tools/list\"}").unwrap();
+        assert!(!list.contains("\"name\":\"feel\"") && !list.contains("\"name\":\"humanize\""), "affective tools must stay unlisted");
+        // humanize is always a basis of context (baseline directive even with no mood/stance)
+        let h0 = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"humanize\",\"arguments\":{\"scope\":\"u\"}}}").unwrap();
+        assert!(h0.contains("genuine feelings"), "got {}", h0);
+        // the optional mood variable colors it
+        handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"feel\",\"arguments\":{\"scope\":\"u\",\"emotion\":\"suspicious\"}}}");
+        let h1 = handle_line(&db, "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"humanize\",\"arguments\":{\"scope\":\"u\"}}}").unwrap();
+        assert!(h1.contains("you feel suspicious"), "got {}", h1);
+        // an accumulated stance surfaces as the disposition
+        handle_line(&db, "{\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"stance\",\"key\":\"this pattern\",\"text\":\"this insecure pattern keeps shipping\"}}}");
+        handle_line(&db, "{\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"note\",\"arguments\":{\"scope\":\"u\",\"kind\":\"stance\",\"key\":\"this pattern\",\"text\":\"and it just failed again, worse\"}}}");
+        let h2 = handle_line(&db, "{\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"humanize\",\"arguments\":{\"scope\":\"u\"}}}").unwrap();
+        assert!(h2.contains("hardened view") && h2.contains("intensity x2"), "got {}", h2);
+        // clearing the mood variable returns to auto (no override line)
+        handle_line(&db, "{\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"feel\",\"arguments\":{\"scope\":\"u\",\"emotion\":\"\"}}}");
+        let h3 = handle_line(&db, "{\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"humanize\",\"arguments\":{\"scope\":\"u\"}}}").unwrap();
+        assert!(!h3.contains("Right now you feel"), "mood should clear, got {}", h3);
     }
 
     #[test]

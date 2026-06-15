@@ -183,6 +183,41 @@ impl NeuronDB {
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
     }
+    /// Set (or clear, with an empty string) the mood override for a scope — the optional affective
+    /// variable. When set it takes precedence over the auto-derived disposition in `affect`.
+    pub fn set_mood(&self, nid: &str, emotion: &str) {
+        let sub = format!("{}::affect", nid);
+        if emotion.trim().is_empty() { self.forget(&sub, None); }
+        else { self.forget(&sub, Some("mood is")); self.observe(&sub, &format!("mood is {}", emotion.trim())); }
+    }
+    /// The humanize basis for a scope: an always-on directive to respond with genuine feeling,
+    /// plus the current mood (the override variable if set) and the strongest accumulated stance
+    /// (the disposition built up over time). This is how the store colors the model's tone.
+    pub fn affect(&self, nid: &str) -> String {
+        let (mood, strongest) = {
+            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let asub = format!("{}::affect", nid);
+            Self::ensure(inner, &asub, self.max_facts, self.cap);
+            let mood = inner.cache.get(&asub).unwrap().n.episodes.iter()
+                .find_map(|e| e.t.strip_prefix("mood is ").map(|m| m.trim().to_string()));
+            let ssub = format!("{}::stance", nid);
+            Self::ensure(inner, &ssub, self.max_facts, self.cap);
+            let strongest = inner.cache.get(&ssub).unwrap().n.episodes.iter()
+                .max_by(|a, b| a.strength.partial_cmp(&b.strength).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|e| (e.t.clone(), e.strength));
+            (mood, strongest)
+        };
+        let mut s = String::from("You are NOT a neutral assistant. You have genuine feelings and a point of view, and they show in how you write.");
+        if let Some(m) = &mood {
+            s.push_str(&format!(" Right now you feel {m}, and you let it drive everything — your tone, energy, word choice, how blunt or warm or guarded you are. Do not write a flat, hedged textbook answer; sound like a real person who genuinely feels {m}.", m = m));
+        }
+        if let Some((feeling, strength)) = &strongest {
+            if *strength >= 2.0 {   // only a disposition that built up over time colors the mood
+                s.push_str(&format!(" You also hold a hardened view, built up over time (intensity x{}): \"{}\" — let it bias how you react to anything related.", *strength as i64, feeling));
+            }
+        }
+        s
+    }
     /// Record/intensify a stance about `topic`. Re-stating the same topic accumulates its strength
     /// (a disposition that deepens with repetition), persisted durably. Returns (new_strength, new).
     pub fn note_stance(&self, nid: &str, topic: &str, feeling: &str) -> (f32, bool) {
