@@ -42,7 +42,7 @@ fn main() {
         .unwrap_or_else(|| "books".into());
     let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap_or_else(|_| panic!("cannot read dir {}", dir))
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map_or(false, |x| x == "txt")).collect();
+        .filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
     files.sort();
     if files.is_empty() { eprintln!("no .txt books in {}", dir); return; }
 

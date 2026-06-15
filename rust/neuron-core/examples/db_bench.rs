@@ -178,7 +178,7 @@ fn main() {
         db.observe_many("c", &facts);
         let _ = db.recall_chain("c", "node0", &["next".to_string()]); // warm
         for &hops in &[1usize, 5, 10, 20, 50] {
-            let p: Vec<String> = std::iter::repeat("next".to_string()).take(hops).collect();
+            let p: Vec<String> = std::iter::repeat_n("next".to_string(), hops).collect();
             let iters = 2000;
             let t = Instant::now();
             for _ in 0..iters { std::hint::black_box(db.recall_chain("c", "node0", &p)); }

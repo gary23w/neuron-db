@@ -9,7 +9,7 @@ use neuron_core::Neuron;
 use std::time::Instant;
 
 fn code(mut x: usize) -> String { let mut s = String::new(); for _ in 0..5 { s.push((b'a' + (x % 26) as u8) as char); x /= 26; } s }
-fn approx_tokens(s: &str) -> usize { (s.len() + 3) / 4 } // ~4 chars/token, rough
+fn approx_tokens(s: &str) -> usize { s.len().div_ceil(4) } // ~4 chars/token, rough
 
 fn main() {
     println!("== neuron-db: how big can the total context grow, at flat per-turn cost? ==\n");

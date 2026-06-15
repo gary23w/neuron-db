@@ -98,11 +98,9 @@ pub fn serve(db_path: &str, host: &str, port: u16, max_facts: usize) -> std::io:
     let listener = TcpListener::bind((host, port))?;
     eprintln!("neuron-db serving {} at http://{}:{}  (auth {}, log {})", db_path, host, port,
         if key.is_some() { "on" } else { "off" }, match logmode {0=>"off",2=>"json",_=>"text"});
-    for stream in listener.incoming() {
-        if let Ok(s) = stream {
-            let (db, key, reqs) = (db.clone(), key.clone(), reqs.clone());
-            std::thread::spawn(move || handle(s, db, key, logmode, reqs, start));
-        }
+    for s in listener.incoming().flatten() {
+        let (db, key, reqs) = (db.clone(), key.clone(), reqs.clone());
+        std::thread::spawn(move || handle(s, db, key, logmode, reqs, start));
     }
     Ok(())
 }

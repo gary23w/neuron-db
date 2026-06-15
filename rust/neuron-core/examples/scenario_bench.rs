@@ -59,7 +59,7 @@ fn main() {
     let mut collide = Cat::new("no-collision check ");
     let mut lat: Vec<u128> = Vec::with_capacity(users * 10);
 
-    let mut probe = |db: &NeuronDB, scope: &str, q: &str, lat: &mut Vec<u128>| -> Option<String> {
+    let probe = |db: &NeuronDB, scope: &str, q: &str, lat: &mut Vec<u128>| -> Option<String> {
         let t = Instant::now();
         let r = db.get(scope, q);
         lat.push(t.elapsed().as_nanos());

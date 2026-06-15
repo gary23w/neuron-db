@@ -1,3 +1,6 @@
+// Hand-written vector kernels below index parallel coordinate arrays by position; the index-based
+// loops mirror the linear-algebra math and read clearer than enumerate/zip chains.
+#![allow(clippy::needless_range_loop)]
 //! A continuous **semantic space** built by corpus-distributional learning — no model, no
 //! external dependency, std-only. This is how meaning is grounded in a brain: not by a
 //! dictionary, but by the company a word keeps. We use *Random Indexing* (a cheap,
@@ -103,9 +106,9 @@ impl SemanticSpace {
     pub fn dim(&self) -> usize { DIM }
     /// Approximate resident bytes: the f32 context vectors plus the int8 embedding cache.
     pub fn bytes(&self) -> usize {
-        self.ctx.iter().map(|(k, _)| k.len() + DIM * 4 + 48).sum::<usize>()
-            + self.ctx_q.iter().map(|(k, _)| k.len() + DIM + 16).sum::<usize>()
-            + self.emb_cache.iter().map(|(k, _)| k.len() + DIM + 16).sum::<usize>()
+        self.ctx.keys().map(|k| k.len() + DIM * 4 + 48).sum::<usize>()
+            + self.ctx_q.keys().map(|k| k.len() + DIM + 16).sum::<usize>()
+            + self.emb_cache.keys().map(|k| k.len() + DIM + 16).sum::<usize>()
     }
     pub fn cached_embeddings(&self) -> usize { self.emb_cache.len() }
 

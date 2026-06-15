@@ -27,7 +27,7 @@ fn val(n:&mut Neuron,q:&str)->Option<String>{ n.recall(q).map(|r| r.value) }
     for a in adjs { for no in nouns { for th in things {
         if i>=400 {break;} let v=format!("{}{}",1000+i,(b'A'+(i%26)as u8)as char);
         n.observe(&format!("the {} {} {} is {}",a,no,th,v)); p.push((format!("what is the {} {} {}?",a,no,th),v)); i+=1; }}}
-    let hits=p.iter().filter(|(q,a)| n.recall(q).map_or(false,|r| &r.value==a)).count();
+    let hits=p.iter().filter(|(q,a)| n.recall(q).is_some_and(|r| &r.value==a)).count();
     assert_eq!(hits, p.len(), "distinct keys should recall 100%"); }
 
 #[test] fn dump_load_roundtrip(){ let mut n=Neuron::new(500);

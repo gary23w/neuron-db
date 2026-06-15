@@ -81,7 +81,7 @@ fn main() {
         let ids: Vec<i64> = hits.iter().map(|h| id_of.get(&h.fact).map(|&x| x as i64).unwrap_or(-1)).collect();
         let g: i64 = gold_id.parse().unwrap_or(-1);
         let hit1 = (g >= 0 && ids.first() == Some(&g)) as u8;
-        let hit3 = (g >= 0 && ids.iter().any(|&x| x == g)) as u8;
+        let hit3 = (g >= 0 && ids.contains(&g)) as u8;
         let value_exact = (!gold_val.is_empty() && hits.first().map(|h| h.value == *gold_val).unwrap_or(false)) as u8;
         let abstain = db.recall("bench", q).is_none() as u8; // for the no-answer class
         println!("{}\t{}\t{}\t{}\t{}\t{}\t{}", class, mode, ns, hit1, hit3, value_exact, abstain);
