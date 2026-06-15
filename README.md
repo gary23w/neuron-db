@@ -74,6 +74,34 @@ db.get("user:42", "what plan?");            // Some("pro")
 db.forget("user:42", Some("plan"));         // delete by substring
 ```
 
+## How it works (in plain words)
+
+Think about how you remember a conversation. You don't keep a perfect transcript, and you don't
+re-grow your brain on every sentence — you keep **discrete little memories**, and when something
+reminds you of one, it comes back. neuron-db works the same way: each fact is a small **episode**,
+and a *neuron* is just the bag of episodes for one user or agent.
+
+- **Storing a fact.** You hand it a sentence in plain language (*"the API key is zeta-9931"*). It
+  does **not** turn that into a giant numeric vector or update any model weights. It files the
+  sentence away as one memory, tagged with its key words (its *cues*) and the one surprising word
+  worth fetching back (`zeta-9931`). A memory costs about as much as the text itself — a few dozen
+  bytes — because there's no embedding and no model to retrain.
+- **Recalling it.** You ask *"what's my API key?"* It pulls the meaningful words out of your
+  question, looks them up in a small index that maps each word to the memories that mention it, and
+  the matching memories **light up**. It scores them by how well they fit, picks the best, and hands
+  back the value. Because it jumps straight to the handful of memories that share your cue — instead
+  of scanning everything — recall stays in **microseconds whether you have ten facts or ten million**.
+- **Why it's cheap and scales.** A vector database spends 1–12 KB per fact on a dense embedding so
+  it can search by meaning; neuron-db spends roughly the size of the text, because its search key is
+  just the words plus a couple of numbers. The same disk holds **~100× more facts**, and recall cost
+  depends on how many memories match your cue — not how many you've ever stored.
+
+That's the whole idea: **memory as cheap, discrete episodes plus a word-to-memory index** — much
+closer to how a brain files away a moment and recalls it on a cue than to how a search engine
+indexes documents or a model bakes facts into its weights. The result is a model with effectively
+unlimited, storage-bound memory that stays fast at any size. Full mechanism:
+**[docs/guide/DESIGN.md](docs/guide/DESIGN.md)**.
+
 ## Tiers
 
 - **`Neuron`** — in-memory associative store (default, std-only). Recall in microseconds.
