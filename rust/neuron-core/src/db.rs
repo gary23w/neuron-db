@@ -217,6 +217,22 @@ impl NeuronDB {
             Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false }
         }).collect()
     }
+    /// Recall across a base scope AND its document sub-scopes (`base`, `base__doc1`, …), merging the
+    /// top-k by the same (exact, overlap, coverage) key recall uses. Typed sub-scopes (`base::var`,
+    /// `base::stance`, …) and other users' scopes are deliberately excluded. Lets "tell me about X"
+    /// reach a document the user filed under its own scope without the caller knowing the scope name.
+    pub fn recall_many_across(&self, base: &str, query: &str, k: usize) -> Vec<Recall> {
+        let scopes: Vec<String> = self.neurons().into_iter()
+            .filter(|id| id == base || (id.starts_with(base) && id[base.len()..].starts_with("__")))
+            .collect();
+        let mut all: Vec<Recall> = Vec::new();
+        for s in &scopes { all.extend(self.recall_many(s, query, k)); }
+        all.sort_by(|a, b| b.exact.cmp(&a.exact)
+            .then(b.overlap.cmp(&a.overlap))
+            .then(b.coverage.partial_cmp(&a.coverage).unwrap_or(std::cmp::Ordering::Equal)));
+        all.truncate(k);
+        all
+    }
     pub fn recall_many(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
         let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
@@ -289,7 +305,7 @@ impl NeuronDB {
             s.push_str(&format!(" Right now you feel {m}, and you let it drive everything — your tone, energy, word choice, how blunt or warm or guarded you are. Do not write a flat, hedged textbook answer; sound like a real person who genuinely feels {m}.", m = m));
         }
         if let Some((feeling, strength)) = &strongest {
-            if *strength >= 2.0 {   // only a disposition that built up over time colors the mood
+            if *strength >= 1.5 {   // a disposition that built up (and hasn't decayed away) colors the mood
                 s.push_str(&format!(" You also hold a hardened view, built up over time (intensity x{}): \"{}\" — let it bias how you react to anything related.", *strength as i64, feeling));
             }
         }
@@ -304,6 +320,9 @@ impl NeuronDB {
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
             let r = e.n.reinforce_prefix(topic, feeling, 1.0);
+            // neglected dispositions fade as new feelings form, so the active "culture" can shift
+            // over time rather than monotonically hardening on whatever was felt first.
+            e.n.decay_prefix_others(topic, 0.9, 0.5);
             Self::persist(conn, nid, e);
             r
         };

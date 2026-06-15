@@ -44,12 +44,36 @@ fn stance_strength_accumulates_and_survives_reopen() {
         assert!(onew && (o1 - 1.0).abs() < 1e-6);
         assert_eq!(db.stats("u::stance").facts, 2);
     }
-    // reopen the SAME file: the accumulated strength must have persisted to disk
+    // reopen the SAME file: the accumulated strength must have persisted to disk. The intervening
+    // 'rust ergonomics' note decayed 'unserialize auth' once (3.0 * 0.9 = 2.7), so one more note
+    // here brings it to ~3.7 — accumulation persists, and so does the decay.
     {
         let db = NeuronDB::open(&path, 1000);
         let (s4, new4) = db.note_stance("u::stance", "unserialize auth", "still true weeks later");
         assert!(!new4, "the stance must already exist after reopen");
-        assert!((s4 - 4.0).abs() < 1e-6, "accumulated intensity must survive reopen (expected 4), got {s4}");
+        assert!((s4 - 3.7).abs() < 1e-4, "accumulated-then-decayed intensity must survive reopen (expected ~3.7), got {s4}");
     }
+    rm(&path);
+}
+
+#[test]
+fn disposition_colors_mood_then_fades_when_neglected() {
+    // a built-up disposition colors affect() once it clears the threshold; revisiting OTHER topics
+    // decays the neglected one back below the threshold, so the active "culture" can shift over time.
+    let path = tmp();
+    let db = NeuronDB::open(&path, 1000);
+    for f in ["this matters more than shipping", "still the hill i die on", "non-negotiable"] {
+        db.note_stance("agent::stance", "ai safety", f);                  // -> strength 3.0
+    }
+    assert!(db.affect("agent").contains("ai safety"),
+            "a disposition built up over time must color the mood: {}", db.affect("agent"));
+    // pour energy into other topics; each new feeling decays the neglected ai-safety stance (0.9x)
+    for t in ["coffee", "weather", "sports", "music"] {
+        db.note_stance("agent::stance", t, "a passing thought");
+        db.note_stance("agent::stance", t, "thought about twice");
+    }
+    let a = db.affect("agent");
+    assert!(!a.contains("ai safety"),
+            "a neglected disposition decays below the threshold and stops dominating: {a}");
     rm(&path);
 }
