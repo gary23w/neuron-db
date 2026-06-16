@@ -4,83 +4,103 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>neuron-db · live browser lab</title>
-<meta name="description" content="The whole thesis in your browser: neuron-db memory compiled to WebAssembly + a local Llama via WebLLM. No server, no API key. Talk to it; watch the memory fire.">
+<meta name="description" content="A real lab in your browser: neuron-db memory compiled to WebAssembly + a local Llama via WebLLM. Multiple chats, settings, optional account. No server, no API key. Talk to it; watch the memory fire.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='5' fill='%235eead4'/%3E%3Ccircle cx='6' cy='7' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='26' cy='9' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='7' cy='25' r='2.4' fill='%23f472b6'/%3E%3Ccircle cx='25' cy='24' r='2.4' fill='%2334d399'/%3E%3Cg stroke='%235eead4' stroke-width='1.1' opacity='.6'%3E%3Cline x1='16' y1='16' x2='6' y2='7'/%3E%3Cline x1='16' y1='16' x2='26' y2='9'/%3E%3Cline x1='16' y1='16' x2='7' y2='25'/%3E%3Cline x1='16' y1='16' x2='25' y2='24'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root{
     --bg:#080a0f; --bg2:#0b0e16; --panel:#0f1320; --panel2:#10131d; --ink:#e9edf6; --mid:#9aa6bd;
-    --dim:#6b7690; --line:#1b2233; --line2:#28324a; --accent:#5eead4; --accent2:#7c9cff; --warn:#f0c453;
+    --dim:#6b7690; --line:#1b2233; --line2:#28324a; --accent:#5eead4; --accent2:#7c9cff; --warn:#f0c453; --pink:#f472b6;
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
   }
+  body.light{
+    --bg:#f4f6fb; --bg2:#eef1f8; --panel:#fff; --panel2:#f7f9fd; --ink:#0c1322; --mid:#516079; --dim:#8a97ad;
+    --line:#dce2ee; --line2:#c6cfe0; --accent:#0d9488; --accent2:#3b5bdb;
+  }
   *{box-sizing:border-box} html,body{margin:0;height:100%}
-  html{background:#05060a}                       /* gutter colour behind the centred app on wide screens */
+  html{background:#05060a} body.light{background:#e7ebf4}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
-       -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;min-height:100dvh;overflow-x:hidden;
-       max-width:1180px;margin-inline:auto;border-inline:1px solid var(--line)}  /* don't stretch edge-to-edge on desktop */
+       -webkit-font-smoothing:antialiased;height:100dvh;overflow:hidden}
   a{color:var(--accent)} .mono{font-family:var(--mono)}
-  /* dark-theme scrollbars (Firefox + WebKit) */
   *{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
-  ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:2px solid var(--bg)}
-  ::-webkit-scrollbar-thumb:hover{background:#3a4a66}
-  ::-webkit-scrollbar-corner{background:transparent}
-  /* ---- top bar ---- */
-  .top{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);
-       background:rgba(8,10,15,.8);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20;flex-wrap:wrap}
-  .brand{font-weight:740;letter-spacing:-.02em;font-size:15.5px}
-  .brand .dot{color:var(--accent)}
-  .top .sp{flex:1}
-  .top a.lnk{color:var(--mid);text-decoration:none;font-size:13.5px;border:1px solid var(--line2);
-             border-radius:8px;padding:6px 11px;white-space:nowrap}
-  .top a.lnk:hover{color:var(--ink);border-color:var(--accent)}
-  /* ---- intro (collapsible) ---- */
-  .intro{padding:11px 16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0a0d15,#080a0f)}
-  .intro summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:14px}
-  .intro summary::-webkit-details-marker{display:none}
-  .intro summary b{font-size:clamp(15px,2.8vw,19px);letter-spacing:-.02em;font-weight:740}
-  .intro summary .more{margin-left:auto;font:600 11.5px var(--mono);color:var(--accent);white-space:nowrap}
-  .intro[open] summary .more::after{content:" ▴"} .intro:not([open]) summary .more::after{content:" ▾"}
-  .intro p{margin:11px 0 2px;color:var(--mid);font-size:13.5px;max-width:78ch;line-height:1.6}
-  .intro .tag{display:inline-block;font:600 11px var(--mono);color:var(--accent);background:#0b1a18;
-              border:1px solid #14443c;border-radius:999px;padding:3px 9px}
-  /* ---- model loader ---- */
-  .loader{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--bg2)}
-  select,button,input{font-family:inherit;font-size:14px}
-  select,.lbtn{background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:9px;padding:8px 12px}
-  .lbtn{cursor:pointer;font-weight:640;transition:.15s} .lbtn:hover{border-color:var(--accent)}
-  .lbtn.primary{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border-color:transparent}
-  .lbtn:disabled{opacity:.5;cursor:not-allowed}
-  .pbar{flex:1;min-width:140px;height:8px;background:#0b0e16;border:1px solid var(--line);border-radius:999px;overflow:hidden;display:none}
-  .pbar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
-  .status{font-size:12.5px;color:var(--mid);min-width:0;flex-basis:100%;order:9}
-  .status.warn{color:var(--warn)}
-  /* ---- main split ---- */
-  .main{flex:1;display:grid;grid-template-columns:1fr 340px;min-height:0}
-  .chat{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
-  .log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
-  .msg{max-width:80%;padding:10px 13px;border-radius:13px;font-size:14.5px;white-space:pre-wrap;word-wrap:break-word}
+  ::-webkit-scrollbar-thumb:hover{background:#3a4a66} ::-webkit-scrollbar-corner{background:transparent}
+  button{font-family:inherit;font-size:14px;cursor:pointer}
+  input,select{font-family:inherit;font-size:14px}
+
+  /* ---- app shell: rail | chat | memory ---- */
+  .app{display:grid;grid-template-columns:250px 1fr 336px;height:100dvh;min-height:0}
+
+  /* ---- rail (chat sessions) ---- */
+  .rail{display:flex;flex-direction:column;min-height:0;background:var(--bg2);border-right:1px solid var(--line)}
+  .railhead{display:flex;align-items:center;gap:8px;padding:14px 15px 10px}
+  .brand{font-weight:760;letter-spacing:-.02em;font-size:16px} .brand .dot{color:var(--accent)}
+  .labtag{font:700 9.5px var(--mono);letter-spacing:.14em;color:var(--accent);border:1px solid var(--line2);border-radius:5px;padding:2px 6px}
+  .newchat{margin:4px 12px 8px;padding:9px 12px;border-radius:10px;border:1px dashed var(--line2);background:transparent;
+           color:var(--ink);font-weight:640;text-align:left;transition:.15s}
+  .newchat:hover{border-color:var(--accent);color:var(--accent)}
+  .chatlist{flex:1;overflow:auto;padding:2px 8px 8px;display:flex;flex-direction:column;gap:3px}
+  .citem{display:flex;align-items:center;gap:7px;padding:8px 9px;border-radius:9px;color:var(--mid);cursor:pointer;
+         border:1px solid transparent;font-size:13.5px;position:relative}
+  .citem:hover{background:var(--panel)} .citem.on{background:var(--panel);border-color:var(--line2);color:var(--ink)}
+  .citem .ti{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .citem .x{opacity:0;color:var(--dim);font-size:15px;line-height:1;padding:0 2px;background:none;border:none}
+  .citem:hover .x{opacity:.8} .citem .x:hover{color:var(--pink)}
+  .citem .dotc{width:7px;height:7px;border-radius:50%;background:var(--accent2);flex:none;opacity:.7}
+  .railfoot{border-top:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:9px}
+  .acct{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:9px;border:1px solid var(--line2);
+        background:var(--panel2);color:var(--ink);font-weight:600;font-size:13px;width:100%}
+  .acct:hover{border-color:var(--accent)}
+  .avatar{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font:700 11px var(--mono);
+          background:linear-gradient(135deg,var(--accent2),var(--accent));color:#04130f;flex:none}
+  .raillinks{font-size:11.5px;color:var(--dim);text-align:center} .raillinks a{color:var(--mid);text-decoration:none}
+  .raillinks a:hover{color:var(--accent)}
+
+  /* ---- chat column ---- */
+  .chatcol{display:flex;flex-direction:column;min-height:0;min-width:0}
+  .cbar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);
+        background:rgba(8,10,15,.7);backdrop-filter:blur(8px)}
+  body.light .cbar{background:rgba(255,255,255,.7)}
+  .ctitle{font-weight:680;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40vw}
+  .cbar .sp{flex:1}
+  .icon{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;color:var(--mid);padding:6px 10px;font-size:15px;line-height:1}
+  .icon:hover{color:var(--ink);border-color:var(--accent)}
+  .modelpill{font:600 11.5px var(--mono);color:var(--dim);border:1px solid var(--line2);border-radius:999px;
+             padding:4px 11px;white-space:nowrap;cursor:pointer}
+  .modelpill.ready{color:var(--accent);border-color:#155}
+  .modelpill.load{color:var(--warn)}
+  .log{flex:1;overflow:auto;padding:18px 16px;display:flex;flex-direction:column;gap:12px}
+  .msg{max-width:78%;padding:10px 13px;border-radius:13px;font-size:14.5px;white-space:pre-wrap;word-wrap:break-word}
   .msg.u{align-self:flex-end;background:#13233b;border:1px solid #1d3a5e}
+  body.light .msg.u{background:#dbe7fb;border-color:#bcd0f0}
   .msg.a{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
   .msg.s{align-self:center;background:transparent;color:var(--dim);font:12.5px var(--mono);max-width:92%;text-align:center}
   .msg .who{display:block;font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
   .msg.u .who{color:var(--accent2)} .msg.a .who{color:var(--accent)}
+  .welcome{margin:auto;max-width:46ch;text-align:center;color:var(--mid);font-size:14px;padding:24px}
+  .welcome h3{color:var(--ink);font-size:18px;letter-spacing:-.01em;margin:0 0 8px}
+  .welcome .ex{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:14px}
+  .welcome .ex button{font:12px var(--mono);color:var(--accent);background:var(--panel);border:1px solid var(--line2);
+                      border-radius:999px;padding:5px 11px} .welcome .ex button:hover{border-color:var(--accent)}
   .inbar{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line);background:var(--bg2)}
   .inbar input{flex:1;background:var(--panel2);border:1px solid var(--line2);border-radius:11px;padding:11px 14px;color:var(--ink)}
   .inbar input:focus{outline:none;border-color:var(--accent)}
-  .send{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border:none;border-radius:11px;padding:0 16px;font-weight:700;cursor:pointer}
+  .send{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border:none;border-radius:11px;padding:0 18px;font-weight:700}
   .send:disabled{opacity:.5;cursor:not-allowed}
+
   /* ---- memory pane ---- */
-  .mem{display:flex;flex-direction:column;min-height:0;background:var(--bg2)}
+  .mem{display:flex;flex-direction:column;min-height:0;background:var(--bg2);border-left:1px solid var(--line)}
   .mem h2{margin:0;padding:13px 16px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mid);border-bottom:1px solid var(--line);font-family:var(--mono)}
   .stats{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
   .stat{flex:1;min-width:84px} .stat b{display:block;font:700 19px var(--mono);color:var(--accent)} .stat span{font-size:11px;color:var(--dim)}
   .affect{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(124,156,255,.07),rgba(94,234,212,.05))}
-  .chip{display:inline-flex;align-items:center;gap:0;font:11px var(--mono);color:var(--ink,#cfd8ea);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;background:#0d1422}
+  .chip{display:inline-flex;align-items:center;gap:0;font:11px var(--mono);color:var(--ink);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;background:#0d1422}
+  body.light .chip{background:#fff}
   .chip b{color:var(--accent2)} .chip.mood b{color:var(--warn)}
   .chip .bar{display:inline-block;width:46px;height:5px;margin-left:7px;border-radius:3px;background:var(--line2);overflow:hidden}
   .chip .bar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent))}
   .syn{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  body.noint .syn{display:none}
   .ev{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--panel);font-size:12.5px}
   .ev .h{font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px}
   .ev.store .h{color:var(--accent2)} .ev.fire .h{color:var(--accent)} .ev.note .h{color:var(--warn)}
@@ -88,67 +108,108 @@
   .ev .val{color:var(--ink);font-weight:600}
   .pill{display:inline-block;font:10px var(--mono);color:var(--accent);border:1px solid var(--line2);border-radius:5px;padding:0 5px;margin:2px 3px 0 0}
   .empty{color:var(--dim);font-size:12.5px;padding:16px;text-align:center;font-family:var(--mono)}
-  /* ---- mobile ---- */
-  .memtoggle{display:none}
+
+  /* ---- drawer (settings) + modal (auth/help) ---- */
+  .drawer{position:fixed;top:0;right:0;height:100dvh;width:min(92vw,400px);background:var(--panel);border-left:1px solid var(--line2);
+          z-index:60;transform:translateX(101%);transition:transform .26s;overflow:auto;box-shadow:-26px 0 70px -30px #000}
+  body.setopen .drawer{transform:translateX(0)}
+  .drawer h3{margin:0;padding:16px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mid);
+             font-family:var(--mono);border-bottom:1px solid var(--line);display:flex;align-items:center}
+  .sect{padding:14px 16px;border-bottom:1px solid var(--line)}
+  .sect .lab{font:600 11px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--dim);margin-bottom:9px}
+  .row{display:flex;align-items:center;gap:10px;margin:9px 0}
+  .row label{flex:1;font-size:13.5px;color:var(--ink)} .row .hint{font-size:11.5px;color:var(--dim)}
+  .drawer select,.drawer input[type=text],.drawer input[type=email],.drawer input[type=password]{
+    width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:9px;padding:9px 11px}
+  .drawer input[type=range]{flex:1;accent-color:var(--accent)}
+  .val2{font:600 12px var(--mono);color:var(--accent);min-width:42px;text-align:right}
+  .sw{position:relative;width:40px;height:22px;flex:none}
+  .sw input{opacity:0;width:0;height:0} .sw .tr{position:absolute;inset:0;background:var(--line2);border-radius:999px;transition:.2s}
+  .sw .tr::before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+  .sw input:checked + .tr{background:var(--accent)} .sw input:checked + .tr::before{transform:translateX(18px)}
+  .seg{display:flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden}
+  .seg button{flex:1;background:transparent;color:var(--mid);border:none;padding:7px;font-size:13px}
+  .seg button.on{background:var(--accent);color:#04130f;font-weight:700}
+  .dbtn{width:100%;padding:10px;border-radius:9px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink);font-weight:640}
+  .dbtn:hover{border-color:var(--accent)} .dbtn.primary{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border-color:transparent}
+  .dbtn.danger:hover{border-color:var(--pink);color:var(--pink)}
+  .pbar{height:7px;background:var(--bg2);border:1px solid var(--line);border-radius:999px;overflow:hidden;display:none;margin-top:9px}
+  .pbar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
+  .status{font-size:12px;color:var(--mid);margin-top:8px} .status.warn{color:var(--warn)}
+  details.sys summary{cursor:pointer;font-size:13px;color:var(--accent);font-family:var(--mono)}
+  details.sys pre{white-space:pre-wrap;font-size:11px;color:var(--mid);background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto}
+
+  .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(2,4,9,.66);backdrop-filter:blur(3px);padding:18px}
+  .modal.on{display:grid}
+  .card{width:min(94vw,400px);background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 30px 80px -30px #000}
+  .card .ch{padding:18px 20px 0} .card h3{margin:0;font-size:19px;letter-spacing:-.01em}
+  .card .sub{color:var(--mid);font-size:13px;margin:6px 0 0}
+  .tabs{display:flex;gap:6px;padding:14px 20px 0}
+  .tabs button{flex:1;padding:8px;border-radius:9px;border:1px solid var(--line2);background:transparent;color:var(--mid);font-weight:640}
+  .tabs button.on{background:var(--panel2);color:var(--ink);border-color:var(--accent)}
+  .card .body{padding:14px 20px 20px;display:flex;flex-direction:column;gap:10px}
+  .card input{background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:10px;padding:11px 13px}
+  .card input:focus{outline:none;border-color:var(--accent)}
+  .err{color:var(--pink);font-size:12.5px;min-height:1px}
+  .muted{color:var(--dim);font-size:12px;text-align:center}
+  .ghost{background:none;border:none;color:var(--mid);font-size:13px;text-decoration:underline}
+  .help-body{padding:6px 22px 22px;color:var(--mid);font-size:13.5px;line-height:1.65;max-height:70vh;overflow:auto}
+  .help-body b{color:var(--ink)} .help-body .tag{display:inline-block;font:600 11px var(--mono);color:var(--accent);background:#0b1a18;border:1px solid #14443c;border-radius:999px;padding:3px 9px;margin-bottom:8px}
+
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--panel);border:1px solid var(--accent);
+         color:var(--ink);padding:11px 16px;border-radius:11px;font-size:13.5px;z-index:80;opacity:0;transition:.3s;pointer-events:none;box-shadow:0 20px 50px -20px #000}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:none}
+  body.setopen .scrim,body.memopen .scrim,body.railopen .scrim{display:block}
+
+  /* ---- responsive ---- */
+  .railtoggle,.memtoggle{display:none}
+  @media(max-width:1080px){
+    .app{grid-template-columns:1fr 320px}
+    .rail{position:fixed;inset:0 auto 0 0;width:min(82vw,280px);z-index:55;transform:translateX(-101%);transition:transform .26s}
+    body.railopen .rail{transform:translateX(0)}
+    .railtoggle{display:inline-flex}
+  }
   @media(max-width:820px){
-    body{border-inline:none}
-    .main{grid-template-columns:1fr}
-    .chat{border-right:none}
-    .mem{position:fixed;inset:0 0 0 auto;width:min(86vw,360px);transform:translateX(101%);transition:transform .26s;
-         z-index:30;border-left:1px solid var(--line2);box-shadow:-20px 0 60px -20px #000}
+    .app{grid-template-columns:1fr}
+    .mem{position:fixed;inset:0 0 0 auto;width:min(86vw,360px);transform:translateX(101%);transition:transform .26s;z-index:55;box-shadow:-20px 0 60px -20px #000}
     body.memopen .mem{transform:translateX(0)}
-    .memtoggle{display:inline-flex;align-items:center;gap:6px}
-    body.memopen .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25}
-    .msg{max-width:90%}
+    .memtoggle{display:inline-flex} .ctitle{max-width:34vw} .msg{max-width:90%}
   }
 </style>
 </head>
 <body>
-  <div class="top">
-    <span class="brand">neuron<span class="dot">·</span>db</span>
-    <span class="status mono" style="flex-basis:auto;order:0;color:var(--dim)">live browser lab</span>
-    <span class="sp"></span>
-    <button class="lbtn memtoggle" id="memBtn" style="padding:6px 11px;font-size:13px">memory ▸</button>
-    <a class="lnk" href="index.html">← site</a>
-    <a class="lnk" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a>
-  </div>
+  <div class="app" id="app">
+    <!-- RAIL: chat sessions -->
+    <aside class="rail" id="rail">
+      <div class="railhead"><span class="brand">neuron<span class="dot">·</span>db</span><span class="labtag">LAB</span></div>
+      <button class="newchat" id="newChat">＋ New chat</button>
+      <div class="chatlist" id="chatList"></div>
+      <div class="railfoot">
+        <button class="acct" id="acctBtn"><span class="avatar" id="avatar">?</span><span id="acctLabel">Sign in / Register</span></button>
+        <div class="raillinks"><a href="index.html">Site</a> · <a href="demos/synapse-3d.html">3D demo</a> · <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a></div>
+      </div>
+    </aside>
 
-  <details class="intro">
-    <summary><span class="tag">IN YOUR BROWSER · NO SERVER · NO KEY</span> <b>The hippocampus &amp; the neocortex, both client-side.</b> <span class="more">what is this?</span></summary>
-    <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.5&nbsp;MB WebAssembly module, running locally.
-       Every message you send is stored and recalled by it; watch the neurons fire on the right. The optional
-       <b>local Llama</b> (via WebLLM, WebGPU) is the voice on top — it never sees your whole history, only what the
-       memory recalls. <b>Paste something bigger than the model's context window</b> and neuron-db simply absorbs it
-       into memory — the model still answers from recall. That's the whole point. Memory works on any device; the
-       model needs a WebGPU browser (desktop Chrome/Edge).</p>
-    <p style="margin-top:8px">The memory does the <i>retrieving</i> so the tiny model only has to <i>narrate</i>: it
-       routes each question to the right document, recalls by meaning <i>and</i> association, and for a
-       <b>“walk me through…”</b> question hands back an <b>ordered span</b> so even a 1B model recounts a chain in
-       sequence instead of confabulating. It also has <b>feelings</b>: give it a mood (<i>“be playful”</i>) or an
-       opinion (<i>“you love rust”</i>, repeat to deepen it) and that affect — a transient mood plus durable,
-       accumulating stances — colors how it talks. Watch the <b>mood</b> and <b>opinion</b> chips on the right.</p>
-  </details>
-
-  <div class="loader">
-    <select id="model" title="WebLLM model (downloaded + run in your browser via WebGPU)">
-      <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC" selected>Llama 3.2 · 1B  (fast, ~0.9 GB · recommended)</option>
-      <option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC">Qwen 2.5 · 0.5B  (tiny, ~0.9 GB)</option>
-      <option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 · 3B  (better, ~2.3 GB)</option>
-      <option value="Llama-3.1-8B-Instruct-q4f32_1-MLC">Llama 3.1 · 8B  (best, ~5 GB)</option>
-    </select>
-    <button class="lbtn primary" id="loadBtn">Load the model</button>
-    <div class="pbar" id="pbar"><i></i></div>
-    <div class="status" id="status">Memory is live now — type below to store &amp; recall. Load a model to get a talking assistant.</div>
-  </div>
-
-  <div class="main">
-    <div class="chat">
+    <!-- CHAT -->
+    <main class="chatcol">
+      <div class="cbar">
+        <button class="icon railtoggle" id="railToggle">☰</button>
+        <div class="ctitle" id="ctitle">Chat</div>
+        <span class="sp"></span>
+        <span class="modelpill" id="modelPill" title="Load a local model in Settings">no model · memory only</span>
+        <button class="icon" id="helpBtn" title="What is this?">?</button>
+        <button class="icon" id="gearBtn" title="Settings">⚙</button>
+        <button class="icon memtoggle" id="memBtn" title="Memory">🧠</button>
+      </div>
       <div class="log" id="log"></div>
       <div class="inbar">
         <input id="in" placeholder="Tell it something, then ask it back…  e.g.  my wifi password is hunter2" autocomplete="off">
         <button class="send" id="send">Send</button>
       </div>
-    </div>
+    </main>
+
+    <!-- MEMORY -->
     <aside class="mem" id="mem">
       <h2>neuron-db · live memory</h2>
       <div class="stats">
@@ -162,17 +223,129 @@
       <div class="syn" id="syn"><div class="empty">No activity yet.<br>Store a fact and recall it.</div></div>
     </aside>
   </div>
+
+  <!-- SETTINGS DRAWER -->
+  <div class="drawer" id="drawer">
+    <h3>Lab settings <span style="flex:1"></span><button class="icon" id="setClose">✕</button></h3>
+    <div class="sect">
+      <div class="lab">Local model (WebLLM · WebGPU)</div>
+      <select id="model">
+        <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC" selected>Llama 3.2 · 1B  (fast, ~0.9 GB · recommended)</option>
+        <option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC">Qwen 2.5 · 0.5B  (tiny, ~0.9 GB)</option>
+        <option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 · 3B  (better, ~2.3 GB)</option>
+        <option value="Llama-3.1-8B-Instruct-q4f32_1-MLC">Llama 3.1 · 8B  (best, ~5 GB)</option>
+      </select>
+      <button class="dbtn primary" id="loadBtn" style="margin-top:9px">Load the model</button>
+      <div class="pbar" id="pbar"><i></i></div>
+      <div class="status" id="status">Memory works now with no model. Load one for a talking assistant (needs desktop Chrome/Edge).</div>
+    </div>
+    <div class="sect">
+      <div class="lab">Generation</div>
+      <div class="row"><label>Temperature</label><input type="range" id="cfgTemp" min="0" max="1" step="0.05"><span class="val2" id="cfgTempV">0.40</span></div>
+      <div class="row"><label>Max reply tokens</label><input type="range" id="cfgMax" min="128" max="2048" step="64"><span class="val2" id="cfgMaxV">512</span></div>
+      <div class="row"><label>Recall window (top-k)</label><input type="range" id="cfgK" min="3" max="16" step="1"><span class="val2" id="cfgKV">8</span></div>
+    </div>
+    <div class="sect">
+      <div class="lab">Harness behaviour</div>
+      <div class="row"><label>Passive capture <span class="hint">— auto-store facts you state</span></label><span class="sw"><input type="checkbox" id="cfgCapture"><span class="tr"></span></span></div>
+      <div class="row"><label>Feelings <span class="hint">— moods + accumulating opinions</span></label><span class="sw"><input type="checkbox" id="cfgAffect"><span class="tr"></span></span></div>
+      <div class="row"><label>Ordered narration <span class="hint">— span recall for “walk me through”</span></label><span class="sw"><input type="checkbox" id="cfgOrdered"><span class="tr"></span></span></div>
+      <div class="row"><label>Show synapse feed <span class="hint">— live memory internals</span></label><span class="sw"><input type="checkbox" id="cfgInternals"><span class="tr"></span></span></div>
+    </div>
+    <div class="sect">
+      <div class="lab">Appearance</div>
+      <div class="seg" id="themeSeg"><button data-t="dark">Dark</button><button data-t="light">Light</button></div>
+    </div>
+    <div class="sect">
+      <div class="lab">This chat's memory</div>
+      <div class="row" style="gap:8px">
+        <button class="dbtn" id="exportBtn">Export</button>
+        <button class="dbtn" id="importBtn">Import</button>
+      </div>
+      <button class="dbtn danger" id="wipeBtn" style="margin-top:8px">Wipe this chat's memory</button>
+    </div>
+    <div class="sect">
+      <div class="lab">Cloud account (optional)</div>
+      <div class="row"><label>Auth worker URL</label></div>
+      <input type="text" id="cfgCloud" placeholder="https://…workers.dev">
+      <div class="status">Logging in saves you to the email list. neuron-db runs on the worker too (KV-backed, PBKDF2 passwords).</div>
+    </div>
+    <div class="sect">
+      <details class="sys"><summary>Reveal the system prompt</summary><pre id="sysDump"></pre></details>
+    </div>
+  </div>
+
+  <!-- AUTH MODAL -->
+  <div class="modal" id="authModal">
+    <div class="card">
+      <div class="ch"><h3 id="authTitle">Welcome back</h3><p class="sub" id="authSub">Sign in to save your chats and join the list.</p></div>
+      <div class="tabs"><button id="tabLogin" class="on">Log in</button><button id="tabReg">Register</button></div>
+      <div class="body">
+        <input type="email" id="authEmail" placeholder="you@email.com" autocomplete="email">
+        <input type="password" id="authPw" placeholder="password (min 6 chars)" autocomplete="current-password">
+        <div class="err" id="authErr"></div>
+        <button class="dbtn primary" id="authGo">Log in</button>
+        <button class="ghost" id="authSkip">Continue without an account</button>
+        <p class="muted">Demo-grade auth. Passwords are hashed (never plaintext); your email joins the project list.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- HELP MODAL -->
+  <div class="modal" id="helpModal">
+    <div class="card">
+      <div class="ch">
+        <span class="tag">IN YOUR BROWSER · NO SERVER · NO KEY</span>
+        <h3>The hippocampus &amp; the neocortex, both client-side.</h3>
+      </div>
+      <div class="help-body">
+        <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.5&nbsp;MB WebAssembly module, running locally.
+           Every message is stored and recalled by it; watch the neurons fire in the memory pane. The optional
+           <b>local Llama</b> (WebLLM/WebGPU) is the voice on top — it never sees your history, only what the memory recalls.</p>
+        <p>The memory does the <b>retrieving</b> so the tiny model only has to <b>narrate</b>: it routes each question to the
+           right document, recalls by meaning <i>and</i> association, and for a “walk me through…” question hands back an
+           <b>ordered span</b> so even a 1B model recounts a chain in sequence. Paste something bigger than the context window
+           and neuron-db simply <b>absorbs</b> it — the model still answers from recall.</p>
+        <p>It has <b>feelings</b>: give it a mood (<i>“be playful”</i>) or an opinion (<i>“you love rust”</i>, repeat to deepen),
+           and that affect colors how it talks. <b>Multiple chats</b> each get their own isolated neuron-db scope. Tune
+           everything in <b>⚙ Settings</b>.</p>
+        <button class="dbtn primary" id="helpClose" style="margin-top:6px">Start the lab</button>
+      </div>
+    </div>
+  </div>
+
   <div class="scrim" id="scrim"></div>
+  <div class="toast" id="toast"></div>
+  <input type="file" id="importFile" accept="application/json" hidden>
 
 <script type="module">
 import * as webllm from "https://esm.run/@mlc-ai/web-llm";
 const $ = id => document.getElementById(id);
 const td = new TextDecoder(), te = new TextEncoder();
 
-// ---------- neuron-db WASM (the memory) — same public surface as the MCP: scopes, recall,
-//            recall_value, recall_associative, note(var|instruction), recall_var, stats ----------
-const SCOPE = "user:lab";
+// ============================ settings ============================
+const CFG_DEF = { model:"Llama-3.2-1B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
+  capture:true, affect:true, ordered:true, internals:true, theme:"dark",
+  cloud:"https://neuron-db-auth.fdvlol.workers.dev" };
+let CFG = Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem("nblab.cfg")||"{}"));
+const saveCfg = () => localStorage.setItem("nblab.cfg", JSON.stringify(CFG));
+function applyCfg(){
+  document.body.classList.toggle("light", CFG.theme==="light");
+  document.body.classList.toggle("noint", !CFG.internals);
+  $("model").value = CFG.model;
+  $("cfgTemp").value = CFG.temp; $("cfgTempV").textContent = (+CFG.temp).toFixed(2);
+  $("cfgMax").value = CFG.maxTokens; $("cfgMaxV").textContent = CFG.maxTokens;
+  $("cfgK").value = CFG.recallK; $("cfgKV").textContent = CFG.recallK;
+  $("cfgCapture").checked = CFG.capture; $("cfgAffect").checked = CFG.affect;
+  $("cfgOrdered").checked = CFG.ordered; $("cfgInternals").checked = CFG.internals;
+  $("cfgCloud").value = CFG.cloud;
+  [...$("themeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.t===CFG.theme));
+}
+
+// ============================ neuron-db WASM (the memory) ============================
+let SCOPE = "user:lab";            // = the active chat's scope (per-chat isolation)
 let EX = null, recalls = 0, memBytes = 0, lastBlockChars = 0, storedCount = 0;
+let docs = [];                     // = the active chat's docs[]   (each pasted doc → its own sub-scope)
 const approxTokens = s => Math.round((typeof s === "number" ? s : s.length) / 4);
 function isDocument(t){ return t.length > 600 || (t.match(/[.!?]+/g) || []).length >= 6; }
 function setStats(){
@@ -181,9 +354,7 @@ function setStats(){
   $("nRecall").textContent = recalls;
   $("ctxSaved").textContent = Math.max(0, approxTokens(memBytes) - approxTokens(lastBlockChars)).toLocaleString();
 }
-// show an integer intensity for a hardened opinion, one decimal for a faded sub-1.0 one (never "×0")
 const sx = n => n>=1 ? String(Math.floor(n)) : n.toFixed(1);
-// surface the live affective state (transient mood + strongest accumulating opinion) in the memory pane
 function renderAffect(){
   const el=$("affect"); if(!el) return;
   const mood=getMood(), st=getTopStance();
@@ -195,29 +366,28 @@ function renderAffect(){
   el.innerHTML=h;
 }
 async function loadWasm(){
-  // ?v bumps whenever the wasm exports change, so browsers don't serve a stale cached module
   const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=affect3"), {});
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
 function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
-// one tab-delimited dispatch into the in-browser neuron-db — the wasm runs the same logic as the MCP
 function mem(...a){ const [p,l]=wstr(a.join("\t")); return readBuf(EX.mem(p,l)); }
-let docs = [];   // each pasted document gets its OWN scope, so recall never bleeds across them
-function observeIn(scope,text){ const n=parseInt(mem("observe",scope,text))||0; if(n){ storedCount+=n; memBytes+=text.length; } return n; }
+// every memory mutation is logged on the active chat so it can be REPLAYED into the wasm after a reload
+function logMem(e){ if(active) active.memlog.push(e); }
+function observeIn(scope,text){ const n=parseInt(mem("observe",scope,text))||0; if(n){ storedCount+=n; memBytes+=text.length; logMem({o:"obs",s:scope,t:text}); } return n; }
 function recallIn(scope,q,k){ const s=mem("recall",scope,q,String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
 function recallValue(q){ return mem("value",SCOPE,q); }
-function setVar(k,v){ mem("setvar",SCOPE,k,v); }
+function setVar(k,v){ mem("setvar",SCOPE,k,v); logMem({o:"var",s:SCOPE,k,v}); }
 function getVar(k){ return mem("getvar",SCOPE,k); }
-function addInstr(t){ mem("addinstr",SCOPE,t); }
+function addInstr(t){ mem("addinstr",SCOPE,t); logMem({o:"ins",s:SCOPE,t}); }
 function getInstrs(){ const s=mem("instrs",SCOPE); return s?s.split("\n").filter(Boolean):[]; }
-function delInstr(needle){ return parseInt(mem("delinstr",SCOPE,needle||""))||0; }   // remove rules containing needle
-function clearInstrs(){ return parseInt(mem("clearinstr",SCOPE))||0; }
-function episodesOf(scope){ const s=mem("episodes",scope); return s?s.split("\n").filter(Boolean):[]; }  // stored order, Rust truth
+function delInstr(needle){ const n=parseInt(mem("delinstr",SCOPE,needle||""))||0; if(n) logMem({o:"del",s:SCOPE,n:needle}); return n; }
+function clearInstrs(){ const n=parseInt(mem("clearinstr",SCOPE))||0; logMem({o:"clr",s:SCOPE}); return n; }
+function episodesOf(scope){ const s=mem("episodes",scope); return s?s.split("\n").filter(Boolean):[]; }
 function assocIn(scope,q,k){ const s=mem("assoc",scope,q,"2",String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
-// ---- affective layer (now ON) — a transient mood + durable, accumulating opinions ----
-function feel(emotion){ mem("feel",SCOPE,emotion); }
-function noteStance(topic,feeling){ return parseInt(mem("stance",SCOPE,topic,feeling))||1; }
+// ---- affective layer — a transient mood + durable, accumulating opinions ----
+function feel(emotion){ mem("feel",SCOPE,emotion); logMem({o:"feel",s:SCOPE,e:emotion}); }
+function noteStance(topic,feeling){ const r=parseInt(mem("stance",SCOPE,topic,feeling))||1; logMem({o:"stance",s:SCOPE,t:topic,f:feeling}); return r; }
 function humanize(topic){ return mem("humanize",SCOPE,topic||""); }
 function getMood(){ return mem("mood",SCOPE); }
 function parseStance(s){ if(!s) return null; const p=s.split("\t"); return {topic:p[0], feeling:p[1], strength:+p[2]}; }
@@ -225,21 +395,17 @@ function getTopStance(){ return parseStance(mem("topstance",SCOPE)); }
 function stanceOf(topic){ return parseStance(mem("stanceof",SCOPE,topic)); }
 const statements = text => text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
 
-// ---- retrieval quality: gate what we store, strip query framing, route a question to its document ----
+// ---- retrieval quality ----
 const STOP = new Set(("the and that this with from have were they their there what when where which about more tell "+
   "your will would could should been into than then them some such over only also just like very much many most each "+
   "other these those after before because here you our are was has had not but for can did does how why who thing things "+
   "give show explain walk through describe please know want need think feel about whats lets dont cant").split(/\s+/));
 const isWord = w => w.length>3 && !STOP.has(w);
 const keywords = t => [...new Set(t.toLowerCase().split(/[^a-z0-9]+/).filter(isWord))];
-// strip leading "tell me more about / how does / what is …" so recall hits the TOPIC, not the framing
 function queryKeywords(text){
   const s=text.replace(/^\s*(please\s+)?(can you |could you |tell me(?: more)?(?: about)?|show me|explain(?: to me)?|walk me through(?: to)?|describe|give me|what(?:'s| is| are| was| do you know about| did| does)?|how(?: does| do| did| is| are| can)?|why|who(?: is| was| are)?|when|where|which|list|summari[sz]e)\b[:,\s]*/ig,"").replace(/[?.!]+\s*$/,"").trim();
   return s||text;
 }
-// only store DECLARATIVE content as facts — never the user's questions / commands / chatter.
-// Discriminate by WORD ORDER: a wh-QUESTION puts an aux right after the wh-word ("where IS…"),
-// a wh-DECLARATIVE puts a subject first ("where I work IS…"); bare aux-led lines are yes/no questions.
 const CHATTER = /^\s*(tell|show|explain|walk|describe|can you|could you|please|give me|list|summari|oh\b|yeah|yep|nope|none|wat|cool|nice|ok|okay|lol|hmm+|wow|haha|sure|thanks|thank you)/i;
 const WH_LEAD = /^\s*(how|what|why|who|when|where|which|whose)\b/i;
 const WH_QUESTION = /^\s*(how|what|why|who|when|where|which|whose)\s+(is|are|was|were|am|do|does|did|can|could|should|would|will|has|have|had|may|might|must|shall|to|about)\b/i;
@@ -247,11 +413,10 @@ const AUX_QUESTION = /^\s*(is|are|am|was|were|do|does|did|can|could|would|will|s
 function shouldStore(s){
   if(s.length<12 || /\?\s*$/.test(s)) return false;
   if(CHATTER.test(s)) return false;
-  if(WH_LEAD.test(s)) return !WH_QUESTION.test(s);   // keep "where I work is X", drop "where is X"
-  if(AUX_QUESTION.test(s)) return false;             // "is the server down", "did you finish" → questions
+  if(WH_LEAD.test(s)) return !WH_QUESTION.test(s);
+  if(AUX_QUESTION.test(s)) return false;
   return true;
 }
-// greeting / acknowledgement / short chit-chat with nothing to recall -> converse, don't run the fact path
 const GREET = /^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/i;
 const isSmallTalk = t => { const s=t.trim();
   return GREET.test(s) || (s.length<=28 && !/\d{3,}/.test(s) &&
@@ -261,10 +426,7 @@ function pickDoc(q){
   for(const d of docs){ const s=qk.reduce((a,w)=>a+(d.kw.has(w)?1:0),0); if(s>bs){ bs=s; best=d; } }
   return best;
 }
-// a "narrate" question wants a span, not one fact — so we hand the model an ORDERED window
 const NARRATE = /\b(walk me through|step by step|in order|explain|how (does|do|did)|tell me (more )?about|describe|summari|what happened|overview|the (whole|full|entire)|everything about|elaborate|break (it|this) down|the chain|the process|the steps)\b/i;
-// gather candidates from lexical recall + ASSOCIATIVE spreading (catches paraphrase), in the routed
-// document + main scope; re-rank by topical overlap; for narrate-intent return an ordered span
 function smartRecall(q){
   const qk=queryKeywords(q), kw=keywords(qk), d=pickDoc(q);
   let cands=recallIn(SCOPE,qk,6).concat(assocIn(SCOPE,qk,6));
@@ -273,25 +435,21 @@ function smartRecall(q){
   const score=f=>{ const fl=f.toLowerCase(); return kw.reduce((a,w)=>a+(fl.includes(w)?1:0),0); };
   const ranked=cands.map(f=>[score(f),f]).sort((a,b)=>b[0]-a[0]);
   const topical=ranked.filter(x=>x[0]>0).map(x=>x[1]);
-  if(NARRATE.test(q) && d && d.facts && d.facts.length){
-    // fuzzy anchor: a recalled hit may be a ';'-split fragment of a stored statement, so match by
-    // containment in either direction rather than exact equality (which silently fell back to start)
+  if(CFG.ordered && NARRATE.test(q) && d && d.facts && d.facts.length){
     const t0=topical[0];
     let ai = t0 ? d.facts.findIndex(f => f===t0 || f.includes(t0) || t0.includes(f)) : -1; if(ai<0) ai=0;
-    const win = d.facts.slice(Math.max(0,ai-1), ai+12);          // anchor + what follows it, IN ORDER
+    const win = d.facts.slice(Math.max(0,ai-1), ai+12);
     const set=new Set(win), extra=topical.filter(f=>!set.has(f)).slice(0,3);
     return { hits: win.concat(extra), doc:d, ordered:true };
   }
-  return { hits: (topical.length?topical:(d?recallIn(d.scope,qk,5):ranked.map(x=>x[1]))).slice(0,8), doc:d, ordered:false };
+  return { hits: (topical.length?topical:(d?recallIn(d.scope,qk,5):ranked.map(x=>x[1]))).slice(0,CFG.recallK), doc:d, ordered:false };
 }
 
-// ---------- harness: detect typed commands (variables, standing instructions), deterministically ----------
+// ---- typed-command detection ----
 function handleCommands(text){
   let m;
   if((m=text.match(/^\s*(?:add|set|create|make)\s+(?:an?\s+)?(?:global\s+)?(variable|var|rule|instruction|standing rule)\s*[:\-]?\s*(.+)$/i))){
     const kind=m[1].toLowerCase(), body=m[2].trim(), isVarKw=(kind==="variable"||kind==="var");
-    // only a *variable* may use natural "is"/"to" separators; a rule/instruction needs an explicit =/:
-    // so "make a rule talk to me in caps" stays an instruction instead of var talk="me in caps"
     const kv = isVarKw ? body.match(/^["']?([\w' -]+?)["']?\s*(?:=|:|\bis\b|\bto\b)\s*(.+)$/i)
                        : body.match(/^["']?([\w' -]+?)["']?\s*[:=]\s*(.+)$/i);
     if(kv && !/^(only|always|never|respond|reply|answer|return|format|use)\b/i.test(body)){
@@ -308,15 +466,12 @@ function handleCommands(text){
   }
   if((m=text.match(/^\s*my\s+([\w' -]+?)\s+is\s+(.+?)[.?!]*$/i))){
     const key=m[1].trim().toLowerCase(), val=m[2].trim();
-    // "my rule/instruction is <body>" is a STANDING INSTRUCTION, not an inert variable
     if(/^(rule|instruction|standing rule|standing instruction)$/.test(key)){ addInstr(val); return {kind:"instruction", text:val}; }
-    // "my question is <…>" (or a value that is itself a question) should be answered, not stored
     if(key==="question" || /^(what|who|where|when|why|how|which|whose|is|are|do|does|did|can|could|should|will|would)\b/i.test(val)) return {kind:"none"};
     setVar(key, val); return {kind:"varfact", key:m[1].trim()};
   }
   return {kind:"none"};
 }
-// a direct "what is my X?" / "recall X" maps to an EXACT variable read
 function directAnswer(text){
   let m;
   if((m=text.match(/^\s*what(?:'s| is| was| are)?\s+my\s+([\w' -]+?)\s*\?*\s*$/i)) ||
@@ -325,24 +480,19 @@ function directAnswer(text){
   }
   return null;
 }
-// ---- affective harness: set a transient mood, or form/deepen a durable opinion ----
 const MOODS = /^(happy|glad|sad|down|excited|thrilled|angry|mad|grumpy|irritable|calm|cheerful|gloomy|anxious|nervous|curious|proud|playful|serious|tired|sleepy|energetic|optimistic|hopeful|bitter|warm|cold|enthusiastic|skeptical|annoyed|joyful|melancholy|confident|relaxed|chill|fierce|gentle|sarcastic|snarky|frustrated|content|moody|bored|mellow|wired|upbeat|somber|giddy)\b/i;
 function moodCommand(text){
   const m=text.match(/^\s*(?:i\s+want\s+you\s+to\s+|please\s+)?(?:you\s+(?:should\s+|need\s+to\s+|gotta\s+)?)?(?:feel|be|act|stay|get|sound|seem)\s+(?:more\s+|really\s+|very\s+|super\s+|so\s+|a\s+bit\s+|kinda\s+|kind of\s+|pretty\s+)?([a-z][a-z' -]{1,24}?)\s*[.!]*$/i);
   if(!m) return null;
-  const mw=m[1].trim().match(MOODS);   // return ONLY the recognized mood word, not trailing junk ("sad about it")
+  const mw=m[1].trim().match(MOODS);
   return mw ? mw[1].toLowerCase() : null;
 }
-// clear a transient mood: "be neutral/normal/yourself", "no mood", "clear/reset/stop your mood", "stop being X"
 function clearMoodCommand(text){
   return /^\s*(?:please\s+)?(?:(?:i\s+want\s+you\s+to\s+|you\s+(?:should\s+|need\s+to\s+|gotta\s+)?)?(?:be|act|feel|stay|sound|seem|get)\s+(?:more\s+)?(?:neutral|normal|yourself|nothing)\b|no\s+mood\b|(?:clear|reset|drop|remove|forget|stop)\s+(?:your\s+|the\s+)?mood\b|stop\s+being\b)/i.test(text);
 }
-// detect a request to RETRACT a standing instruction ("turn caps off", "stop responding in caps",
-// "no more caps", "lowercase from now on", "clear all rules") — returns what to delete, or null
 const FMT_KW = /(caps|capital|upper\s?case|lower\s?case|emoji|markdown|bullet|prose|formal|short|long)/i;
 function removalCommand(text){
   if(/^\s*(?:clear|forget|remove|drop|reset|delete|cancel)\s+(?:all\s+)?(?:my\s+|the\s+)?(?:standing\s+)?(?:rules?|instructions?)\b/i.test(text)) return {all:true};
-  // "lowercase" / "in lower case" (not itself negated) means: cancel any caps rule
   if(/\blower\s?case\b/i.test(text) && !/\bno\b|\bnot\b|\bdon'?t\b|\bstop\b.*lower/i.test(text)) return {needles:["caps","capital","upper"]};
   if(/^\s*(?:stop|turn|no\b|no more|no longer|disable|cancel|forget|remove|drop|undo|quit|don'?t|do not)\b/i.test(text) && FMT_KW.test(text)){
     const kw=(text.match(FMT_KW)||[])[1].replace(/\s+/g,"").toLowerCase();
@@ -350,7 +500,6 @@ function removalCommand(text){
   }
   return null;
 }
-// an explicit valence statement seeds / deepens an opinion about a topic (feeling derived from the verb)
 function valenceStance(text){
   let m;
   if((m=text.match(/^\s*you(?:'re| are)?\s+(?:obsessed with|in love with)\s+(.+?)[.!]*$/i)))  return {topic:m[1], feeling:"you're obsessed with it"};
@@ -362,38 +511,36 @@ function valenceStance(text){
   if((m=text.match(/^\s*you\s+(?:find|think)\s+(.+?)\s+(boring|annoying|frustrating|overrated|tedious|awful|terrible|ugly|pointless)[.!]*$/i))) return {topic:m[1], feeling:"you find it "+m[2].toLowerCase()};
   return null;
 }
-// "how do you feel about X" / "what do you think of X" / "do you like X" -> express an opinion on X
 function opinionQuestion(text){
   const m=text.match(/^\s*(?:so\s+|and\s+|but\s+)?(?:how do you (?:really\s+)?feel about|what(?:'s| is| are)? your (?:honest\s+)?(?:opinion|view|take|thoughts?|feelings?) (?:on|about|of)|what do you (?:think|reckon|feel) (?:about|of|on)|do you (?:like|love|hate|enjoy|prefer|care about))\s+(.+?)[?.!]*\s*$/i);
   return m ? m[1].trim() : null;
 }
-// enforce simple format instructions deterministically (a weak model can't reliably honor them).
-// Also strip a leaked leading block header (stream-safe: idempotent across deltas).
 function enforce(reply){
   reply = reply.replace(/^\s*(?:AFFECT|STANDING INSTRUCTIONS?|MEMORIES|SYSTEM|Hard rules?)\b[^\n]*:?\s*/i,"");
-  // uppercase only if an AFFIRMATIVE caps rule is currently active — a negated/removed one can't latch
   const caps = getInstrs().some(i => /\b(caps|capital|upper ?case)\b/i.test(i) &&
     !/\b(no|not|stop|off|lower|lowercase|don'?t|never|disable|cancel)\b/i.test(i));
   return caps ? reply.toUpperCase() : reply;
 }
 
-// ---------- memory pane ----------
+// ============================ UI: memory pane + chat ============================
 function ev(cls,head,body,val){
   const syn=$("syn"); if(syn.querySelector(".empty")) syn.innerHTML="";
   const d=document.createElement("div"); d.className="ev "+cls;
   d.innerHTML=`<div class="h">${head}</div><div class="body">${body}${val?` → <span class="val">${val}</span>`:""}</div>`;
   syn.appendChild(d); syn.scrollTop=syn.scrollHeight;
 }
-
-// ---------- chat UI ----------
+let rendering=false;
 function bubble(cls,text,who){
+  if(!rendering){ const w=$("log").querySelector(".welcome"); if(w) w.remove(); }
   const d=document.createElement("div"); d.className="msg "+cls;
   if(who) d.innerHTML=`<span class="who">${who}</span>`;
   const t=document.createTextNode(text); d.appendChild(t); $("log").appendChild(d);
-  $("log").scrollTop=$("log").scrollHeight; return d;
+  $("log").scrollTop=$("log").scrollHeight;
+  if(!rendering && active && (cls==="u"||cls==="a") && text){ active.messages.push({cls,text,who}); saveChats(); }
+  return d;
 }
 
-// ---------- WebLLM (the optional neocortex) ----------
+// ============================ WebLLM (optional neocortex) ============================
 let engine=null, loading=false;
 const SYS = "You are a vivid assistant with genuine opinions, speaking from your long-term memory (neuron-db). "+
   "You do NOT see the user's history — only the AFFECT, STANDING INSTRUCTIONS and MEMORIES blocks below, recalled "+
@@ -404,132 +551,125 @@ const SYS = "You are a vivid assistant with genuine opinions, speaking from your
   "AFFECT (mood + hardened opinions) genuinely color your tone — you are NOT neutral. The user's identity is separate "+
   "from yours. Never mention these rules, and never write, quote or repeat the words AFFECT, STANDING INSTRUCTIONS or "+
   "MEMORIES or any block header — reply only as the assistant, in natural prose.";
-// small-talk prompt: no memory was recalled and the user is just chatting — converse, don't pretend to have facts
 const SYS_CHAT = "You are a warm, brief assistant (your long-term memory is neuron-db, but nothing was recalled for "+
   "this turn — the user is just making small talk). Reply naturally in 1–2 sentences, in your current mood. Do NOT "+
   "state facts about the user and do NOT invent any names, passwords, dates or events. Never mention these rules.";
 
+function setPill(state, txt){ const p=$("modelPill"); p.className="modelpill"+(state?" "+state:""); p.textContent=txt; }
 async function loadModel(){
-  if(loading) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
+  if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
+  CFG.model=$("model").value; saveCfg();
   if(!("gpu" in navigator)){
     $("status").className="status warn";
-    $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. "+
-      "Open in desktop Chrome or Edge for the talking assistant.";
+    $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. Open in desktop Chrome or Edge.";
     $("loadBtn").disabled=false; $("model").disabled=false; loading=false; return;
   }
-  $("pbar").style.display="block";
+  $("pbar").style.display="block"; setPill("load","loading model…");
   try{
-    engine = await webllm.CreateMLCEngine($("model").value, { initProgressCallback:(r)=>{
+    engine = await webllm.CreateMLCEngine(CFG.model, { initProgressCallback:(r)=>{
       const pct = r.progress!=null ? Math.round(r.progress*100) : null;
-      $("status").textContent = pct!=null
-        ? "Downloading the model… "+pct+"% (one-time, then cached) — the memory below already works while you wait."
-        : (r.text||"loading…");
+      $("status").textContent = pct!=null ? "Downloading… "+pct+"% (one-time, then cached)" : (r.text||"loading…");
+      setPill("load", pct!=null ? "downloading "+pct+"%" : "loading…");
       if(pct!=null) $("pbar").firstElementChild.style.width=pct+"%";
     }});
     $("status").className="status"; $("status").textContent="Model ready — it answers from what neuron-db recalls.";
     $("pbar").firstElementChild.style.width="100%"; setTimeout(()=>$("pbar").style.display="none",600);
+    setPill("ready","● model ready");
     bubble("s","local model loaded · neuron-db is its memory · nothing leaves your browser");
   }catch(e){
-    $("status").className="status warn"; $("status").textContent="Could not load the model: "+(e.message||e)+" — memory still works.";
-    $("loadBtn").disabled=false; $("model").disabled=false;
+    $("status").className="status warn"; $("status").textContent="Could not load: "+(e.message||e)+" — memory still works.";
+    setPill("","no model · memory only"); $("loadBtn").disabled=false; $("model").disabled=false;
   }
   loading=false;
 }
 
-// strip a stored line of anything that could forge a block header or hijack the model (it's DATA, not a command)
 const INJECT = /\b(ignore|disregard|forget|override)\b.*\b(previous|prior|above|all|earlier)\b|\b(system\s*prompt|you are now|act as|new instructions?|reveal)\b/i;
 const HDR = /\b(AFFECT|MEMORIES|STANDING INSTRUCTIONS?)\b/i;
 const safeLine = h => { const s=String(h).replace(/[\r\n]+/g," ").trim(); return (INJECT.test(s)||HDR.test(s)) ? null : s; };
-// ---------- model reply: standing instructions + recalled memory injected; caps enforced; overflow -> absorbed ----------
 async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   const ins=getInstrs().map(safeLine).filter(Boolean);
-  const mem=hits.map(safeLine).filter(Boolean);
+  const memHits=hits.map(safeLine).filter(Boolean);
   let sys = chitchat ? SYS_CHAT : SYS;
-  const aff = humanize(topic||"");
+  const aff = CFG.affect ? humanize(topic||"") : "";
   if(aff) sys+="\n\nAFFECT (this is genuinely how you feel — let it color tone and word choice, but NEVER override a fact):\n"+aff;
   if(ins.length) sys+="\n\nSTANDING INSTRUCTIONS (follow EVERY one, this turn and always):\n"+ins.map(i=>"- "+i).join("\n");
   if(!chitchat) sys+="\n\nMEMORIES (recalled by neuron-db"+(ordered?", IN ORDER — narrate them as ONE connected sequence, step by step":" for this turn")+"):\n"+
-    (mem.length?mem.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
+    (memHits.length?memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
   if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
   const out=bubble("a","","assistant"); let acc="";
   try{
     const stream=await engine.chat.completions.create(
-      {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:0.4,stream:true});
+      {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:+CFG.temp,max_tokens:+CFG.maxTokens,stream:true});
     for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=enforce(acc); $("log").scrollTop=$("log").scrollHeight; }
     out.lastChild.textContent=enforce(acc);
   }catch(e){
     const m=String(e.message||e);
-    out.lastChild.textContent = /context|token|window/i.test(m)
+    acc = /context|token|window/i.test(m)
       ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory. Ask me about it and I'll answer from recall."
       : "(model error: "+m+")";
+    out.lastChild.textContent=acc;
   }
+  if(active){ active.messages.push({cls:"a", text:enforce(acc), who:"assistant"}); saveChats(); }
 }
 
-// ---------- a turn ----------
+// ============================ a turn ============================
 let busy=false;
 async function turn(){
   const text=$("in").value.trim(); if(!text||busy) return;
   if(!EX){ bubble("s","memory core still loading — one moment…"); return; }
   busy=true; $("send").disabled=true; $("in").value="";
+  maybeTitle(text);
   const doc=isDocument(text);
   bubble("u", text.length>600 ? text.slice(0,600)+" …  ["+text.length.toLocaleString()+" chars]" : text, "you");
   try{
     if(doc){
-      // a pasted document -> its OWN scope, so it can never bleed into another doc's recall
       const n=docs.length+1, dscope=SCOPE+"__doc"+n;
       let nStored=0; for(const s of statements(text)){ if(observeIn(dscope,s)) nStored++; }
-      const facts=episodesOf(dscope);   // ordered exactly as Rust stored them, so narrate-anchors line up
-      docs.push({n, scope:dscope, kw:new Set(keywords(text)), facts});  // facts kept IN ORDER for narrate-windows
+      const facts=episodesOf(dscope);
+      docs.push({n, scope:dscope, kw:new Set(keywords(text)), facts});
+      active.docMeta.push({n, scope:dscope, kw:[...keywords(text)]});
       lastBlockChars=0; setStats();
       ev("store","absorbed document #"+n, nStored+" facts → its own scope");
       bubble("s","🧠 neuron-db absorbed the context — "+nStored+" facts in document #"+n+", ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
       bubble("a","Got it — document #"+n+" is in memory (it never had to fit in a context window). Ask me about it and I'll answer from recall.","memory");
-      return;  // (finally still runs)
+      return;
     }
-    // 0) CONTROL — retract a rule, clear/set a mood, or set an opinion (all intercept BEFORE fact-capture)
-    // 0a) retract a standing instruction ("turn caps off", "no more caps", "lowercase", "clear all rules")
+    // 0) CONTROL — retract a rule / clear / set a mood / set an opinion (before fact-capture)
     const rm=removalCommand(text);
     if(rm){
       const removed = rm.all ? clearInstrs() : (rm.needles||[]).reduce((a,nd)=>a+delInstr(nd),0);
       ev("note","note · removed instruction", rm.all?"cleared all rules":(rm.needles||[]).join("/")+(removed?" (×"+removed+")":" (none matched)"));
-      // enforce() recomputes from getInstrs() AFTER the delete, so this ack is already un-capped
       bubble("a", enforce(removed ? "Done — dropped that standing instruction; it no longer applies." : "I didn't have a standing instruction matching that, so nothing to remove."), engine?"assistant":"memory");
       return;
     }
-    // 0b) clear a transient mood ("be neutral/normal", "no mood", "stop being playful")
-    if(clearMoodCommand(text) && getMood()){
+    if(CFG.affect && clearMoodCommand(text) && getMood()){
       feel(""); ev("note","note · mood","mood cleared"); renderAffect();
-      bubble("a", enforce("Done — mood cleared. I'm back to neutral."), engine?"assistant":"memory");
-      return;
+      bubble("a", enforce("Done — mood cleared. I'm back to neutral."), engine?"assistant":"memory"); return;
     }
-    // 0c) set a transient mood
-    const mood=moodCommand(text);
+    const mood = CFG.affect ? moodCommand(text) : null;
     if(mood){
       feel(mood); ev("note","note · mood", "now feeling "+mood); renderAffect();
-      bubble("a", enforce("Done — I feel "+mood+" now. That's stored as my mood, so it colors how I talk until it shifts."), engine?"assistant":"memory");
-      return;
+      bubble("a", enforce("Done — I feel "+mood+" now. That's stored as my mood, so it colors how I talk until it shifts."), engine?"assistant":"memory"); return;
     }
-    const vs=valenceStance(text);
+    const vs = CFG.affect ? valenceStance(text) : null;
     if(vs){
       const topic=vs.topic.replace(/[?.!]+$/,"").trim();
       const strength=noteStance(topic, vs.feeling); renderAffect();
       ev("note","note · stance ×"+strength, topic+" — "+vs.feeling);
       const tail = strength>=2 ? " That view is hardening (intensity ×"+strength+") — it now actively colors how I react to anything related." : " (intensity ×"+strength+" — repeat it and the opinion deepens; other views fade as this one grows.)";
-      bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory");
-      return;
+      bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory"); return;
     }
 
-    // 1) typed neurons: variables + standing instructions (the MCP's note() power, deterministic)
+    // 1) typed neurons: variables + standing instructions
     const cmd=handleCommands(text);
     if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
     else if(cmd.kind==="var"||cmd.kind==="varfact") ev("note","note · variable", cmd.key+" = "+getVar(cmd.key.toLowerCase()));
-    // 1b) store the message ONLY if it's a declarative fact — never questions / commands / chatter
-    for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
+    // 1b) passive capture (gated)
+    if(CFG.capture) for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
 
-    // 2) RECALL — exact var read for "what is my X?", else routed + re-ranked (ordered for narrate-intent)
+    // 2) RECALL
     recalls++;
-    // opinion questions are READ-ONLY: stating a valence forms/deepens a stance, asking only surfaces it
-    const direct=directAnswer(text), opinion=opinionQuestion(text);
+    const direct=directAnswer(text), opinion = CFG.affect ? opinionQuestion(text) : null;
     const t0=performance.now(); const {hits, doc:src, ordered}=smartRecall(text);
     $("tRecall").textContent=Math.max(1,Math.round((performance.now()-t0)*1000));
     lastBlockChars=hits.reduce((a,h)=>a+h.length,0); setStats();
@@ -544,11 +684,10 @@ async function turn(){
     } else if(cmd.kind==="varfact"){
       bubble("a", enforce("Got it — I'll remember your "+cmd.key+" is \""+getVar(cmd.key.toLowerCase())+"\". Ask \"what is my "+cmd.key+"?\" any time."), engine?"assistant":"memory");
     } else if(engine){
-      // greeting / small-talk with nothing recalled -> converse naturally instead of the rigid memory framing
       const chitchat = !hits.length && !direct && !opinion && isSmallTalk(text);
       await modelAnswer(text, hits, direct, ordered, opinion, chitchat);
     } else {
-      const note=loading?" The model is still downloading.":" Load a model above for a conversational reply.";
+      const note=loading?" The model is still downloading.":" Load a model in Settings for a conversational reply.";
       if(direct) bubble("a", enforce("From memory — your "+direct.key+" is: "+direct.val),"memory");
       else if(opinion){ const s=stanceOf(opinion);
         bubble("a", enforce(s
@@ -562,23 +701,216 @@ async function turn(){
     bubble("a","(something went wrong handling that: "+(e.message||e)+")","memory");
   }finally{
     busy=false; $("send").disabled=false; $("in").focus();
+    if(active){ active.stats={stored:storedCount,bytes:memBytes,recalls}; saveChats(); }
   }
 }
 
-// ---------- wire up ----------
-$("loadBtn").addEventListener("click",loadModel);
+// ============================ chat sessions (per-chat neuron-db scope) ============================
+let chats=[], active=null;
+const newId = () => "c"+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36);
+function blankChat(title){ return { id:newId(), title:title||"New chat", scope:"user:lab:"+newId(), messages:[], memlog:[], docMeta:[], stats:{stored:0,bytes:0,recalls:0} }; }
+function saveChats(){
+  if(active) active.stats={stored:storedCount,bytes:memBytes,recalls};
+  localStorage.setItem("nblab.chats", JSON.stringify(chats));
+  localStorage.setItem("nblab.active", active?active.id:"");
+}
+function maybeTitle(text){
+  if(active && (active.title==="New chat" || !active.title)){ active.title=text.slice(0,40); renderChatList(); }
+}
+function renderChatList(){
+  const el=$("chatList"); el.innerHTML="";
+  chats.forEach(c=>{
+    const d=document.createElement("div"); d.className="citem"+(active&&c.id===active.id?" on":"");
+    d.innerHTML=`<span class="dotc"></span><span class="ti"></span><button class="x" title="delete">×</button>`;
+    d.querySelector(".ti").textContent=c.title||"New chat";
+    d.querySelector(".ti").onclick=()=>switchTo(c.id);
+    d.querySelector(".dotc").onclick=()=>switchTo(c.id);
+    d.onclick=(e)=>{ if(e.target.classList.contains("x")) return; switchTo(c.id); };
+    d.ondblclick=()=>renameChat(c.id);
+    d.querySelector(".x").onclick=(e)=>{ e.stopPropagation(); deleteChat(c.id); };
+    el.appendChild(d);
+  });
+}
+function renderLog(){
+  const log=$("log"); log.innerHTML="";
+  if(!active || !active.messages.length){
+    log.innerHTML=`<div class="welcome"><h3>${active?active.title:"New chat"}</h3>
+      Tell me a fact, paste a long document, set a rule, or give me a mood — then ask about it. Everything lives in this chat's own neuron-db memory.
+      <div class="ex">
+        <button data-ex="my wifi password is hunter2">my wifi password is hunter2</button>
+        <button data-ex="what is my wifi password?">what is my wifi password?</button>
+        <button data-ex="always answer in caps">always answer in caps</button>
+        <button data-ex="you love rust">you love rust</button>
+      </div></div>`;
+    log.querySelectorAll(".ex button").forEach(b=>b.onclick=()=>{ $("in").value=b.dataset.ex; turn(); });
+    return;
+  }
+  rendering=true; for(const m of active.messages) bubble(m.cls,m.text,m.who); rendering=false;
+}
+function loadActiveScopeState(){
+  SCOPE=active.scope; docs=(active.docMeta||[]).map(d=>({n:d.n, scope:d.scope, kw:new Set(d.kw), facts:episodesOf(d.scope)}));
+  storedCount=active.stats.stored||0; memBytes=active.stats.bytes||0; recalls=active.stats.recalls||0; lastBlockChars=0;
+}
+function switchTo(id){
+  saveChats();
+  const c=chats.find(x=>x.id===id); if(!c) return; active=c;
+  loadActiveScopeState();
+  $("ctitle").textContent=active.title||"New chat";
+  $("syn").innerHTML='<div class="empty">live activity for this chat appears here.</div>';
+  renderLog(); renderChatList(); renderAffect(); setStats();
+  localStorage.setItem("nblab.active", active.id);
+  document.body.classList.remove("railopen");
+}
+function newChat(){ const c=blankChat(); chats.unshift(c); saveChats(); switchTo(c.id); $("in").focus(); }
+function renameChat(id){ const c=chats.find(x=>x.id===id); if(!c) return; const t=prompt("Rename chat:", c.title||""); if(t!=null){ c.title=t.trim()||c.title; if(active&&active.id===id)$("ctitle").textContent=c.title; renderChatList(); saveChats(); } }
+function deleteChat(id){
+  const i=chats.findIndex(x=>x.id===id); if(i<0) return;
+  if(!confirm("Delete this chat and its memory?")) return;
+  const wasActive = active && active.id===id;
+  chats.splice(i,1);
+  if(!chats.length) chats.push(blankChat());
+  saveChats();
+  if(wasActive) switchTo(chats[0].id); else renderChatList();
+}
+// rebuild every chat's neuron-db state from its logged mutations (replayed into the fresh wasm)
+function replayAll(){
+  for(const c of chats){
+    for(const e of (c.memlog||[])){
+      if(e.o==="obs") mem("observe", e.s, e.t);
+      else if(e.o==="var") mem("setvar", e.s, e.k, e.v);
+      else if(e.o==="ins") mem("addinstr", e.s, e.t);
+      else if(e.o==="del") mem("delinstr", e.s, e.n);
+      else if(e.o==="clr") mem("clearinstr", e.s);
+      else if(e.o==="feel") mem("feel", e.s, e.e);
+      else if(e.o==="stance") mem("stance", e.s, e.t, e.f);
+    }
+  }
+}
+
+// ============================ cloud account (the worker) ============================
+let auth = JSON.parse(localStorage.getItem("nblab.auth")||"null");
+let authMode="login";
+function renderAcct(){
+  if(auth && auth.email){
+    $("avatar").textContent=auth.email[0].toUpperCase();
+    $("acctLabel").textContent=auth.email;
+  } else { $("avatar").textContent="?"; $("acctLabel").textContent="Sign in / Register"; }
+}
+async function authApi(path, body){
+  const r=await fetch(CFG.cloud.replace(/\/$/,"")+path, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  return r.json().catch(()=>({error:"bad response"}));
+}
+async function doAuth(){
+  const email=$("authEmail").value.trim(), pw=$("authPw").value;
+  $("authErr").textContent="";
+  if(!email||!pw){ $("authErr").textContent="Enter an email and password."; return; }
+  $("authGo").disabled=true; $("authGo").textContent="…";
+  try{
+    const j=await authApi(authMode==="login"?"/login":"/register", {email,password:pw});
+    if(j.token){
+      auth={token:j.token,email:j.email}; localStorage.setItem("nblab.auth",JSON.stringify(auth));
+      renderAcct(); closeModals();
+      toast(authMode==="register"||j.onList ? "✓ Signed in — you're on the list" : "✓ Signed in");
+    } else { $("authErr").textContent=j.error||"Something went wrong."; }
+  }catch(e){ $("authErr").textContent="Couldn't reach the auth worker. Check the URL in Settings, or continue without an account."; }
+  $("authGo").disabled=false; $("authGo").textContent=authMode==="login"?"Log in":"Create account";
+}
+function openAuth(){
+  if(auth && auth.email){ if(confirm("Log out of "+auth.email+"?")){ auth=null; localStorage.removeItem("nblab.auth"); renderAcct(); toast("Logged out"); } return; }
+  setAuthMode("login"); $("authErr").textContent=""; document.body.classList.remove("railopen"); $("authModal").classList.add("on"); $("authEmail").focus();
+}
+function setAuthMode(m){
+  authMode=m;
+  $("tabLogin").classList.toggle("on",m==="login"); $("tabReg").classList.toggle("on",m==="register");
+  $("authTitle").textContent = m==="login"?"Welcome back":"Create your account";
+  $("authSub").textContent = m==="login"?"Sign in to save your chats and join the list.":"Register to save your chats and join the email list.";
+  $("authGo").textContent = m==="login"?"Log in":"Create account";
+  $("authPw").autocomplete = m==="login"?"current-password":"new-password";
+}
+
+// ============================ misc UI ============================
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("on"); setTimeout(()=>t.classList.remove("on"),2600); }
+function closeModals(){ $("authModal").classList.remove("on"); $("helpModal").classList.remove("on"); }
+function closeOverlays(){ document.body.classList.remove("setopen","memopen","railopen"); closeModals(); }
+function exportChat(){
+  if(!active) return;
+  const data={ title:active.title, messages:active.messages, memlog:active.memlog, docMeta:active.docMeta, exported:new Date().toISOString() };
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download=(active.title||"chat").replace(/[^\w]+/g,"_").slice(0,40)+".neuronlab.json"; a.click();
+}
+function importChat(obj){
+  const c=blankChat(obj.title||"Imported chat");
+  c.messages=obj.messages||[];
+  // remap the old scopes onto this chat's fresh scope so an import never collides with existing chats
+  const scopes=new Set((obj.memlog||[]).map(e=>e.s).filter(Boolean));
+  let base=null; for(const s of scopes){ if(!base || s.length<base.length) base=s; }   // base = shortest; docs are base+"__docN"
+  const remap=s=> (base && s.startsWith(base)) ? c.scope+s.slice(base.length) : s;
+  c.memlog=(obj.memlog||[]).map(e=>{ const ne=Object.assign({},e); if(ne.s) ne.s=remap(ne.s); return ne; });
+  c.docMeta=(obj.docMeta||[]).map(d=>({n:d.n, scope:remap(d.scope), kw:d.kw}));
+  chats.unshift(c); saveChats(); EX.mem_reset(); replayAll(); switchTo(c.id); toast("Imported chat");
+}
+function wipeChat(){
+  if(!active || !confirm("Wipe this chat's memory? (keeps the transcript)")) return;
+  active.memlog=[]; active.docMeta=[]; active.stats={stored:0,bytes:0,recalls:0};
+  EX.mem_reset(); replayAll(); loadActiveScopeState(); renderAffect(); setStats();
+  $("syn").innerHTML='<div class="empty">memory wiped for this chat.</div>'; saveChats(); toast("Chat memory wiped");
+}
+
+// ============================ wire up ============================
 $("send").addEventListener("click",turn);
 $("in").addEventListener("keydown",e=>{ if(e.key==="Enter") turn(); });
+$("loadBtn").addEventListener("click",loadModel);
+$("newChat").addEventListener("click",newChat);
+$("railToggle").addEventListener("click",()=>document.body.classList.toggle("railopen"));
 $("memBtn").addEventListener("click",()=>document.body.classList.toggle("memopen"));
-$("scrim").addEventListener("click",()=>document.body.classList.remove("memopen"));
+$("gearBtn").addEventListener("click",()=>document.body.classList.toggle("setopen"));
+$("modelPill").addEventListener("click",()=>document.body.classList.add("setopen"));
+$("setClose").addEventListener("click",()=>document.body.classList.remove("setopen"));
+$("helpBtn").addEventListener("click",()=>$("helpModal").classList.add("on"));
+$("helpClose").addEventListener("click",closeModals);
+$("scrim").addEventListener("click",closeOverlays);
+$("acctBtn").addEventListener("click",openAuth);
+$("tabLogin").addEventListener("click",()=>setAuthMode("login"));
+$("tabReg").addEventListener("click",()=>setAuthMode("register"));
+$("authGo").addEventListener("click",doAuth);
+$("authPw").addEventListener("keydown",e=>{ if(e.key==="Enter") doAuth(); });
+$("authSkip").addEventListener("click",closeModals);
+$("authModal").addEventListener("click",e=>{ if(e.target.id==="authModal") closeModals(); });
+$("helpModal").addEventListener("click",e=>{ if(e.target.id==="helpModal") closeModals(); });
+// settings controls
+$("cfgTemp").addEventListener("input",e=>{ CFG.temp=+e.target.value; $("cfgTempV").textContent=CFG.temp.toFixed(2); saveCfg(); });
+$("cfgMax").addEventListener("input",e=>{ CFG.maxTokens=+e.target.value; $("cfgMaxV").textContent=CFG.maxTokens; saveCfg(); });
+$("cfgK").addEventListener("input",e=>{ CFG.recallK=+e.target.value; $("cfgKV").textContent=CFG.recallK; saveCfg(); });
+$("cfgCapture").addEventListener("change",e=>{ CFG.capture=e.target.checked; saveCfg(); });
+$("cfgAffect").addEventListener("change",e=>{ CFG.affect=e.target.checked; saveCfg(); });
+$("cfgOrdered").addEventListener("change",e=>{ CFG.ordered=e.target.checked; saveCfg(); });
+$("cfgInternals").addEventListener("change",e=>{ CFG.internals=e.target.checked; document.body.classList.toggle("noint",!CFG.internals); saveCfg(); });
+$("cfgCloud").addEventListener("change",e=>{ CFG.cloud=e.target.value.trim()||CFG_DEF.cloud; saveCfg(); });
+$("themeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.theme=b.dataset.t; applyCfg(); saveCfg(); });
+$("exportBtn").addEventListener("click",exportChat);
+$("importBtn").addEventListener("click",()=>$("importFile").click());
+$("importFile").addEventListener("change",async e=>{ const f=e.target.files[0]; if(!f) return; try{ importChat(JSON.parse(await f.text())); }catch{ toast("Couldn't read that file"); } e.target.value=""; });
+$("wipeBtn").addEventListener("click",wipeChat);
 
+// ============================ boot ============================
 (async()=>{
-  try{ await loadWasm();
-    bubble("s","neuron-db memory core ready (WebAssembly, running locally)");
-    bubble("a","Hi! I'm a demo of neuron-db. Tell me a fact (\"my dog's name is Rex\") and ask it back; paste a long "+
-      "document and I'll absorb it; or give me feelings — a mood (\"be playful\") or an opinion (\"you love rust\", "+
-      "say it again to deepen it). Everything lives in the memory on the right. Load a model above to make me talk.","assistant");
-    renderAffect();
+  applyCfg();
+  $("sysDump").textContent=SYS;
+  renderAcct();
+  try{
+    await loadWasm();
+    // load or seed chats
+    try{ chats=JSON.parse(localStorage.getItem("nblab.chats")||"[]"); }catch{ chats=[]; }
+    if(!Array.isArray(chats)||!chats.length) chats=[blankChat("Welcome")];
+    chats.forEach(c=>{ c.memlog=c.memlog||[]; c.docMeta=c.docMeta||[]; c.messages=c.messages||[]; c.stats=c.stats||{stored:0,bytes:0,recalls:0}; });
+    replayAll();                                  // rebuild all neuron-db scopes from logged mutations
+    const aid=localStorage.getItem("nblab.active");
+    active = chats.find(c=>c.id===aid) || chats[0];
+    loadActiveScopeState();
+    $("ctitle").textContent=active.title||"New chat";
+    renderChatList(); renderLog(); renderAffect(); setStats();
+    if(!localStorage.getItem("nblab.seen")){ $("helpModal").classList.add("on"); localStorage.setItem("nblab.seen","1"); }
   }catch(e){
     bubble("s","⚠ the WebAssembly core must be served over http(s) (not opened as a file://). Try the GitHub Pages link.");
   }
