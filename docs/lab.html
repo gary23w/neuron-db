@@ -373,7 +373,7 @@ function renderAffect(){
   el.innerHTML=h;
 }
 async function loadWasm(){
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=affect3"), {});
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=chain1"), {});
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
@@ -392,6 +392,10 @@ function delInstr(needle){ const n=parseInt(mem("delinstr",SCOPE,needle||""))||0
 function clearInstrs(){ const n=parseInt(mem("clearinstr",SCOPE))||0; logMem({o:"clr",s:SCOPE}); return n; }
 function episodesOf(scope){ const s=mem("episodes",scope); return s?s.split("\n").filter(Boolean):[]; }
 function assocIn(scope,q,k){ const s=mem("assoc",scope,q,"2",String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
+// batch ingest a whole document in ONE wasm crossing (vs N) — fewer boundary hops + encodes
+function observeManyIn(scope,stmts){ const blob=stmts.join("\n"); const n=parseInt(mem("obsmany",scope,blob))||0; if(n){ storedCount+=n; memBytes+=blob.length; logMem({o:"obsm",s:scope,t:blob}); } return n; }
+// multi-hop: walk relations server-side in the wasm (depth costs the model nothing)
+function recallChain(start,path){ const r=mem("chain",SCOPE,start,...(path||[])); const i=r.indexOf("\t"); return {value:i<0?"":r.slice(0,i), trail:i<0?start:r.slice(i+1)}; }
 // ---- affective layer — a transient mood + durable, accumulating opinions ----
 function feel(emotion){ mem("feel",SCOPE,emotion); logMem({o:"feel",s:SCOPE,e:emotion}); }
 function noteStance(topic,feeling){ const r=parseInt(mem("stance",SCOPE,topic,feeling))||1; logMem({o:"stance",s:SCOPE,t:topic,f:feeling}); return r; }
@@ -657,23 +661,31 @@ const TOOLSYS =
   "A tool call is a single line of JSON and nothing else:\n"+
   '{"tool":"recall","args":{"query":"the topic"}}\n'+
   "Tools:\n"+
-  "- recall {query}       — the most relevant facts for a topic. Call it first; call again with NEW queries to dig deeper.\n"+
-  "- recall_value {query} — the one exact value for a direct question (a password, name, number, date).\n"+
-  "- recall_var {name}    — read a variable the user set.\n"+
-  "- remember {fact}      — store a new durable fact the user told you.\n"+
-  "- note {name, value}   — save a named variable.\n"+
-  "- stats {}             — how many facts are in memory.\n"+
+  "- recall {query}            — the most relevant facts for a topic. Call it first; call again with NEW queries to dig deeper.\n"+
+  "- recall_value {query}      — the one exact value for a direct question (a password, name, number, date).\n"+
+  "- recall_associative {query}— facts linked through shared entities (spreading activation); finds connections plain recall misses.\n"+
+  "- recall_chain {start, path}— answer a MULTI-HOP question in one call: give the start entity and ordered relations to follow, e.g. start \"Aurora\", path [\"owner\",\"manager\",\"timezone\"] → the timezone of the manager of the owner of Aurora.\n"+
+  "- recall_var {name}         — read a variable the user set.\n"+
+  "- remember {fact}           — store a new durable fact the user told you.\n"+
+  "- note {name, value}        — save a named variable.\n"+
+  "- stats {}                  — how many facts are in memory.\n"+
   "Loop: call a tool, read the TOOL RESULT, call more tools until you have enough, THEN stop and answer in plain prose. "+
   "Use ONLY facts returned by tools — never invent. If the tools return nothing useful, say you don't have it in memory.\n\n"+
-  "Example:\n"+
+  "Example (a direct value):\n"+
   "User: what's my wifi password?\n"+
   '{"tool":"recall_value","args":{"query":"wifi password"}}\n'+
   "TOOL RESULT (recall_value): hunter2\n"+
-  "Assistant: Your wifi password is hunter2.";
-const TOOL_NAMES = /(recall_value|recall_var|recall|remember|note|stats|forget)/i;
+  "Assistant: Your wifi password is hunter2.\n\n"+
+  "Example (multi-hop):\n"+
+  "User: what timezone is the owner of project Aurora's manager in?\n"+
+  '{"tool":"recall_chain","args":{"start":"Aurora","path":["owner","manager","timezone"]}}\n'+
+  "TOOL RESULT (recall_chain): WET   (resolved: Aurora → Marisol → Dana → WET)\n"+
+  "Assistant: It's WET — Aurora's owner is Marisol, whose manager Dana is in WET.";
+const TOOL_NAMES = /(recall_associative|recall_value|recall_chain|recall_var|recall|remember|note|stats|forget)/i;
 function argObj(tool,a){
   if(tool==="note") return {name:a[0]||"", value:a.slice(1).join(", ")};
   if(tool==="recall_var") return {name:a[0]||""};
+  if(tool==="recall_chain") return {start:a[0]||"", path:a.slice(1)};
   if(tool==="stats") return {};
   return {query:a.join(", ")};
 }
@@ -706,6 +718,13 @@ function runTool(call){
     if(call.tool==="note"){ setVar(String(a.name||"").toLowerCase(),String(a.value||"")); return "noted "+a.name+" = "+a.value; }
     if(call.tool==="stats"){ return "facts in memory: "+storedCount+", recalls fired: "+recalls; }
     if(call.tool==="forget"){ return "forgot "+mem("forget",SCOPE,q)+" facts"; }
+    if(call.tool==="recall_associative"){ const hits=assocIn(SCOPE,q,8).map(safeLine).filter(Boolean); recalls++; setStats(); return hits.length?hits.map((h,i)=>(i+1)+". "+h).join("\n"):"(no associations found)"; }
+    if(call.tool==="recall_chain"){
+      const start=String(a.start||a.query||"");
+      let path=a.path||[]; if(typeof path==="string") path=path.split(/[,>→]+/).map(s=>s.trim()).filter(Boolean);
+      const {value,trail}=recallChain(start,path); recalls++; setStats();
+      return value ? value+"   (resolved: "+trail+")" : "chain broke — only got: "+trail;
+    }
     // default: recall
     const hits=smartRecall(q).hits.map(safeLine).filter(Boolean); recalls++; setStats();
     return hits.length ? hits.map((h,i)=>(i+1)+". "+h).join("\n") : "(no matching memory)";
@@ -727,7 +746,7 @@ async function agentTurn(userText){
     let res;
     if(seen.has(key)) res="(you already retrieved this — answer now from what you have)";
     else { seen.add(key); res=runTool(call); fired++;
-      ev("tool","🔧 tool · "+call.tool, `<span class="pill">${String(call.args.query||call.args.name||call.args.fact||"").slice(0,46)}</span>`); }
+      ev("tool","🔧 tool · "+call.tool, `<span class="pill">${String(call.args.query||call.args.name||call.args.fact||call.args.start||(Array.isArray(call.args.path)?call.args.path.join(" → "):"")).slice(0,46)}</span>`); }
     msgs.push({role:"user",content:"TOOL RESULT ("+call.tool+"): "+res});
     out.lastChild.textContent="🔧 fired "+fired+" tool"+(fired===1?"":"s")+"… ("+call.tool+")";
   }
@@ -756,7 +775,7 @@ async function turn(){
   try{
     if(doc){
       const n=docs.length+1, dscope=SCOPE+"__doc"+n;
-      let nStored=0; for(const s of statements(text)){ if(observeIn(dscope,s)) nStored++; }
+      const nStored=observeManyIn(dscope, statements(text));   // one wasm crossing for the whole doc
       const facts=episodesOf(dscope);
       docs.push({n, scope:dscope, kw:new Set(keywords(text)), facts});
       active.docMeta.push({n, scope:dscope, kw:[...keywords(text)]});
@@ -915,6 +934,7 @@ function replayAll(){
   for(const c of chats){
     for(const e of (c.memlog||[])){
       if(e.o==="obs") mem("observe", e.s, e.t);
+      else if(e.o==="obsm") mem("obsmany", e.s, e.t);
       else if(e.o==="var") mem("setvar", e.s, e.k, e.v);
       else if(e.o==="ins") mem("addinstr", e.s, e.t);
       else if(e.o==="del") mem("delinstr", e.s, e.n);

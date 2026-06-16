@@ -171,8 +171,9 @@ fn topic_matches(stored: &str, asked: &str) -> bool {
 #[no_mangle] pub extern "C" fn mem_reset() { unsafe { MEM = Some(MemDB::new()); } }
 
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
-/// ops: observe | recall | value | assoc | setvar | getvar | addinstr | instrs | delinstr |
-///      clearinstr | forget | stats | episodes | feel | stance | humanize | mood | topstance | stanceof.
+/// ops: observe | obsmany | recall | value | assoc | chain | setvar | getvar | addinstr | instrs |
+///      delinstr | clearinstr | forget | stats | episodes | feel | stance | humanize | mood |
+///      topstance | stanceof.
 #[no_mangle]
 pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
     let req = input(ptr, len);
@@ -216,13 +217,54 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         }
         // drop all standing instructions for the scope; returns count removed
         "clearinstr" => db.instrs.get_mut(&scope).map(|v| { let n = v.len(); v.clear(); n.to_string() }).unwrap_or_else(|| "0".into()),
-        "forget" => db.n(&scope).forget_prefix(arg(2)).to_string(),
+        // remove every fact whose text CONTAINS the (case-insensitive) needle — the same substring
+        // semantics the MCP/db `forget` uses (an empty needle clears the scope)
+        "forget" => {
+            let needle = arg(2).to_lowercase();
+            let n = db.n(&scope);
+            let before = n.fact_count();
+            if needle.is_empty() { n.episodes.clear(); } else { n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&needle)); }
+            n.invalidate_index();
+            (before - n.fact_count()).to_string()
+        }
         "stats" => db.scopes.get(&scope).map(|n| n.fact_count()).unwrap_or(0).to_string(),
         // the scope's stored episode texts, in insertion order — so a caller's ordered view matches
         // exactly what was stored (the JS sentence splitter and Rust's differ, e.g. on ';')
         "episodes" => db.scopes.get(&scope)
             .map(|n| n.episodes.iter().map(|e| e.t.clone()).collect::<Vec<_>>().join("\n"))
             .unwrap_or_default(),
+        // batch ingest: arg2 is a newline-joined block. One wasm crossing for a whole document
+        // instead of N — fewer boundary hops + encodes. Returns the count of newly-stored facts.
+        "obsmany" => {
+            let n = db.n(&scope);
+            let before = n.fact_count();
+            for line in arg(2).split('\n') { let t = line.trim(); if !t.is_empty() { n.observe(t); } }
+            (n.fact_count() - before).to_string()
+        }
+        // multi-hop recall: start at arg2 and follow each subsequent field as one relation, resolving
+        // "<current> <relation>" by recall at every hop — server-side, microseconds, no model round
+        // trips. Only advances if the relation actually appears in the recalled fact (morph/stem
+        // tolerant via rel_matches), so a broken chain abstains instead of drifting. Returns
+        // "<final>\t<step → step → …>" (final empty if the chain broke).
+        "chain" => {
+            let path: Vec<String> = f.iter().skip(3).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let n = db.n(&scope);
+            let mut current = arg(2).trim().to_string();
+            let mut trail = vec![current.clone()];
+            let mut broke = false;
+            for rel in &path {
+                let rel_words: Vec<&str> = rel.split_whitespace().filter(|w| w.len() >= 3).collect();
+                match n.recall(&format!("{} {}", current, rel)) {
+                    Some(h) if rel_words.is_empty()
+                        || rel_words.iter().any(|rw| h.fact.split_whitespace().any(|w| crate::rel_matches(w, rw))) => {
+                        current = h.value.clone();
+                        trail.push(current.clone());
+                    }
+                    _ => { broke = true; break; }
+                }
+            }
+            format!("{}\t{}", if broke { String::new() } else { current }, trail.join(" → "))
+        }
         // --- affective layer: a transient mood + accumulating, decaying stances + the humanize basis ---
         "feel" => {
             let e = arg(2).trim();
