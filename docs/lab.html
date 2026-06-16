@@ -87,6 +87,8 @@
   .inbar input:focus{outline:none;border-color:var(--accent)}
   .send{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border:none;border-radius:11px;padding:0 18px;font-weight:700}
   .send:disabled{opacity:.5;cursor:not-allowed}
+  .send.stop{background:linear-gradient(180deg,#f0556a,#d83a51);color:#fff}
+  .send.stop::before{content:"⏹ "}
 
   /* ---- memory pane ---- */
   .mem{display:flex;flex-direction:column;min-height:0;background:var(--bg2);border-left:1px solid var(--line)}
@@ -444,11 +446,92 @@ async function webSearch(query){
 }
 // "check the web for X" / "google X" / "search X" / "look up X" / "browse X"
 function webCommand(text){
-  const m=text.match(/^\s*(?:please\s+)?(?:check (?:the )?web(?: for)?|search(?: the web)?(?: for)?|google|duck ?duck ?go|ddg|bing|look up(?: online)?|web ?search|find (?:online|on the web)|browse(?: for)?)\b[:\-]?\s*(.+)$/i);
-  if(m) return m[1].trim().replace(/[?.!]+$/,"");
+  let m;
+  if((m=text.match(/^\s*(?:please\s+)?(?:check (?:the )?web(?: for)?|search(?: the web)?(?: for)?|google|duck ?duck ?go|ddg|bing|look up(?: online)?|web ?search|find (?:online|on the web)|browse(?: for)?)\b[:\-]?\s*(.+)$/i)))
+    return m[1].trim().replace(/[?.!]+$/,"");
+  // "... on/from wikipedia" or "wikipedia: X" → fetch the real article (don't let the model confabulate)
+  if((m=text.match(/^\s*(?:get|find|look ?up|tell me|give me|show me|pull up|fetch|read)?\s*(?:me\s+)?(?:some\s+|more\s+)?(?:info(?:rmation)?|details?|stuff|everything|the (?:wiki|page|article))?\s*(?:about|on|for|re)?\s*(.+?)\s+(?:on|from|via|off|in)\s+(?:wiki(?:pedia)?)\b/i)))
+    return m[1].replace(/^(the|a|an)\s+/i,"").trim().replace(/[?.!]+$/,"");
+  if((m=text.match(/^\s*wiki(?:pedia)?\s*[:\-]\s*(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
   // a bare weather question with a place → route to the live weather fetch (don't let the model invent it)
   if(/\b(weather|did it rain|is it rain|temperature|forecast|how (hot|cold)|is it (snow|sunny|cloud))/i.test(text) && /\bin\s+[a-z]/i.test(text)) return text.replace(/[?.!]+$/,"").trim();
   return null;
+}
+// "deep research X" / "research X deeply" / "dig into X" / "build context on X" → recursive Wikipedia crawl
+function deepCommand(text){
+  let m;
+  if((m=text.match(/^\s*(?:please\s+)?(?:do (?:a )?|run (?:a )?|start (?:a )?|perform (?:a )?)?deep[\- ]?(?:dive|research|search)\s+(?:on|into|about|for|of)?\s*(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
+  if((m=text.match(/^\s*(?:please\s+)?research\s+(.+?)\s+(?:deeply|in[\- ]depth|thoroughly|recursively|and (?:follow|crawl) (?:the )?(?:deeper )?links?|and dig (?:deeper|in))\s*[.?!]*$/i))) return m[1].trim();
+  if((m=text.match(/^\s*(?:please\s+)?(?:dig (?:deep(?:ly|er)? )?into|crawl(?: deeper into| into)?|deep[\- ]?dive(?: into)?)\s+(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
+  if((m=text.match(/^\s*(?:please\s+)?build (?:a |me a |up )?(?:bigger |larger |deeper |more )?context (?:on|about|for|around)\s+(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
+  return null;
+}
+// ---- recursive deep research — a multi-agent crawl entirely inside the WASM (no worker/proxy):
+//   PLANNER (model proposes facets) → SEARCHER (Wikipedia full-text) → READER (BFS, reads each page, follows
+//   the most topic-relevant links one level deeper) → SYNTHESIZER (model writes a brief from the saved facts).
+//   Every page read is stored into neuron-db (recallable), and every step is shown live in the data panel.
+async function deepResearch(topic){
+  const norm=s=>String(s||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(w=>w.length>2);
+  const topicKw=new Set(norm(topic));
+  const visited=new Set();
+  let savedTotal=0; const report=[];
+  const WP="https://en.wikipedia.org";
+  const search=async(q,n)=>{ const r=await jget(WP+"/w/api.php?action=query&list=search&srlimit="+(n||1)+"&format=json&origin=*&srsearch="+encodeURIComponent(q)); return (r&&r.query&&r.query.search)||[]; };
+
+  // ---- agent 1 · PLANNER — model proposes facets to steer the crawl (skipped if no model) ----
+  ev("note","🧠 planner · deep research", `<span class="pill">${topic.slice(0,48)}</span>`, "scoping the crawl");
+  let angles=[];
+  if(engine && !engineTiny && !stopRequested){
+    try{
+      const r=await engine.chat.completions.create({messages:[
+        {role:"system",content:"You are a research planner. Given a topic, list 3-5 specific sub-topics or facets worth investigating. Each is 1-4 words, comma-separated, no numbering, no extra prose. Output ONLY the comma-separated list."},
+        {role:"user",content:"Topic: "+topic}], temperature:0.3, max_tokens:80, stream:false});
+      angles=(r.choices?.[0]?.message?.content||"").split(/[,\n]/).map(s=>s.replace(/^[-*\d.\s]+/,"").trim()).filter(s=>s.length>2&&s.length<40).slice(0,5);
+    }catch{}
+  }
+  if(angles.length) ev("fire","planner · "+angles.length+" facets", angles.map(a=>`<span class="pill">${a}</span>`).join(""));
+
+  // ---- agent 2 · SEARCHER — locate the seed article + a seed per facet (breadth at depth 0) ----
+  if(stopRequested) return {savedTotal, report, stopped:true};
+  ev("note","🔎 searcher · wikipedia", `<span class="pill">${topic.slice(0,48)}</span>`, "full-text search");
+  const seed=await search(topic,5);
+  if(!seed.length){ ev("fire","searcher","(no article found)"); return {savedTotal, report, stopped:false}; }
+  const queue=[{title:seed[0].title, depth:0}];
+  for(const a of angles.slice(0,3)){
+    if(stopRequested) break;
+    const s=await search(topic+" "+a,1);
+    if(s.length && s[0].title!==seed[0].title) queue.push({title:s[0].title, depth:0});
+  }
+
+  // ---- agent 3 · READER — BFS: read each page, store facts, follow the most relevant links deeper ----
+  const MAX_PAGES=8, MAX_DEPTH=2;
+  while(queue.length && report.length<MAX_PAGES){
+    if(stopRequested) break;
+    const {title, depth}=queue.shift();
+    const k=title.toLowerCase(); if(visited.has(k)) continue; visited.add(k);
+    ev("note","📖 reader · depth "+depth, `<span class="pill">${title.slice(0,46)}</span>`, "reading");
+    const sum=await jget(WP+"/api/rest_v1/page/summary/"+encodeURIComponent(title.replace(/ /g,"_")));
+    const extract=sum&&sum.extract;
+    if(!extract) continue;
+    const sentences=extract.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>15);
+    let saved=0; for(const s of sentences.slice(0,6)){ if(observeIn(SCOPE, (sum.title||title)+": "+s)) saved++; }
+    savedTotal+=saved; setStats();
+    report.push({title:(sum.title||title), extract, depth});
+    ev("store","stored · "+(sum.title||title).slice(0,38), saved+" facts → neuron-db", "total "+savedTotal);
+    // follow links one level deeper, gated by relevance to the topic + planner facets
+    if(depth<MAX_DEPTH && report.length<MAX_PAGES && !stopRequested){
+      const lk=await jget(WP+"/w/api.php?action=query&prop=links&pllimit=max&plnamespace=0&format=json&origin=*&titles="+encodeURIComponent(title));
+      const po=lk&&lk.query&&lk.query.pages; let links=[];
+      if(po) for(const pid in po){ const pl=po[pid].links; if(pl) links=links.concat(pl.map(x=>x.title)); }
+      const want=new Set([...topicKw, ...angles.flatMap(norm)]);
+      const ranked=links.filter(t=>!visited.has(t.toLowerCase()))
+        .map(t=>[norm(t).reduce((a,w)=>a+(want.has(w)?1:0),0), t])
+        .filter(x=>x[0]>0).sort((a,b)=>b[0]-a[0]);
+      const follow=ranked.slice(0,3).map(x=>x[1]);
+      if(follow.length){ ev("fire","reader · following "+follow.length, follow.map(t=>`<span class="pill">${t.slice(0,28)}</span>`).join("")); for(const t of follow) queue.push({title:t, depth:depth+1}); }
+    }
+  }
+  return {savedTotal, report, stopped:stopRequested};
 }
 // ---- affective layer — a transient mood + durable, accumulating opinions ----
 function feel(emotion){ mem("feel",SCOPE,emotion); logMem({o:"feel",s:SCOPE,e:emotion}); }
@@ -524,8 +607,9 @@ function handleCommands(text){
     }
     addInstr(body); return {kind:"instruction", text:body};
   }
-  if(/^\s*(always|never|only|from now on|respond|reply|answer)\b/i.test(text) &&
-     /\b(caps|capital|upper ?case|lower ?case|case|format|word|short|long|emoji|markdown|language|prose|bullet|reply|respond|answer|return|sentence)\b/i.test(text)){
+  if(!/\?\s*$/.test(text) &&    // a question is never a standing instruction ("answer to what?" was misfiring)
+     /^\s*(always|never|only|from now on|respond|reply|answer)\b/i.test(text) &&
+     /\b(caps|capital|upper ?case|lower ?case|case|format|word|words|short|long|emoji|markdown|language|prose|bullet|sentence|verbatim|paragraph|letter)\b/i.test(text)){
     addInstr(text.trim()); return {kind:"instruction", text:text.trim()};
   }
   if((m=text.match(/^\s*(?:set|save|remember|store|keep)\s+(?:my\s+|the\s+)?([\w' -]+?)\s+(?:to|as|=|is)\s+(.+)$/i))){
@@ -559,7 +643,17 @@ function clearMoodCommand(text){
 }
 const FMT_KW = /(caps|capital|upper\s?case|lower\s?case|emoji|markdown|bullet|prose|formal|short|long)/i;
 function removalCommand(text){
-  if(/^\s*(?:clear|forget|remove|drop|reset|delete|cancel)\s+(?:all\s+)?(?:my\s+|the\s+)?(?:standing\s+)?(?:rules?|instructions?)\b/i.test(text)) return {all:true};
+  let m;
+  if(/^\s*(?:clear|forget|remove|drop|reset|delete|cancel)\s+(?:all\s+)?(?:my\s+|the\s+)?(?:standing\s+)?(?:rules?|instructions?)\b\s*[.?!]*$/i.test(text)) return {all:true};
+  // general removal: "remove/forget/drop the <X> instruction/rule/note" → delete instructions containing X
+  if((m=text.match(/^\s*(?:please\s+)?(?:remove|forget|drop|delete|cancel|undo|kill|ditch)\s+(?:the\s+|that\s+|this\s+|my\s+|your\s+)?["']?(.+?)["']?\s+(?:instruction|rule|note|directive|behaviou?r|setting|thing|bit|part)s?\b/i))){
+    const w=m[1].replace(/\b(standing|custom|silly|stupid|whole|entire|that|the|a|an)\b/ig,"").trim();
+    if(w && w.length>=2) return {needles:[w.toLowerCase()]};
+  }
+  // "stop saying/doing/adding/using X" → drop instructions that mention X
+  if((m=text.match(/^\s*(?:please\s+)?(?:stop|quit|no more)\s+(?:saying|doing|using|adding|appending|inserting|with(?:\s+the)?)\s+["']?(.+?)["']?\s*[.?!]*$/i))){
+    const w=m[1].trim(); if(w && w.length>=2 && w.length<=40) return {needles:[w.toLowerCase()]};
+  }
   if(/\blower\s?case\b/i.test(text) && !/\bno\b|\bnot\b|\bdon'?t\b|\bstop\b.*lower/i.test(text)) return {needles:["caps","capital","upper"]};
   if(/^\s*(?:stop|turn|no\b|no more|no longer|disable|cancel|forget|remove|drop|undo|quit|don'?t|do not)\b/i.test(text) && FMT_KW.test(text)){
     const kw=(text.match(FMT_KW)||[])[1].replace(/\s+/g,"").toLowerCase();
@@ -762,11 +856,12 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
     const stream=await engine.chat.completions.create(
       {messages:[{role:"system",content:sys},{role:"user",content:userContent}],
        temperature: engineReason?Math.min(0.2,+CFG.temp):+CFG.temp, max_tokens:cap, stream:true});
-    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d;
+    for await(const c of stream){ if(stopRequested) break; const d=c.choices[0]?.delta?.content||""; acc+=d;
       if(engineReason){ const r=splitThink(acc); const pre=thinkEl.querySelector("pre"); pre.textContent=r.think; pre.classList.toggle("live",r.open);
         ansEl.textContent = enforce(r.body) || (r.open ? "🧠 reasoning… ("+approxTokens(acc).toLocaleString()+" tokens · "+Math.round((performance.now()-t0)/1000)+"s)" : ""); }
       else ansEl.textContent = enforce(stripThink(acc)) || "";
       $("log").scrollTop=$("log").scrollHeight; }
+    if(stopRequested){ const body=engineReason?splitThink(acc).body:stripThink(acc); ansEl.textContent=enforce(body)+(body?" ":"")+"⏹"; if(thinkEl){ const pre=thinkEl.querySelector("pre"); pre.classList.remove("live"); if(!pre.textContent.trim()) thinkEl.remove(); } if(active){ active.messages.push({cls:"a", text:enforce(body)+" ⏹", who:"assistant"}); saveChats(); } return; }
     const truncated = engineReason && acc.length>0 && !/<\/think>/i.test(acc);   // reasoning never reached the close
     acc = engineReason ? splitThink(acc).body : stripThink(acc);
     if(!acc || acc.length<2){
@@ -776,11 +871,14 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
     if(direct && direct.val && !acc.includes(direct.val)) acc = "From memory — your "+direct.key+" is: "+direct.val;   // post-hoc grounding for exact values
     ansEl.textContent=enforce(acc);
   }catch(e){
-    const m=String(e.message||e);
-    acc = /context|token|window/i.test(m)
-      ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory. Ask me about it and I'll answer from recall."
-      : "(model error: "+m+")";
-    ansEl.textContent=acc;
+    if(stopRequested){ const body=engineReason?splitThink(acc).body:stripThink(acc); acc=enforce(body)+(body?" ":"")+"⏹"; ansEl.textContent=acc; }
+    else {
+      const m=String(e.message||e);
+      acc = /context|token|window/i.test(m)
+        ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory. Ask me about it and I'll answer from recall."
+        : "(model error: "+m+")";
+      ansEl.textContent=acc;
+    }
   }
   if(thinkEl){ const pre=thinkEl.querySelector("pre"); pre.classList.remove("live"); if(!pre.textContent.trim()) thinkEl.remove(); }
   if(active){ active.messages.push({cls:"a", text:enforce(acc), who:"assistant"}); saveChats(); }
@@ -876,6 +974,7 @@ async function agentTurn(userText, seedHits, seedOrdered){
   const out=bubble("a","","assistant"); out.lastChild.textContent=seed.length?"🔧 reading memory…":"🔧 thinking…";
   const seen=new Set(); let answer="", fired=0;
   for(let i=0;i<MAXITER;i++){
+    if(stopRequested){ answer=(out.lastChild.textContent||"").startsWith("🔧")?"":out.lastChild.textContent; answer=(answer||"Stopped before I finished digging.")+" ⏹"; break; }
     let raw="";
     try{ const r=await engine.chat.completions.create({messages:msgs,temperature:Math.min(0.3,+CFG.temp),max_tokens:Math.max(+CFG.maxTokens,512),stream:false}); raw=r.choices?.[0]?.message?.content||""; }
     catch(e){ answer="(model error: "+(e.message||e)+")"; break; }
@@ -904,11 +1003,23 @@ async function agentTurn(userText, seedHits, seedOrdered){
 }
 
 // ============================ a turn ============================
-let busy=false;
+let busy=false, stopRequested=false;
+// Send doubles as Stop while a turn runs — generation and the research crawl both watch stopRequested.
+function setBusy(on){
+  busy=on; const b=$("send");
+  if(on){ stopRequested=false; b.textContent="Stop"; b.classList.add("stop"); b.disabled=false; }
+  else { b.textContent="Send"; b.classList.remove("stop"); b.disabled=false; }
+}
+function requestStop(){
+  if(!busy || stopRequested) return;
+  stopRequested=true;
+  try{ if(engine && engine.interruptGenerate) engine.interruptGenerate(); }catch{}
+  const b=$("send"); b.textContent="Stopping…"; b.disabled=true;
+}
 async function turn(){
   const text=$("in").value.trim(); if(!text||busy) return;
   if(!EX){ bubble("s","memory core still loading — one moment…"); return; }
-  busy=true; $("send").disabled=true; $("in").value="";
+  setBusy(true); $("in").value="";
   maybeTitle(text);
   const doc=isDocument(text);
   bubble("u", text.length>600 ? text.slice(0,600)+" …  ["+text.length.toLocaleString()+" chars]" : text, "you");
@@ -949,6 +1060,27 @@ async function turn(){
       ev("note","note · stance ×"+strength, topic+" — "+vs.feeling);
       const tail = strength>=2 ? " That view is hardening (intensity ×"+strength+") — it now actively colors how I react to anything related." : " (intensity ×"+strength+" — repeat it and the opinion deepens; other views fade as this one grows.)";
       bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory"); return;
+    }
+
+    // 0c) DEEP RESEARCH — a recursive, multi-agent Wikipedia crawl (search → read → follow links → accumulate),
+    // every page stored into neuron-db. The model (if loaded) plans the facets and writes the final synthesis.
+    const dq=deepCommand(text);
+    if(dq){
+      const status=bubble("s","🌐 deep research — crawling Wikipedia for \""+dq+"\" (plan → search → read → follow links → synthesize). Hit Stop any time; I keep what's gathered.");
+      const {savedTotal, report, stopped}=await deepResearch(dq);
+      status.remove();
+      ev("tool","🔧 deep research · Wikipedia", `<span class="pill">${dq.slice(0,44)}</span>`, report.length+" pages · "+savedTotal+" facts");
+      if(!report.length){
+        bubble("a", enforce("🌐 I couldn't find a Wikipedia article to start the crawl from for \""+dq+"\" — try a more specific or differently-worded topic."), engine?"assistant":"memory");
+      } else {
+        // ---- agent 4 · SYNTHESIZER — write a brief grounded ONLY in the gathered + saved facts ----
+        ev("note","✍️ synthesizer", report.length+" sources · "+savedTotal+" facts", "writing brief");
+        const facts=report.flatMap(r=>r.extract.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>15).slice(0,4).map(s=>r.title+": "+s));
+        if(engine) await modelAnswer("Write a clear, synthesized research brief on \""+dq+"\" using the gathered sources below. Organize it, connect the sources, and note what each contributes.", facts.slice(0,24), null, false, null, false);
+        else bubble("a", enforce("🌐 Deep research on "+dq+" — read "+report.length+" Wikipedia articles, saved "+savedTotal+" facts into neuron-db (recall them any time):\n"+report.map((r,i)=>(i+1)+". "+r.title+" — "+r.extract.slice(0,150).trim()+"…").join("\n")), "memory");
+      }
+      if(stopped) bubble("s","⏹ research stopped — kept the "+savedTotal+" facts gathered so far in neuron-db.");
+      return;
     }
 
     // 0d) LIVE WEB — the WASM fetches a CORS public API DIRECTLY (no worker), SAVES the results into
@@ -1037,7 +1169,7 @@ async function turn(){
   }catch(e){
     bubble("a","(something went wrong handling that: "+(e.message||e)+")","memory");
   }finally{
-    busy=false; $("send").disabled=false; $("in").focus();
+    setBusy(false); $("in").focus();
     if(active){ active.stats={stored:storedCount,bytes:memBytes,recalls}; saveChats(); }
   }
 }
@@ -1156,8 +1288,8 @@ function wipeChat(){
 }
 
 // ============================ wire up ============================
-$("send").addEventListener("click",turn);
-$("in").addEventListener("keydown",e=>{ if(e.key==="Enter") turn(); });
+$("send").addEventListener("click",()=>{ if(busy) requestStop(); else turn(); });
+$("in").addEventListener("keydown",e=>{ if(e.key==="Enter"){ if(busy) requestStop(); else turn(); } });
 $("loadBtn").addEventListener("click",loadModel);
 $("newChat").addEventListener("click",newChat);
 $("railToggle").addEventListener("click",()=>document.body.classList.toggle("railopen"));
