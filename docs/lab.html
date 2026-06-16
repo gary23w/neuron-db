@@ -431,7 +431,7 @@ function shouldStore(s){
 const GREET = /^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/i;
 const isSmallTalk = t => { const s=t.trim();
   return GREET.test(s) || (s.length<=28 && !/\d{3,}/.test(s) &&
-    (/\?{2,}$/.test(s) || /^(great|good|fine|nice|cool|lol|haha|hmm+|wow|yeah|yep|nope|sure|right|k|kk|nvm|meh)\b/i.test(s) || /^how (was|is|are|s|'s)\b/i.test(s))); };
+    (/\?{2,}$/.test(s) || /^(great|good|fine|nice|cool|lol|haha|hmm+|wow|yeah|yep|nope|sure|right|k|kk|nvm|meh)\b/i.test(s) || /^how (was|is|are|s|'s)\b/i.test(s) || /^how \w+ (is|are|was|were)\b/i.test(s))); };
 function pickDoc(q){
   const qk=keywords(queryKeywords(q)); let best=null, bs=0;
   for(const d of docs){ const s=qk.reduce((a,w)=>a+(d.kw.has(w)?1:0),0); if(s>bs){ bs=s; best=d; } }
@@ -670,7 +670,9 @@ const TOOLSYS =
   "- note {name, value}        — save a named variable.\n"+
   "- stats {}                  — how many facts are in memory.\n"+
   "Loop: call a tool, read the TOOL RESULT, call more tools until you have enough, THEN stop and answer in plain prose. "+
-  "Use ONLY facts returned by tools — never invent. If the tools return nothing useful, say you don't have it in memory.\n\n"+
+  "Use ONLY facts returned by tools — never invent. If the tools return nothing useful, say you don't have it in memory.\n"+
+  "You usually START with an ALREADY RECALLED block (facts neuron-db pulled for this exact question) — read it and answer from it directly; only call tools to dig for MORE detail or to follow a multi-hop link. "+
+  "Answer in natural prose; NEVER narrate your tool use or say things like 'based on the facts retrieved' or 'the tools found'.\n\n"+
   "Example (a direct value):\n"+
   "User: what's my wifi password?\n"+
   '{"tool":"recall_value","args":{"query":"wifi password"}}\n'+
@@ -731,9 +733,14 @@ function runTool(call){
   }catch(e){ return "(tool error)"; }
 }
 const MAXITER=6;
-async function agentTurn(userText){
-  const msgs=[{role:"system",content:TOOLSYS},{role:"user",content:userText}];
-  const out=bubble("a","","assistant"); out.lastChild.textContent="🔧 thinking…";
+async function agentTurn(userText, seedHits, seedOrdered){
+  // HEAD START: the harness already recalled with the user's real words (weak models formulate poor
+  // queries). Hand the model grounded facts up front; it answers from them and fires tools to dig MORE.
+  const seed=(seedHits||[]).map(safeLine).filter(Boolean);
+  let sys=TOOLSYS;
+  if(seed.length) sys+="\n\nALREADY RECALLED for this turn by neuron-db (answer from these; call tools only to dig for MORE detail or a multi-hop link"+(seedOrdered?" — they are IN ORDER, so narrate the sequence":"")+"):\n"+seed.map((h,i)=>(seedOrdered?(i+1)+". ":"- ")+h).join("\n");
+  const msgs=[{role:"system",content:sys},{role:"user",content:userText}];
+  const out=bubble("a","","assistant"); out.lastChild.textContent=seed.length?"🔧 reading memory…":"🔧 thinking…";
   const seen=new Set(); let answer="", fired=0;
   for(let i=0;i<MAXITER;i++){
     let raw="";
@@ -751,13 +758,10 @@ async function agentTurn(userText){
     out.lastChild.textContent="🔧 fired "+fired+" tool"+(fired===1?"":"s")+"… ("+call.tool+")";
   }
   if(!answer){                                                        // ran out of steps → force an answer
-    msgs.push({role:"user",content:"Stop calling tools now and answer using ONLY the tool results above. If they lack the answer, say you don't have it in memory."});
+    msgs.push({role:"user",content:"Stop calling tools now and answer using ONLY the facts above (the ALREADY RECALLED block and any tool results). If they lack the answer, say you don't have it. Answer directly — do NOT narrate your tool use."});
     try{ const r=await engine.chat.completions.create({messages:msgs,temperature:0.3,max_tokens:+CFG.maxTokens,stream:false}); answer=stripThink(r.choices?.[0]?.message?.content||""); }catch{}
   }
-  if(fired===0){                                                      // model ignored the protocol → guarantee memory
-    const hits=smartRecall(userText).hits; ev("fire","recall · auto", hits.map(h=>`<span class="pill">${h.slice(0,46)}</span>`).join(""));
-    if(hits.length && (!answer || answer.length<3)) answer="From memory:\n"+hits.slice(0,5).map(h=>"• "+h).join("\n");
-  }
+  if((!answer || answer.length<3) && seed.length) answer="From memory:\n"+seed.slice(0,6).map(h=>"• "+h).join("\n");   // never strand a grounded turn
   answer=enforce(answer||"I don't have that in memory yet — tell me first, then ask.");
   out.lastChild.textContent=answer;
   if(active){ active.messages.push({cls:"a",text:answer,who:"assistant"}); saveChats(); }
@@ -820,9 +824,20 @@ async function turn(){
 
     const direct=directAnswer(text), opinion = CFG.affect ? opinionQuestion(text) : null;
 
-    // AGENT MODE — for a real question, the model FIRES neuron-db tools in a loop (exactly like the MCP server)
-    if(engine && CFG.mode==="agent" && cmd.kind==="none" && !direct && !opinion && !isSmallTalk(text)){
-      await agentTurn(text); return;   // (finally still runs)
+    // AGENT MODE — the harness recalls FIRST (with the user's real words), then the model answers from
+    // that head start and fires more tools to dig. True small-talk with nothing to look up just converses.
+    if(engine && CFG.mode==="agent" && cmd.kind==="none" && !direct && !opinion){
+      const seed=smartRecall(text), wc=text.trim().split(/\s+/).length;
+      if(isSmallTalk(text) || (!seed.hits.length && wc<=7)){
+        await modelAnswer(text, [], direct, false, opinion, true);     // converse — don't fire tools into the void
+      } else {
+        if(seed.hits.length){
+          ev("fire","recall · seed"+(seed.ordered?" · ordered":"")+(seed.doc?" · doc #"+seed.doc.n:""), seed.hits.map(h=>`<span class="pill">${h.slice(0,46)}</span>`).join(""));
+          recalls++; lastBlockChars=seed.hits.reduce((a,h)=>a+h.length,0); setStats();
+        }
+        await agentTurn(text, seed.hits, seed.ordered);
+      }
+      return;   // (finally still runs)
     }
 
     // 2) RECALL (direct mode · commands · greetings · no model) — one deterministic recall, then answer
