@@ -193,7 +193,7 @@
       <button class="newchat" id="newChat">＋ New chat</button>
       <div class="chatlist" id="chatList"></div>
       <div class="railfoot">
-        <div class="raillinks" style="line-height:1.7"><b style="color:var(--accent)">100% local</b> · nothing leaves your browser<br><a href="index.html">Site</a> · <a href="demos/synapse-3d.html">3D demo</a> · <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a></div>
+        <div class="raillinks" style="line-height:1.7"><b style="color:var(--accent)">in your browser</b> · no server (the WASM fetches public APIs directly)<br><a href="index.html">Site</a> · <a href="demos/synapse-3d.html">3D demo</a> · <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a></div>
       </div>
     </aside>
 
@@ -298,7 +298,10 @@
         <p>It has <b>feelings</b>: give it a mood (<i>“be playful”</i>) or an opinion (<i>“you love rust”</i>, repeat to deepen),
            and that affect colors how it talks. <b>Multiple chats</b> each get their own isolated neuron-db scope. Tune
            everything in <b>⚙ Settings</b>. Everything runs <b>in your browser</b> — the memory is WASM, the model is
-           WebLLM; once a model is downloaded it's cached locally and nothing leaves the page.</p>
+           WebLLM (cached locally after first download). It can also <b>fetch the live web</b>: say
+           <i>“check the web for …”</i>, <i>“google …”</i>, or ask the weather — the <b>WASM itself</b> calls a public
+           API directly (Wikipedia / open-meteo / DuckDuckGo, no server) and the results are <b>saved into neuron-db</b>
+           so you can recall them.</p>
         <button class="dbtn primary" id="helpClose" style="margin-top:6px">Start the lab</button>
       </div>
     </div>
@@ -354,11 +357,31 @@ function renderAffect(){
     h+=`<span class="chip stance" title="${st.feeling}">opinion&nbsp;·&nbsp;<b>${st.topic}</b>&nbsp;×${sx(st.strength)}<span class="bar"><span style="width:${pct}%"></span></span></span>`; }
   el.innerHTML=h;
 }
+// the WASM owns the request; the host (here) provides the transport via a direct fetch — NO worker, NO proxy.
+// Only CORS-enabled public APIs are reachable from the browser (Wikipedia, open-meteo, DuckDuckGo).
+let httpTok=0;
+function host_http(ptr, len){
+  const url = td.decode(new Uint8Array(EX.memory.buffer, ptr, len));
+  const tok = ++httpTok;
+  fetch(url).then(r=>r.text())
+    .then(body=>{ const [bp,bl]=wstr(body); EX.http_deliver(tok, bp, bl); })
+    .catch(e=>{ const [bp,bl]=wstr("ERROR: "+(e.message||e)); EX.http_deliver(tok, bp, bl); });
+  return tok;
+}
 async function loadWasm(){
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=chain1"), {});
+  // http-enabled build: same mem() surface + a host_http import the WASM calls to make web requests
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=http1"), { env: { host_http } });
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
+// the WASM initiates the fetch (op\tscope\turl) and we poll until it has delivered the body into its own memory
+async function wasmFetch(url){
+  const start = mem("fetch","_",url);
+  if(!start.startsWith("pending:")) return null;
+  const tok = start.split(":")[1];
+  for(let i=0;i<300;i++){ const r=mem("fetched","_",tok); if(r!=="pending") return r; await new Promise(s=>setTimeout(s,40)); }
+  return null;
+}
 function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
 function mem(...a){ const [p,l]=wstr(a.join("\t")); return readBuf(EX.mem(p,l)); }
 // every memory mutation is logged on the active chat so it can be REPLAYED into the wasm after a reload
@@ -378,6 +401,43 @@ function assocIn(scope,q,k){ const s=mem("assoc",scope,q,"2",String(k||6)); retu
 function observeManyIn(scope,stmts){ const blob=stmts.join("\n"); const n=parseInt(mem("obsmany",scope,blob))||0; if(n){ storedCount+=n; memBytes+=blob.length; logMem({o:"obsm",s:scope,t:blob}); } return n; }
 // multi-hop: walk relations server-side in the wasm (depth costs the model nothing)
 function recallChain(start,path){ const r=mem("chain",SCOPE,start,...(path||[])); const i=r.indexOf("\t"); return {value:i<0?"":r.slice(0,i), trail:i<0?start:r.slice(i+1)}; }
+// ---- live web search — the WASM fetches CORS-enabled public APIs DIRECTLY (no worker) and we store the results ----
+const WCODE={0:"clear sky",1:"mainly clear",2:"partly cloudy",3:"overcast",45:"fog",48:"rime fog",51:"light drizzle",53:"drizzle",55:"heavy drizzle",61:"light rain",63:"rain",65:"heavy rain",66:"freezing rain",71:"light snow",73:"snow",75:"heavy snow",77:"snow grains",80:"light showers",81:"showers",82:"violent showers",85:"snow showers",95:"thunderstorm",96:"thunderstorm w/ hail",99:"severe thunderstorm"};
+const jget=async u=>{ try{ return JSON.parse((await wasmFetch(u))||"null"); }catch{ return null; } };
+async function webSearch(query){
+  // weather intent -> open-meteo (geocode then current conditions)
+  if(/\b(weather|rain|raining|temperature|forecast|snow|snowing|how (hot|cold)|degrees|sunny|cloudy)\b/i.test(query)){
+    let place=(query.match(/\b(?:in|at|for)\s+(.+)$/i)||[])[1] || query;
+    place=place.replace(/\b(weather|rain|raining|rained|temperature|forecast|today|tonight|tomorrow|right ?now|currently|this (?:morning|afternoon|evening|week)|like|outside|please|the|is|it|did|do|does|whats|what'?s|how|hot|cold|degrees|going|gonna|to|be)\b/ig,"").replace(/[^a-z .'\-]/ig," ").replace(/\s+/g," ").trim();
+    if(place){ const g=await jget("https://geocoding-api.open-meteo.com/v1/search?count=1&name="+encodeURIComponent(place)); const loc=g&&g.results&&g.results[0];
+      if(loc){ const f=await jget("https://api.open-meteo.com/v1/forecast?current=temperature_2m,precipitation,weather_code,wind_speed_10m&latitude="+loc.latitude+"&longitude="+loc.longitude); const c=f&&f.current;
+        if(c) return {provider:"open-meteo", facts:[ loc.name+(loc.country?", "+loc.country:"")+" weather right now: "+(WCODE[c.weather_code]||"code "+c.weather_code)+", "+c.temperature_2m+"°C, precipitation "+c.precipitation+" mm, wind "+c.wind_speed_10m+" km/h." ]}; } }
+  }
+  const facts=[];
+  // general -> DuckDuckGo Instant Answer (keyless, CORS)
+  const d=await jget("https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q="+encodeURIComponent(query));
+  if(d){ if(d.AbstractText) facts.push((d.Heading||query)+": "+d.AbstractText);
+    for(const t of (d.RelatedTopics||[])){ if(facts.length>=6) break; if(t.Text&&t.FirstURL) facts.push(t.Text); else if(t.Topics) for(const s of t.Topics){ if(facts.length>=6) break; if(s.Text) facts.push(s.Text); } } }
+  if(facts.length) return {provider:"DuckDuckGo", facts};
+  // fallback -> Wikipedia (opensearch + summary), trying the query then its key terms
+  for(const term of [...new Set([query, keywords(query).slice(0,3).join(" "), keywords(query).slice(0,2).join(" ")].filter(Boolean))]){
+    const os=await jget("https://en.wikipedia.org/w/api.php?action=opensearch&limit=3&format=json&search="+encodeURIComponent(term));
+    const titles=(os&&os[1])||[], descs=(os&&os[2])||[];
+    if(titles.length){ for(let i=0;i<titles.length;i++) facts.push(titles[i]+(descs[i]?": "+descs[i]:""));
+      const sum=await jget("https://en.wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(titles[0].replace(/ /g,"_")));
+      if(sum&&sum.extract) facts[0]=titles[0]+": "+sum.extract;
+      return {provider:"Wikipedia", facts}; }
+  }
+  return {provider:"none", facts:[]};
+}
+// "check the web for X" / "google X" / "search X" / "look up X" / "browse X"
+function webCommand(text){
+  const m=text.match(/^\s*(?:please\s+)?(?:check (?:the )?web(?: for)?|search(?: the web)?(?: for)?|google|look up(?: online)?|web ?search|find (?:online|on the web)|browse(?: for)?)\b[:\-]?\s*(.+)$/i);
+  if(m) return m[1].trim().replace(/[?.!]+$/,"");
+  // a bare weather question with a place → route to the live weather fetch (don't let the model invent it)
+  if(/\b(weather|did it rain|is it rain|temperature|forecast|how (hot|cold)|is it (snow|sunny|cloud))/i.test(text) && /\bin\s+[a-z]/i.test(text)) return text.replace(/[?.!]+$/,"").trim();
+  return null;
+}
 // ---- affective layer — a transient mood + durable, accumulating opinions ----
 function feel(emotion){ mem("feel",SCOPE,emotion); logMem({o:"feel",s:SCOPE,e:emotion}); }
 function noteStance(topic,feeling){ const r=parseInt(mem("stance",SCOPE,topic,feeling))||1; logMem({o:"stance",s:SCOPE,t:topic,f:feeling}); return r; }
@@ -879,6 +939,22 @@ async function turn(){
       bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory"); return;
     }
 
+    // 0d) LIVE WEB — the WASM fetches a CORS public API DIRECTLY (no worker), SAVES the results into
+    // neuron-db (so they're recallable), then the model narrates those saved facts (grounded, not invented)
+    const wq=webCommand(text);
+    if(wq){
+      const status=bubble("s","🌐 the WASM is fetching the web for \""+wq+"\"…");
+      const {provider, facts}=await webSearch(wq);
+      status.remove();
+      let saved=0; facts.slice(0,8).forEach(f=>{ if(observeIn(SCOPE,f)) saved++; }); setStats();
+      ev("tool","🔧 web · "+provider, `<span class="pill">${wq.slice(0,46)}</span>`, saved?("saved "+saved):null);
+      if(!facts.length)
+        bubble("a", enforce("🌐 I couldn't fetch that directly — the browser only reaches public CORS APIs (Wikipedia, open-meteo, DuckDuckGo); a broad news search needs a key. Tell me and I'll remember it."), engine?"assistant":"memory");
+      else if(engine) await modelAnswer(text, facts, null, false, null, false);   // narrate the freshly-fetched + saved facts
+      else bubble("a", enforce("🌐 From the web ("+provider+" · saved "+saved+" facts to memory — ask me to recall them):\n"+facts.slice(0,6).map((f,i)=>(i+1)+". "+f).join("\n")), "memory");
+      return;
+    }
+
     // 1) typed neurons: variables + standing instructions
     const cmd=handleCommands(text);
     if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
@@ -990,6 +1066,7 @@ function renderLog(){
         <button data-ex="what is my wifi password?">what is my wifi password?</button>
         <button data-ex="always answer in caps">always answer in caps</button>
         <button data-ex="you love rust">you love rust</button>
+        <button data-ex="check the web for Ada Lovelace">🌐 check the web for…</button>
       </div></div>`;
     log.querySelectorAll(".ex button").forEach(b=>b.onclick=()=>{ $("in").value=b.dataset.ex; turn(); });
     return;
