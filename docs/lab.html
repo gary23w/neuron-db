@@ -410,8 +410,10 @@ const statements = text => text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filt
 const STOP = new Set(("the and that this with from have were they their there what when where which about more tell "+
   "your will would could should been into than then them some such over only also just like very much many most each "+
   "other these those after before because here you our are was has had not but for can did does how why who thing things "+
-  "give show explain walk through describe please know want need think feel about whats lets dont cant").split(/\s+/));
-const isWord = w => w.length>3 && !STOP.has(w);
+  "give show explain walk through describe please know want need think feel about whats lets dont cant "+
+  "get got let use its yet per via too off out are was the and you who how why").split(/\s+/));
+// keep 3-char CONTENT words (cve, api, ssh, dns, sql…) — only ≤3-char function words are dropped via STOP
+const isWord = w => w.length>=3 && !STOP.has(w);
 const keywords = t => [...new Set(t.toLowerCase().split(/[^a-z0-9]+/).filter(isWord))];
 function queryKeywords(text){
   const s=text.replace(/^\s*(please\s+)?(can you |could you |tell me(?: more)?(?: about)?|show me|explain(?: to me)?|walk me through(?: to)?|describe|give me|what(?:'s| is| are| was| do you know about| did| does)?|how(?: does| do| did| is| are| can)?|why|who(?: is| was| are)?|when|where|which|list|summari[sz]e)\b[:,\s]*/ig,"").replace(/[?.!]+\s*$/,"").trim();
@@ -552,7 +554,7 @@ function bubble(cls,text,who){
 }
 
 // ============================ WebLLM (optional neocortex) ============================
-let engine=null, loading=false;
+let engine=null, loading=false, engineTiny=false;   // tiny (<2 GB) models can't drive tools → auto-use Direct mode
 const SYS = "You are a vivid assistant with genuine opinions, speaking from your long-term memory (neuron-db). "+
   "You do NOT see the user's history — only the AFFECT, STANDING INSTRUCTIONS and MEMORIES blocks below, recalled "+
   "for this turn. Hard rules: the MEMORIES are REAL facts recalled from memory — answer using ONLY them, retell them "+
@@ -598,6 +600,7 @@ function setPill(state, txt){ const p=$("modelPill"); p.className="modelpill"+(s
 async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
+  engineTiny = (CURATED.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
   if(!("gpu" in navigator)){
     $("status").className="status warn";
     $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. Open in desktop Chrome or Edge.";
@@ -614,6 +617,7 @@ async function loadModel(){
     $("status").className="status"; $("status").textContent="Model ready — it answers from what neuron-db recalls.";
     $("pbar").firstElementChild.style.width="100%"; setTimeout(()=>$("pbar").style.display="none",600);
     setPill("ready","● model ready");
+    if(engineTiny && CFG.mode==="agent") toast("This model is tiny — using Direct memory mode (it narrates what neuron-db recalls).");
     bubble("s","local model loaded · neuron-db is its memory · nothing leaves your browser");
   }catch(e){
     $("status").className="status warn"; $("status").textContent="Could not load: "+(e.message||e)+" — memory still works.";
@@ -761,7 +765,10 @@ async function agentTurn(userText, seedHits, seedOrdered){
     msgs.push({role:"user",content:"Stop calling tools now and answer using ONLY the facts above (the ALREADY RECALLED block and any tool results). If they lack the answer, say you don't have it. Answer directly — do NOT narrate your tool use."});
     try{ const r=await engine.chat.completions.create({messages:msgs,temperature:0.3,max_tokens:+CFG.maxTokens,stream:false}); answer=stripThink(r.choices?.[0]?.message?.content||""); }catch{}
   }
-  if((!answer || answer.length<3) && seed.length) answer="From memory:\n"+seed.slice(0,6).map(h=>"• "+h).join("\n");   // never strand a grounded turn
+  // a weak model can leak the protocol (a stray tool-call / facts:[1,2,3…] array) as its "answer" —
+  // if it's junk (or empty) and we have grounded facts, surface those instead
+  const looksJunk = /"facts"\s*:|\[\s*\d+\s*,\s*\d+\s*,|^\s*\{?\s*"?tool"?\s*:/.test(answer);
+  if((!answer || answer.length<3 || looksJunk) && seed.length) answer="From memory:\n"+seed.slice(0,6).map(h=>"• "+h).join("\n");   // never strand a grounded turn
   answer=enforce(answer||"I don't have that in memory yet — tell me first, then ask.");
   out.lastChild.textContent=answer;
   if(active){ active.messages.push({cls:"a",text:answer,who:"assistant"}); saveChats(); }
@@ -826,7 +833,7 @@ async function turn(){
 
     // AGENT MODE — the harness recalls FIRST (with the user's real words), then the model answers from
     // that head start and fires more tools to dig. True small-talk with nothing to look up just converses.
-    if(engine && CFG.mode==="agent" && cmd.kind==="none" && !direct && !opinion){
+    if(engine && CFG.mode==="agent" && !engineTiny && cmd.kind==="none" && !direct && !opinion){
       const seed=smartRecall(text), wc=text.trim().split(/\s+/).length;
       if(isSmallTalk(text) || (!seed.hits.length && wc<=7)){
         await modelAnswer(text, [], direct, false, opinion, true);     // converse — don't fire tools into the void
