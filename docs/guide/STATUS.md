@@ -34,7 +34,7 @@ HTTP server + `serve` · `neuron-mcp` (stdio MCP). Default build is zero-depende
 
 ## Latest verified numbers (release, 2026-06-15)
 
-- **Unit suite:** 131 tests, 0 failures (21 binaries).
+- **Unit suite:** 133 tests, 0 failures.
 - **Write:** single `observe` 3.3k/s; batch `observe_many` 235k/s; opt-in write-behind closes the
   single-observe gap on a growing scope (default stays immediately durable).
 - **Recall:** selective cue **~4.2 µs, flat 1k→50k facts**; `recall_chain` ~12 µs/hop (flat to 50 hops);
@@ -65,10 +65,19 @@ See **[BENCHMARKS.md](BENCHMARKS.md)** for methodology and the full tables.
   not cascading to typed sub-scopes, unknown-`kind` silent drop, and a JSON-array parser edge.
 - **Reference harness** (`neuron-chat-lab`): live two-pane lab — passive capture, a per-document
   register, and optional **reasoning-model** support so a deliberating model drives the tools itself.
+  A lab-side agentic-loop fix (default low reasoning_effort for tool-selection round-trips + a hop
+  cap) sped up reasoning tool-calling **~48%**; this is a harness tuning, the MCP was never the
+  bottleneck.
+- **In-browser lab (new):** a fully client-side lab — a WebLLM model with neuron-db compiled to WASM
+  as its memory — so you can **try it in your browser, no server, no key** (alongside the existing
+  `docs/lab.html`).
 - **Measured head-to-head vs dense vectors** (`docs/guide/VS_VECTORS.md`): on one frozen dataset with
-  identical scoring, neuron-db is ~360× faster end-to-end and ties or wins every class except
-  zero-shot paraphrase (which the semantic re-rank closes to parity given a corpus). MCP round-trip
-  measured at ~0.5 ms over real stdio — the store is never the bottleneck; the model is.
+  identical scoring, neuron-db's lexical recall is **p50 ~13.8 µs** vs a hosted
+  `text-embedding-3-small` at **p50 320 ms end-to-end (~23,000× slower)** and **6,144 B/fact**. The
+  hosted 1536-d model scores 100% on every class including paraphrase, so neuron-db's win is
+  **structural — latency (~23,000×), footprint (~20–128×), ingest, zero infra — not accuracy.** MCP
+  round-trip measured at ~0.5–0.75 ms over real stdio (the store itself is microseconds); the store is
+  never the bottleneck, the model is.
 - **Cleanup:** a `cargo clippy` pass to industry standard (autofix + justified numeric-kernel allows)
   and a fix for terse colon-delimited entries the min-word filter was dropping on first insert.
 

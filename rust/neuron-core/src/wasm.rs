@@ -103,7 +103,7 @@ pub extern "C" fn selftest() -> i32 {
     let ans = m.think(&facts, "what is the wifi password?", 8);
     if ans.contains("vekam73") { code |= 2; }
     let b = ans.as_bytes(); let n = b.len().min(256);
-    unsafe { for i in 0..n { BUF[i] = b[i]; } BUFLEN = n; }
+    unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
     code
 }
 #[no_mangle] pub extern "C" fn answer_ptr() -> *const u8 { unsafe { BUF.as_ptr() } }
@@ -129,7 +129,7 @@ pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
     let facts: Vec<String> = store.recall(&query).map(|r| vec![r.fact]).unwrap_or_default();
     let ans = GaryModel::embedded().think(&facts, &query, 10);
     let b = ans.as_bytes(); let n = b.len().min(256);
-    unsafe { for i in 0..n { BUF[i] = b[i]; } BUFLEN = n; }
+    unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
     n
 }
 

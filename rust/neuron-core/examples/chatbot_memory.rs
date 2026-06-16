@@ -2,8 +2,10 @@
 //!   1. WRITE  — store durable facts the user states (so they survive across sessions).
 //!   2. RECALL — before calling your LLM, pull the few facts relevant to the new message.
 //!   3. INJECT — prepend those facts to the model's context so it answers with memory.
+//!
 //! The store stays microseconds and deterministic; the LLM only ever sees a tiny, relevant
 //! memory block, never the whole database.
+//!
 //! Run: cargo run --release --example chatbot_memory --features sqlite
 use neuron_core::db::NeuronDB;
 
