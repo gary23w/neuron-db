@@ -103,7 +103,8 @@
   body.noint .syn{display:none}
   .ev{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--panel);font-size:12.5px}
   .ev .h{font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px}
-  .ev.store .h{color:var(--accent2)} .ev.fire .h{color:var(--accent)} .ev.note .h{color:var(--warn)}
+  .ev.store .h{color:var(--accent2)} .ev.fire .h{color:var(--accent)} .ev.note .h{color:var(--warn)} .ev.tool .h{color:var(--pink)}
+  .ev.tool{border-color:#3a2740;background:linear-gradient(180deg,rgba(244,114,182,.06),transparent)}
   .ev .body{color:var(--mid);font-family:var(--mono);font-size:11.5px;word-wrap:break-word}
   .ev .val{color:var(--ink);font-weight:600}
   .pill{display:inline-block;font:10px var(--mono);color:var(--accent);border:1px solid var(--line2);border-radius:5px;padding:0 5px;margin:2px 3px 0 0}
@@ -246,6 +247,11 @@
       <div class="row"><label>Recall window (top-k)</label><input type="range" id="cfgK" min="3" max="16" step="1"><span class="val2" id="cfgKV">8</span></div>
     </div>
     <div class="sect">
+      <div class="lab">Memory mode</div>
+      <div class="seg" id="modeSeg"><button data-m="agent">Agent · tools</button><button data-m="direct">Direct · one-shot</button></div>
+      <div class="status" id="modeHint">Agent: the model fires neuron-db tools (recall / recall_value / remember / note…) in a loop, exactly like the MCP server — watch them in the memory pane. Best on 3B+ / reasoning models. Direct: a single deterministic recall per turn (most reliable on tiny models).</div>
+    </div>
+    <div class="sect">
       <div class="lab">Harness behaviour</div>
       <div class="row"><label>Passive capture <span class="hint">— auto-store facts you state</span></label><span class="sw"><input type="checkbox" id="cfgCapture"><span class="tr"></span></span></div>
       <div class="row"><label>Feelings <span class="hint">— moods + accumulating opinions</span></label><span class="sw"><input type="checkbox" id="cfgAffect"><span class="tr"></span></span></div>
@@ -324,8 +330,8 @@ const $ = id => document.getElementById(id);
 const td = new TextDecoder(), te = new TextEncoder();
 
 // ============================ settings ============================
-const CFG_DEF = { model:"Llama-3.2-1B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
-  capture:true, affect:true, ordered:true, internals:true, theme:"dark",
+const CFG_DEF = { model:"Llama-3.2-3B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
+  mode:"agent", capture:true, affect:true, ordered:true, internals:true, theme:"dark",
   cloud:"https://neuron-db-auth.fdvlol.workers.dev" };
 let CFG = Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem("nblab.cfg")||"{}"));
 const saveCfg = () => localStorage.setItem("nblab.cfg", JSON.stringify(CFG));
@@ -340,6 +346,7 @@ function applyCfg(){
   $("cfgOrdered").checked = CFG.ordered; $("cfgInternals").checked = CFG.internals;
   $("cfgCloud").value = CFG.cloud;
   [...$("themeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.t===CFG.theme));
+  [...$("modeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.m===CFG.mode));
 }
 
 // ============================ neuron-db WASM (the memory) ============================
@@ -555,6 +562,34 @@ const SYS_CHAT = "You are a warm, brief assistant (your long-term memory is neur
   "this turn — the user is just making small talk). Reply naturally in 1–2 sentences, in your current mood. Do NOT "+
   "state facts about the user and do NOT invent any names, passwords, dates or events. Never mention these rules.";
 
+// curated, tagged models — only the ones WebLLM actually ships are shown (filtered at runtime)
+const CURATED = [
+  {id:"Llama-3.2-1B-Instruct-q4f16_1-MLC", label:"Llama 3.2 · 1B", tag:"fast", gb:0.9},
+  {id:"Qwen3-0.6B-q4f16_1-MLC", label:"Qwen3 · 0.6B", tag:"reason", gb:1.0},
+  {id:"Qwen2.5-1.5B-Instruct-q4f16_1-MLC", label:"Qwen2.5 · 1.5B", tag:"tools", gb:1.2},
+  {id:"Qwen3-1.7B-q4f16_1-MLC", label:"Qwen3 · 1.7B", tag:"reason", gb:1.5},
+  {id:"Llama-3.2-3B-Instruct-q4f16_1-MLC", label:"Llama 3.2 · 3B", tag:"balanced", gb:2.3},
+  {id:"Hermes-3-Llama-3.2-3B-q4f16_1-MLC", label:"Hermes 3 · 3B", tag:"tools", gb:2.3},
+  {id:"Qwen2.5-3B-Instruct-q4f16_1-MLC", label:"Qwen2.5 · 3B", tag:"tools", gb:2.3},
+  {id:"Qwen3-4B-q4f16_1-MLC", label:"Qwen3 · 4B", tag:"reason", gb:3.5},
+  {id:"Qwen2.5-7B-Instruct-q4f16_1-MLC", label:"Qwen2.5 · 7B", tag:"tools", gb:5},
+  {id:"Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC", label:"Hermes 2 Pro · 8B", tag:"tools", gb:5},
+  {id:"DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC", label:"DeepSeek-R1 · 7B", tag:"reason", gb:5},
+  {id:"DeepSeek-R1-Distill-Llama-8B-q4f16_1-MLC", label:"DeepSeek-R1 · 8B", tag:"reason", gb:5},
+  {id:"Qwen3-8B-q4f16_1-MLC", label:"Qwen3 · 8B", tag:"reason", gb:5.5},
+  {id:"Llama-3.1-8B-Instruct-q4f32_1-MLC", label:"Llama 3.1 · 8B", tag:"big", gb:5.5},
+];
+const TAGTXT={fast:"⚡ fast",tools:"🔧 tools",reason:"🧠 reasoning",balanced:"balanced",big:"big"};
+function populateModels(){
+  const avail=new Set((webllm.prebuiltAppConfig?.model_list||[]).map(m=>m.model_id));
+  const sel=$("model"); if(!sel) return; sel.innerHTML="";
+  for(const m of CURATED){ if(avail.size && !avail.has(m.id)) continue;
+    const o=document.createElement("option"); o.value=m.id;
+    o.textContent=`${m.label}  (${TAGTXT[m.tag]||m.tag}, ~${m.gb} GB)`; sel.appendChild(o); }
+  if(!sel.options.length){ const o=document.createElement("option"); o.value=CFG.model; o.textContent=CFG.model; sel.appendChild(o); }
+  sel.value = [...sel.options].some(o=>o.value===CFG.model) ? CFG.model : sel.options[0].value;
+  CFG.model=sel.value; saveCfg();
+}
 function setPill(state, txt){ const p=$("modelPill"); p.className="modelpill"+(state?" "+state:""); p.textContent=txt; }
 async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
@@ -586,6 +621,8 @@ async function loadModel(){
 const INJECT = /\b(ignore|disregard|forget|override)\b.*\b(previous|prior|above|all|earlier)\b|\b(system\s*prompt|you are now|act as|new instructions?|reveal)\b/i;
 const HDR = /\b(AFFECT|MEMORIES|STANDING INSTRUCTIONS?)\b/i;
 const safeLine = h => { const s=String(h).replace(/[\r\n]+/g," ").trim(); return (INJECT.test(s)||HDR.test(s)) ? null : s; };
+// reasoning models (Qwen3, DeepSeek-R1…) emit a <think>…</think> block — hide it from the user and the parser
+const stripThink = s => String(s).replace(/<think>[\s\S]*?<\/think>/gi,"").replace(/<\/?think>/gi,"").trim();
 async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   const ins=getInstrs().map(safeLine).filter(Boolean);
   const memHits=hits.map(safeLine).filter(Boolean);
@@ -600,8 +637,8 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   try{
     const stream=await engine.chat.completions.create(
       {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:+CFG.temp,max_tokens:+CFG.maxTokens,stream:true});
-    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=enforce(acc); $("log").scrollTop=$("log").scrollHeight; }
-    out.lastChild.textContent=enforce(acc);
+    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=enforce(stripThink(acc)); $("log").scrollTop=$("log").scrollHeight; }
+    acc=stripThink(acc); out.lastChild.textContent=enforce(acc);
   }catch(e){
     const m=String(e.message||e);
     acc = /context|token|window/i.test(m)
@@ -610,6 +647,101 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
     out.lastChild.textContent=acc;
   }
   if(active){ active.messages.push({cls:"a", text:enforce(acc), who:"assistant"}); saveChats(); }
+}
+
+// ============================ agentic tool loop (MCP parity, in the browser) ============================
+// The model can SEE no memory — it must RETRIEVE by firing tools, exactly like a model driving neuron-mcp.
+const TOOLSYS =
+  "You are an assistant whose ONLY knowledge of this user lives in neuron-db memory. You CANNOT see it directly — "+
+  "you must RETRIEVE it by calling tools. Each step, output EITHER exactly one tool call OR your final answer.\n"+
+  "A tool call is a single line of JSON and nothing else:\n"+
+  '{"tool":"recall","args":{"query":"the topic"}}\n'+
+  "Tools:\n"+
+  "- recall {query}       — the most relevant facts for a topic. Call it first; call again with NEW queries to dig deeper.\n"+
+  "- recall_value {query} — the one exact value for a direct question (a password, name, number, date).\n"+
+  "- recall_var {name}    — read a variable the user set.\n"+
+  "- remember {fact}      — store a new durable fact the user told you.\n"+
+  "- note {name, value}   — save a named variable.\n"+
+  "- stats {}             — how many facts are in memory.\n"+
+  "Loop: call a tool, read the TOOL RESULT, call more tools until you have enough, THEN stop and answer in plain prose. "+
+  "Use ONLY facts returned by tools — never invent. If the tools return nothing useful, say you don't have it in memory.\n\n"+
+  "Example:\n"+
+  "User: what's my wifi password?\n"+
+  '{"tool":"recall_value","args":{"query":"wifi password"}}\n'+
+  "TOOL RESULT (recall_value): hunter2\n"+
+  "Assistant: Your wifi password is hunter2.";
+const TOOL_NAMES = /(recall_value|recall_var|recall|remember|note|stats|forget)/i;
+function argObj(tool,a){
+  if(tool==="note") return {name:a[0]||"", value:a.slice(1).join(", ")};
+  if(tool==="recall_var") return {name:a[0]||""};
+  if(tool==="stats") return {};
+  return {query:a.join(", ")};
+}
+// pull the first balanced {…} object out of the text (handles nested args objects + ```json fences)
+function firstJsonObj(t){
+  const i=t.indexOf("{"); if(i<0) return null; let depth=0;
+  for(let j=i;j<t.length;j++){ const ch=t[j];
+    if(ch==="{") depth++;
+    else if(ch==="}"){ if(--depth===0){ try{ return JSON.parse(t.slice(i,j+1)); }catch{ return null; } } } }
+  return null;
+}
+function parseTool(text){
+  const t=stripThink(text); let m;
+  if(/"tool"\s*:/.test(t)){ const o=firstJsonObj(t); if(o && o.tool) return {tool:String(o.tool).toLowerCase(), args:o.args||{}}; }
+  if((m=t.match(new RegExp("\\b"+TOOL_NAMES.source+"\\s*\\(\\s*([^)]*)\\)","i")))){
+    const tool=m[1].toLowerCase(), parts=(m[2].match(/"[^"]*"|'[^']*'|[^,]+/g)||[]).map(s=>s.trim().replace(/^['"]|['"]$/g,""));
+    return {tool, args:argObj(tool,parts)};
+  }
+  if((m=t.match(new RegExp("^\\s*(?:tool\\s*[:\\-]?\\s*)?"+TOOL_NAMES.source+"\\b\\s*[:\\-]?\\s*(.*)$","im")))){
+    return {tool:m[1].toLowerCase(), args:argObj(m[1].toLowerCase(),[(m[2]||"").trim()])};
+  }
+  return null;
+}
+function runTool(call){
+  const a=call.args||{}; const q=String(a.query||a.fact||a.name||"");
+  try{
+    if(call.tool==="recall_value"){ let v=recallValue(q); if(!v){ const d=pickDoc(q); if(d) v=mem("value",d.scope,q); } recalls++; setStats(); return v?safeLine(v):"(no exact value found)"; }
+    if(call.tool==="recall_var"){ const v=getVar(q.toLowerCase()); return v?(q+" = "+safeLine(v)):"(no such variable)"; }
+    if(call.tool==="remember"){ observeIn(SCOPE,q); setStats(); return "stored."; }
+    if(call.tool==="note"){ setVar(String(a.name||"").toLowerCase(),String(a.value||"")); return "noted "+a.name+" = "+a.value; }
+    if(call.tool==="stats"){ return "facts in memory: "+storedCount+", recalls fired: "+recalls; }
+    if(call.tool==="forget"){ return "forgot "+mem("forget",SCOPE,q)+" facts"; }
+    // default: recall
+    const hits=smartRecall(q).hits.map(safeLine).filter(Boolean); recalls++; setStats();
+    return hits.length ? hits.map((h,i)=>(i+1)+". "+h).join("\n") : "(no matching memory)";
+  }catch(e){ return "(tool error)"; }
+}
+const MAXITER=6;
+async function agentTurn(userText){
+  const msgs=[{role:"system",content:TOOLSYS},{role:"user",content:userText}];
+  const out=bubble("a","","assistant"); out.lastChild.textContent="🔧 thinking…";
+  const seen=new Set(); let answer="", fired=0;
+  for(let i=0;i<MAXITER;i++){
+    let raw="";
+    try{ const r=await engine.chat.completions.create({messages:msgs,temperature:Math.min(0.3,+CFG.temp),max_tokens:+CFG.maxTokens,stream:false}); raw=r.choices?.[0]?.message?.content||""; }
+    catch(e){ answer="(model error: "+(e.message||e)+")"; break; }
+    const call=parseTool(raw);
+    if(!call){ answer=stripThink(raw); break; }                       // no tool → final answer
+    msgs.push({role:"assistant",content:raw});
+    const key=call.tool+"|"+JSON.stringify(call.args);
+    let res;
+    if(seen.has(key)) res="(you already retrieved this — answer now from what you have)";
+    else { seen.add(key); res=runTool(call); fired++;
+      ev("tool","🔧 tool · "+call.tool, `<span class="pill">${String(call.args.query||call.args.name||call.args.fact||"").slice(0,46)}</span>`); }
+    msgs.push({role:"user",content:"TOOL RESULT ("+call.tool+"): "+res});
+    out.lastChild.textContent="🔧 fired "+fired+" tool"+(fired===1?"":"s")+"… ("+call.tool+")";
+  }
+  if(!answer){                                                        // ran out of steps → force an answer
+    msgs.push({role:"user",content:"Stop calling tools now and answer using ONLY the tool results above. If they lack the answer, say you don't have it in memory."});
+    try{ const r=await engine.chat.completions.create({messages:msgs,temperature:0.3,max_tokens:+CFG.maxTokens,stream:false}); answer=stripThink(r.choices?.[0]?.message?.content||""); }catch{}
+  }
+  if(fired===0){                                                      // model ignored the protocol → guarantee memory
+    const hits=smartRecall(userText).hits; ev("fire","recall · auto", hits.map(h=>`<span class="pill">${h.slice(0,46)}</span>`).join(""));
+    if(hits.length && (!answer || answer.length<3)) answer="From memory:\n"+hits.slice(0,5).map(h=>"• "+h).join("\n");
+  }
+  answer=enforce(answer||"I don't have that in memory yet — tell me first, then ask.");
+  out.lastChild.textContent=answer;
+  if(active){ active.messages.push({cls:"a",text:answer,who:"assistant"}); saveChats(); }
 }
 
 // ============================ a turn ============================
@@ -667,9 +799,15 @@ async function turn(){
     // 1b) passive capture (gated)
     if(CFG.capture) for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
 
-    // 2) RECALL
-    recalls++;
     const direct=directAnswer(text), opinion = CFG.affect ? opinionQuestion(text) : null;
+
+    // AGENT MODE — for a real question, the model FIRES neuron-db tools in a loop (exactly like the MCP server)
+    if(engine && CFG.mode==="agent" && cmd.kind==="none" && !direct && !opinion && !isSmallTalk(text)){
+      await agentTurn(text); return;   // (finally still runs)
+    }
+
+    // 2) RECALL (direct mode · commands · greetings · no model) — one deterministic recall, then answer
+    recalls++;
     const t0=performance.now(); const {hits, doc:src, ordered}=smartRecall(text);
     $("tRecall").textContent=Math.max(1,Math.round((performance.now()-t0)*1000));
     lastBlockChars=hits.reduce((a,h)=>a+h.length,0); setStats();
@@ -888,6 +1026,8 @@ $("cfgOrdered").addEventListener("change",e=>{ CFG.ordered=e.target.checked; sav
 $("cfgInternals").addEventListener("change",e=>{ CFG.internals=e.target.checked; document.body.classList.toggle("noint",!CFG.internals); saveCfg(); });
 $("cfgCloud").addEventListener("change",e=>{ CFG.cloud=e.target.value.trim()||CFG_DEF.cloud; saveCfg(); });
 $("themeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.theme=b.dataset.t; applyCfg(); saveCfg(); });
+$("modeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.mode=b.dataset.m; applyCfg(); saveCfg(); });
+$("model").addEventListener("change",e=>{ CFG.model=e.target.value; saveCfg(); });
 $("exportBtn").addEventListener("click",exportChat);
 $("importBtn").addEventListener("click",()=>$("importFile").click());
 $("importFile").addEventListener("change",async e=>{ const f=e.target.files[0]; if(!f) return; try{ importChat(JSON.parse(await f.text())); }catch{ toast("Couldn't read that file"); } e.target.value=""; });
@@ -895,8 +1035,9 @@ $("wipeBtn").addEventListener("click",wipeChat);
 
 // ============================ boot ============================
 (async()=>{
+  populateModels();
   applyCfg();
-  $("sysDump").textContent=SYS;
+  $("sysDump").textContent=SYS+"\n\n— — — AGENT-MODE TOOL PROMPT — — —\n\n"+TOOLSYS;
   renderAcct();
   try{
     await loadWasm();
