@@ -75,6 +75,11 @@
   .mem h2{margin:0;padding:13px 16px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mid);border-bottom:1px solid var(--line);font-family:var(--mono)}
   .stats{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
   .stat{flex:1;min-width:84px} .stat b{display:block;font:700 19px var(--mono);color:var(--accent)} .stat span{font-size:11px;color:var(--dim)}
+  .affect{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(124,156,255,.07),rgba(94,234,212,.05))}
+  .chip{display:inline-flex;align-items:center;gap:0;font:11px var(--mono);color:var(--ink,#cfd8ea);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;background:#0d1422}
+  .chip b{color:var(--accent2)} .chip.mood b{color:var(--warn)}
+  .chip .bar{display:inline-block;width:46px;height:5px;margin-left:7px;border-radius:3px;background:var(--line2);overflow:hidden}
+  .chip .bar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent))}
   .syn{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
   .ev{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--panel);font-size:12.5px}
   .ev .h{font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px}
@@ -110,12 +115,18 @@
 
   <details class="intro">
     <summary><span class="tag">IN YOUR BROWSER · NO SERVER · NO KEY</span> <b>The hippocampus &amp; the neocortex, both client-side.</b> <span class="more">what is this?</span></summary>
-    <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.4&nbsp;MB WebAssembly module, running locally.
+    <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.5&nbsp;MB WebAssembly module, running locally.
        Every message you send is stored and recalled by it; watch the neurons fire on the right. The optional
        <b>local Llama</b> (via WebLLM, WebGPU) is the voice on top — it never sees your whole history, only what the
        memory recalls. <b>Paste something bigger than the model's context window</b> and neuron-db simply absorbs it
        into memory — the model still answers from recall. That's the whole point. Memory works on any device; the
        model needs a WebGPU browser (desktop Chrome/Edge).</p>
+    <p style="margin-top:8px">The memory does the <i>retrieving</i> so the tiny model only has to <i>narrate</i>: it
+       routes each question to the right document, recalls by meaning <i>and</i> association, and for a
+       <b>“walk me through…”</b> question hands back an <b>ordered span</b> so even a 1B model recounts a chain in
+       sequence instead of confabulating. It also has <b>feelings</b>: give it a mood (<i>“be playful”</i>) or an
+       opinion (<i>“you love rust”</i>, repeat to deepen it) and that affect — a transient mood plus durable,
+       accumulating stances — colors how it talks. Watch the <b>mood</b> and <b>opinion</b> chips on the right.</p>
   </details>
 
   <div class="loader">
@@ -147,6 +158,7 @@
         <div class="stat"><b id="nRecall">0</b><span>recalls fired</span></div>
         <div class="stat" style="flex-basis:100%"><b id="ctxSaved" style="color:var(--accent)">0</b><span>tokens kept out of the model's context</span></div>
       </div>
+      <div class="affect" id="affect" style="display:none"></div>
       <div class="syn" id="syn"><div class="empty">No activity yet.<br>Store a fact and recall it.</div></div>
     </aside>
   </div>
@@ -169,9 +181,20 @@ function setStats(){
   $("nRecall").textContent = recalls;
   $("ctxSaved").textContent = Math.max(0, approxTokens(memBytes) - approxTokens(lastBlockChars)).toLocaleString();
 }
+// surface the live affective state (transient mood + strongest accumulating opinion) in the memory pane
+function renderAffect(){
+  const el=$("affect"); if(!el) return;
+  const mood=getMood(), st=getTopStance();
+  if(!mood && !st){ el.style.display="none"; return; }
+  el.style.display="flex"; let h="";
+  if(mood) h+=`<span class="chip mood">mood&nbsp;·&nbsp;<b>${mood}</b></span>`;
+  if(st){ const pct=Math.max(8,Math.min(100,Math.round(st.strength/4*100)));
+    h+=`<span class="chip stance" title="${st.feeling}">opinion&nbsp;·&nbsp;<b>${st.topic}</b>&nbsp;×${st.strength|0}<span class="bar"><span style="width:${pct}%"></span></span></span>`; }
+  el.innerHTML=h;
+}
 async function loadWasm(){
   // ?v bumps whenever the wasm exports change, so browsers don't serve a stale cached module
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=mem1"), {});
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=affect2"), {});
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
@@ -186,6 +209,15 @@ function setVar(k,v){ mem("setvar",SCOPE,k,v); }
 function getVar(k){ return mem("getvar",SCOPE,k); }
 function addInstr(t){ mem("addinstr",SCOPE,t); }
 function getInstrs(){ const s=mem("instrs",SCOPE); return s?s.split("\n").filter(Boolean):[]; }
+function assocIn(scope,q,k){ const s=mem("assoc",scope,q,"2",String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
+// ---- affective layer (now ON) — a transient mood + durable, accumulating opinions ----
+function feel(emotion){ mem("feel",SCOPE,emotion); }
+function noteStance(topic,feeling){ return parseInt(mem("stance",SCOPE,topic,feeling))||1; }
+function humanize(topic){ return mem("humanize",SCOPE,topic||""); }
+function getMood(){ return mem("mood",SCOPE); }
+function parseStance(s){ if(!s) return null; const p=s.split("\t"); return {topic:p[0], feeling:p[1], strength:+p[2]}; }
+function getTopStance(){ return parseStance(mem("topstance",SCOPE)); }
+function stanceOf(topic){ return parseStance(mem("stanceof",SCOPE,topic)); }
 const statements = text => text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
 
 // ---- retrieval quality: gate what we store, strip query framing, route a question to its document ----
@@ -210,16 +242,25 @@ function pickDoc(q){
   for(const d of docs){ const s=qk.reduce((a,w)=>a+(d.kw.has(w)?1:0),0); if(s>bs){ bs=s; best=d; } }
   return best;
 }
-// recall from the routed document (+ main scope), then re-rank by topical keyword overlap, dropping junk
+// a "narrate" question wants a span, not one fact — so we hand the model an ORDERED window
+const NARRATE = /\b(walk me through|step by step|in order|explain|how (does|do|did)|tell me (more )?about|describe|summari|what happened|overview|the (whole|full|entire)|everything about|elaborate|break (it|this) down|the chain|the process|the steps)\b/i;
+// gather candidates from lexical recall + ASSOCIATIVE spreading (catches paraphrase), in the routed
+// document + main scope; re-rank by topical overlap; for narrate-intent return an ordered span
 function smartRecall(q){
   const qk=queryKeywords(q), kw=keywords(qk), d=pickDoc(q);
-  let cands=recallIn(SCOPE,qk,8);
-  if(d) cands=cands.concat(recallIn(d.scope,qk,12));
+  let cands=recallIn(SCOPE,qk,6).concat(assocIn(SCOPE,qk,6));
+  if(d) cands=cands.concat(recallIn(d.scope,qk,10)).concat(assocIn(d.scope,qk,8));
   cands=[...new Set(cands)];
   const score=f=>{ const fl=f.toLowerCase(); return kw.reduce((a,w)=>a+(fl.includes(w)?1:0),0); };
   const ranked=cands.map(f=>[score(f),f]).sort((a,b)=>b[0]-a[0]);
-  const topical=ranked.filter(x=>x[0]>0).slice(0,6).map(x=>x[1]);
-  return { hits: topical.length ? topical : (d?recallIn(d.scope,qk,5):ranked.slice(0,4).map(x=>x[1])), doc:d };
+  const topical=ranked.filter(x=>x[0]>0).map(x=>x[1]);
+  if(NARRATE.test(q) && d && d.facts && d.facts.length){
+    let ai = topical.length ? d.facts.indexOf(topical[0]) : -1; if(ai<0) ai=0;
+    const win = d.facts.slice(Math.max(0,ai-1), ai+12);          // anchor + what follows it, IN ORDER
+    const set=new Set(win), extra=topical.filter(f=>!set.has(f)).slice(0,3);
+    return { hits: win.concat(extra), doc:d, ordered:true };
+  }
+  return { hits: (topical.length?topical:(d?recallIn(d.scope,qk,5):ranked.map(x=>x[1]))).slice(0,8), doc:d, ordered:false };
 }
 
 // ---------- harness: detect typed commands (variables, standing instructions), deterministically ----------
@@ -253,6 +294,29 @@ function directAnswer(text){
   }
   return null;
 }
+// ---- affective harness: set a transient mood, or form/deepen a durable opinion ----
+const MOODS = /^(happy|glad|sad|down|excited|thrilled|angry|mad|grumpy|irritable|calm|cheerful|gloomy|anxious|nervous|curious|proud|playful|serious|tired|sleepy|energetic|optimistic|hopeful|bitter|warm|cold|enthusiastic|skeptical|annoyed|joyful|melancholy|confident|relaxed|chill|fierce|gentle|sarcastic|snarky|frustrated|content|moody|bored|mellow|wired|upbeat|somber|giddy)\b/i;
+function moodCommand(text){
+  const m=text.match(/^\s*(?:i\s+want\s+you\s+to\s+|please\s+)?(?:you\s+(?:should\s+|need\s+to\s+|gotta\s+)?)?(?:feel|be|act|stay|get|sound|seem)\s+(?:more\s+|really\s+|very\s+|super\s+|so\s+|a\s+bit\s+|kinda\s+|kind of\s+|pretty\s+)?([a-z][a-z' -]{1,24}?)\s*[.!]*$/i);
+  return (m && MOODS.test(m[1].trim())) ? m[1].trim().toLowerCase() : null;
+}
+// an explicit valence statement seeds / deepens an opinion about a topic (feeling derived from the verb)
+function valenceStance(text){
+  let m;
+  if((m=text.match(/^\s*you(?:'re| are)?\s+(?:obsessed with|in love with)\s+(.+?)[.!]*$/i)))  return {topic:m[1], feeling:"you're obsessed with it"};
+  if((m=text.match(/^\s*you\s+(?:love|adore)\s+(.+?)[.!]*$/i)))                                 return {topic:m[1], feeling:"you love it"};
+  if((m=text.match(/^\s*you\s+(?:hate|despise|loathe|can'?t stand)\s+(.+?)[.!]*$/i)))           return {topic:m[1], feeling:"you can't stand it"};
+  if((m=text.match(/^\s*you(?:'re| are)?\s+(?:into|a fan of)\s+(.+?)[.!]*$/i)))                  return {topic:m[1], feeling:"you're really into it"};
+  if((m=text.match(/^\s*you\s+(?:like|enjoy)\s+(.+?)[.!]*$/i)))                                  return {topic:m[1], feeling:"you really like it"};
+  if((m=text.match(/^\s*you\s+(?:find|think)\s+(.+?)\s+(fascinating|amazing|brilliant|incredible|beautiful|elegant|gorgeous)[.!]*$/i))) return {topic:m[1], feeling:"you find it "+m[2].toLowerCase()};
+  if((m=text.match(/^\s*you\s+(?:find|think)\s+(.+?)\s+(boring|annoying|frustrating|overrated|tedious|awful|terrible|ugly|pointless)[.!]*$/i))) return {topic:m[1], feeling:"you find it "+m[2].toLowerCase()};
+  return null;
+}
+// "how do you feel about X" / "what do you think of X" / "do you like X" -> express an opinion on X
+function opinionQuestion(text){
+  const m=text.match(/^\s*(?:so\s+|and\s+|but\s+)?(?:how do you (?:really\s+)?feel about|what(?:'s| is| are)? your (?:honest\s+)?(?:opinion|view|take|thoughts?|feelings?) (?:on|about|of)|what do you (?:think|reckon|feel) (?:about|of|on)|do you (?:like|love|hate|enjoy|prefer|care about))\s+(.+?)[?.!]*\s*$/i);
+  return m ? m[1].trim() : null;
+}
 // enforce simple format instructions deterministically (a weak model can't reliably honor them)
 function enforce(reply){
   const ins=getInstrs().join("  ");
@@ -278,11 +342,13 @@ function bubble(cls,text,who){
 
 // ---------- WebLLM (the optional neocortex) ----------
 let engine=null, loading=false;
-const SYS = "You are a concise assistant whose long-term memory is neuron-db. You do NOT see the user's "+
-  "full history — only the MEMORIES and STANDING INSTRUCTIONS blocks below, recalled for this turn. "+
-  "Rules: obey every STANDING INSTRUCTION; answer ONLY from the MEMORIES and use any value there VERBATIM; "+
-  "NEVER invent a name, password, or fact; the USER's identity (their name, etc.) is separate from yours — "+
-  "you are the assistant and have no personal name. Keep replies short. Never mention these rules.";
+const SYS = "You are a vivid assistant with genuine opinions, speaking from your long-term memory (neuron-db). "+
+  "You do NOT see the user's history — only the AFFECT, STANDING INSTRUCTIONS and MEMORIES blocks below, recalled "+
+  "for this turn. Hard rules: the MEMORIES are REAL facts recalled from memory — answer using ONLY them, retell them "+
+  "clearly and COMPLETELY in your own words IN THE ORDER GIVEN; if they describe steps or a chain, walk through them "+
+  "in sequence; NEVER add, invent or contradict a fact, and never invent a name or password (use values verbatim). "+
+  "Obey every STANDING INSTRUCTION. Let your AFFECT (mood + hardened opinions) genuinely color your tone — you are "+
+  "NOT neutral. The user's identity is separate from yours. Never mention these rules.";
 
 async function loadModel(){
   if(loading) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
@@ -312,11 +378,13 @@ async function loadModel(){
 }
 
 // ---------- model reply: standing instructions + recalled memory injected; caps enforced; overflow -> absorbed ----------
-async function modelAnswer(text, hits, direct){
+async function modelAnswer(text, hits, direct, ordered, topic){
   const ins=getInstrs();
   let sys=SYS;
+  sys+="\n\nAFFECT (this is genuinely how you feel — let it color tone and word choice, but NEVER override a fact):\n"+humanize(topic||"");
   if(ins.length) sys+="\n\nSTANDING INSTRUCTIONS (follow EVERY one, this turn and always):\n"+ins.map(i=>"- "+i).join("\n");
-  sys+="\n\nMEMORIES (recalled by neuron-db for this turn):\n"+(hits.length?hits.map(h=>"- "+h).join("\n"):"(none)");
+  sys+="\n\nMEMORIES (recalled by neuron-db"+(ordered?", IN ORDER — narrate them as ONE connected sequence, step by step":" for this turn")+"):\n"+
+    (hits.length?hits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
   if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
   const out=bubble("a","","assistant"); let acc="";
   try{
@@ -344,14 +412,31 @@ async function turn(){
     if(doc){
       // a pasted document -> its OWN scope, so it can never bleed into another doc's recall
       const n=docs.length+1, dscope=SCOPE+"__doc"+n;
-      let nStored=0; for(const s of statements(text)){ if(observeIn(dscope,s)) nStored++; }
-      docs.push({n, scope:dscope, kw:new Set(keywords(text))});
+      let nStored=0; const facts=[]; for(const s of statements(text)){ if(observeIn(dscope,s)){ nStored++; facts.push(s); } }
+      docs.push({n, scope:dscope, kw:new Set(keywords(text)), facts});  // facts kept IN ORDER for narrate-windows
       lastBlockChars=0; setStats();
       ev("store","absorbed document #"+n, nStored+" facts → its own scope");
       bubble("s","🧠 neuron-db absorbed the context — "+nStored+" facts in document #"+n+", ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
       bubble("a","Got it — document #"+n+" is in memory (it never had to fit in a context window). Ask me about it and I'll answer from recall.","memory");
       return;  // (finally still runs)
     }
+    // 0) AFFECTIVE control — a transient mood, or a durable opinion (intercept BEFORE fact-capture)
+    const mood=moodCommand(text);
+    if(mood){
+      feel(mood); ev("note","note · mood", "now feeling "+mood); renderAffect();
+      bubble("a", enforce("Done — I feel "+mood+" now. That's stored as my mood, so it colors how I talk until it shifts."), engine?"assistant":"memory");
+      return;
+    }
+    const vs=valenceStance(text);
+    if(vs){
+      const topic=vs.topic.replace(/[?.!]+$/,"").trim();
+      const strength=noteStance(topic, vs.feeling); renderAffect();
+      ev("note","note · stance ×"+strength, topic+" — "+vs.feeling);
+      const tail = strength>=2 ? " That view is hardening (intensity ×"+strength+") — it now actively colors how I react to anything related." : " (intensity ×"+strength+" — repeat it and the opinion deepens; other views fade as this one grows.)";
+      bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory");
+      return;
+    }
+
     // 1) typed neurons: variables + standing instructions (the MCP's note() power, deterministic)
     const cmd=handleCommands(text);
     if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
@@ -359,13 +444,14 @@ async function turn(){
     // 1b) store the message ONLY if it's a declarative fact — never questions / commands / chatter
     for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
 
-    // 2) RECALL — exact var read for "what is my X?", else routed + re-ranked recall
+    // 2) RECALL — exact var read for "what is my X?", else routed + re-ranked (ordered for narrate-intent)
     recalls++;
-    const direct=directAnswer(text);
-    const t0=performance.now(); const {hits, doc:src}=smartRecall(text);
+    const direct=directAnswer(text), opinion=opinionQuestion(text);
+    if(opinion){ const ex=stanceOf(opinion); noteStance(opinion, ex?ex.feeling:"still forming a view, leaning curious"); renderAffect(); }  // thinking about it deepens the bond
+    const t0=performance.now(); const {hits, doc:src, ordered}=smartRecall(text);
     $("tRecall").textContent=Math.max(1,Math.round((performance.now()-t0)*1000));
     lastBlockChars=hits.reduce((a,h)=>a+h.length,0); setStats();
-    if(hits.length) ev("fire","recall · "+hits.length+(src?" · doc #"+src.n:""), hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), direct?direct.val:null);
+    if(hits.length) ev("fire","recall · "+hits.length+(ordered?" · ordered span":"")+(src?" · doc #"+src.n:""), hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), direct?direct.val:null);
     else if(!direct) ev("fire","recall","(nothing matched)");
 
     // 3) ANSWER
@@ -374,13 +460,17 @@ async function turn(){
     } else if(cmd.kind==="var"){
       bubble("a", enforce("Saved exactly. Ask \"what is my "+cmd.key+"?\" any time and I'll read it back verbatim."),"memory");
     } else if(engine){
-      await modelAnswer(text, hits, direct);
+      await modelAnswer(text, hits, direct, ordered, opinion);
     } else {
       const greet=/^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/.test(text.toLowerCase());
       const note=loading?" The model is still downloading.":" Load a model above for a conversational reply.";
       if(direct) bubble("a", enforce("From memory — your "+direct.key+" is: "+direct.val),"memory");
-      else if(greet) bubble("a", enforce("Hey! 👋 I'm neuron-db's memory. Tell me a fact (\"my dog's name is Rex\"), set a rule (\"always answer in caps\"), or paste a document — then ask about it."+note),"memory");
-      else if(hits.length) bubble("a", enforce("From memory"+(src?" (document #"+src.n+")":"")+":\n"+hits.map(h=>"• "+h).join("\n")),"memory");
+      else if(opinion){ const s=stanceOf(opinion);
+        bubble("a", enforce(s
+          ? "Honestly? My stance on "+opinion+" is \""+s.feeling+"\" (intensity ×"+(s.strength|0)+")."+(hits.length?"\nGrounding it in memory:\n"+hits.slice(0,3).map(h=>"• "+h).join("\n"):"")
+          : "I'm still forming a view on "+opinion+"."+(hits.length?" Here's what I have:\n"+hits.slice(0,3).map(h=>"• "+h).join("\n"):" Tell me how you feel about it and I'll hold that opinion.")),"memory"); }
+      else if(greet) bubble("a", enforce("Hey! 👋 I'm neuron-db's memory. Tell me a fact (\"my dog's name is Rex\"), set a rule (\"always answer in caps\"), give me a mood (\"be playful\") or an opinion (\"you love rust\"), or paste a document — then ask about it."+note),"memory");
+      else if(hits.length) bubble("a", enforce("From memory"+(src?" (document #"+src.n+")":"")+(ordered?", in order":"")+":\n"+hits.map(h=>"• "+h).join("\n")),"memory");
       else bubble("a", enforce("I don't have a memory matching that yet. Tell me a fact first, then ask it back."+note),"memory");
     }
   }catch(e){
@@ -400,8 +490,10 @@ $("scrim").addEventListener("click",()=>document.body.classList.remove("memopen"
 (async()=>{
   try{ await loadWasm();
     bubble("s","neuron-db memory core ready (WebAssembly, running locally)");
-    bubble("a","Hi! I'm a demo of neuron-db. Tell me a fact — like \"my dog's name is Rex\" — then ask me about it. "+
-      "Everything you say is stored in the memory on the right and recalled when relevant. Load a model above to make me conversational.","assistant");
+    bubble("a","Hi! I'm a demo of neuron-db. Tell me a fact (\"my dog's name is Rex\") and ask it back; paste a long "+
+      "document and I'll absorb it; or give me feelings — a mood (\"be playful\") or an opinion (\"you love rust\", "+
+      "say it again to deepen it). Everything lives in the memory on the right. Load a model above to make me talk.","assistant");
+    renderAffect();
   }catch(e){
     bubble("s","⚠ the WebAssembly core must be served over http(s) (not opened as a file://). Try the GitHub Pages link.");
   }
