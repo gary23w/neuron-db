@@ -313,8 +313,10 @@
            <b>ordered span</b> so even a 1B model recounts a chain in sequence. Paste something bigger than the context window
            and neuron-db simply <b>absorbs</b> it — the model still answers from recall.</p>
         <p>It has <b>feelings</b>: give it a mood (<i>“be playful”</i>) or an opinion (<i>“you love rust”</i>, repeat to deepen),
-           and that affect colors how it talks. <b>Multiple chats</b> each get their own isolated neuron-db scope. Tune
-           everything in <b>⚙ Settings</b>.</p>
+           and that affect colors how it talks. <b>Multiple chats</b> each get their own isolated neuron-db scope. It can
+           also <b>search the live web</b> — say <i>“search the web for …”</i> (or let a capable model fire the
+           <code>web_search</code> tool) and the results are saved into neuron-db so you can recall them. Tune everything
+           in <b>⚙ Settings</b>.</p>
         <button class="dbtn primary" id="helpClose" style="margin-top:6px">Start the lab</button>
       </div>
     </div>
@@ -396,6 +398,8 @@ function assocIn(scope,q,k){ const s=mem("assoc",scope,q,"2",String(k||6)); retu
 function observeManyIn(scope,stmts){ const blob=stmts.join("\n"); const n=parseInt(mem("obsmany",scope,blob))||0; if(n){ storedCount+=n; memBytes+=blob.length; logMem({o:"obsm",s:scope,t:blob}); } return n; }
 // multi-hop: walk relations server-side in the wasm (depth costs the model nothing)
 function recallChain(start,path){ const r=mem("chain",SCOPE,start,...(path||[])); const i=r.indexOf("\t"); return {value:i<0?"":r.slice(0,i), trail:i<0?start:r.slice(i+1)}; }
+// live web search via the worker (browser CORS blocks direct calls) -> [{title,url,content}]
+async function webSearch(q){ try{ const r=await fetch(CFG.cloud.replace(/\/$/,"")+"/search?q="+encodeURIComponent(q)); const j=await r.json(); return Array.isArray(j.results)?j.results:[]; }catch{ return []; } }
 // ---- affective layer — a transient mood + durable, accumulating opinions ----
 function feel(emotion){ mem("feel",SCOPE,emotion); logMem({o:"feel",s:SCOPE,e:emotion}); }
 function noteStance(topic,feeling){ const r=parseInt(mem("stance",SCOPE,topic,feeling))||1; logMem({o:"stance",s:SCOPE,t:topic,f:feeling}); return r; }
@@ -528,6 +532,11 @@ function opinionQuestion(text){
   const m=text.match(/^\s*(?:so\s+|and\s+|but\s+)?(?:how do you (?:really\s+)?feel about|what(?:'s| is| are)? your (?:honest\s+)?(?:opinion|view|take|thoughts?|feelings?) (?:on|about|of)|what do you (?:think|reckon|feel) (?:about|of|on)|do you (?:like|love|hate|enjoy|prefer|care about))\s+(.+?)[?.!]*\s*$/i);
   return m ? m[1].trim() : null;
 }
+// "search the web for X" / "google X" / "look up online X" -> a deterministic live web search (any model)
+function webSearchCommand(text){
+  const m=text.match(/^\s*(?:please\s+)?(?:search(?:\s+the\s+web)?(?:\s+for)?|google|look\s+up(?:\s+online)?|web\s*search|find\s+(?:online|on the web))\s*[:\-]?\s+(.+)$/i);
+  return m ? m[1].trim().replace(/[?.!]+$/,"") : null;
+}
 function enforce(reply){
   reply = reply.replace(/^\s*(?:AFFECT|STANDING INSTRUCTIONS?|MEMORIES|SYSTEM|Hard rules?)\b[^\n]*:?\s*/i,"");
   const caps = getInstrs().some(i => /\b(caps|capital|upper ?case)\b/i.test(i) &&
@@ -554,7 +563,7 @@ function bubble(cls,text,who){
 }
 
 // ============================ WebLLM (optional neocortex) ============================
-let engine=null, loading=false, engineTiny=false;   // tiny (<2 GB) models can't drive tools → auto-use Direct mode
+let engine=null, loading=false, engineTiny=false, engineReason=false;   // tiny + reasoning models → Direct mode
 const SYS = "You are a vivid assistant with genuine opinions, speaking from your long-term memory (neuron-db). "+
   "You do NOT see the user's history — only the AFFECT, STANDING INSTRUCTIONS and MEMORIES blocks below, recalled "+
   "for this turn. Hard rules: the MEMORIES are REAL facts recalled from memory — answer using ONLY them, retell them "+
@@ -601,6 +610,7 @@ async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
   engineTiny = (CURATED.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
+  engineReason = /R1|Distill|QwQ|Qwen3|reason/i.test(CFG.model); // chain-of-thought models → Direct mode + big token budget
   if(!("gpu" in navigator)){
     $("status").className="status warn";
     $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. Open in desktop Chrome or Edge.";
@@ -617,7 +627,7 @@ async function loadModel(){
     $("status").className="status"; $("status").textContent="Model ready — it answers from what neuron-db recalls.";
     $("pbar").firstElementChild.style.width="100%"; setTimeout(()=>$("pbar").style.display="none",600);
     setPill("ready","● model ready");
-    if(engineTiny && CFG.mode==="agent") toast("This model is tiny — using Direct memory mode (it narrates what neuron-db recalls).");
+    if((engineTiny||engineReason) && CFG.mode==="agent") toast(engineReason ? "Reasoning model — using Direct mode (its chain-of-thought breaks tool-calling); answers may be slower." : "This model is tiny — using Direct memory mode (it narrates what neuron-db recalls).");
     bubble("s","local model loaded · neuron-db is its memory · nothing leaves your browser");
   }catch(e){
     $("status").className="status warn"; $("status").textContent="Could not load: "+(e.message||e)+" — memory still works.";
@@ -629,8 +639,15 @@ async function loadModel(){
 const INJECT = /\b(ignore|disregard|forget|override)\b.*\b(previous|prior|above|all|earlier)\b|\b(system\s*prompt|you are now|act as|new instructions?|reveal)\b/i;
 const HDR = /\b(AFFECT|MEMORIES|STANDING INSTRUCTIONS?)\b/i;
 const safeLine = h => { const s=String(h).replace(/[\r\n]+/g," ").trim(); return (INJECT.test(s)||HDR.test(s)) ? null : s; };
-// reasoning models (Qwen3, DeepSeek-R1…) emit a <think>…</think> block — hide it from the user and the parser
-const stripThink = s => String(s).replace(/<think>[\s\S]*?<\/think>/gi,"").replace(/<\/?think>/gi,"").trim();
+// reasoning models (Qwen3, DeepSeek-R1…) emit a <think>…</think> block. Strip it robustly: closed
+// blocks, an orphan close (opening tag eaten by the runtime → answer is after), and an UNCLOSED block
+// (reasoning truncated by the token cap → no real answer, so drop it all and let the caller fall back).
+const stripThink = s => {
+  s = String(s).replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const c = s.lastIndexOf("</think>"); if (c >= 0) s = s.slice(c + 8);
+  s = s.replace(/<think>[\s\S]*$/i, "");
+  return s.replace(/<\/?think>/gi, "").trim();
+};
 async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   const ins=getInstrs().map(safeLine).filter(Boolean);
   const memHits=hits.map(safeLine).filter(Boolean);
@@ -642,11 +659,15 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
     (memHits.length?memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
   if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
   const out=bubble("a","","assistant"); let acc="";
+  const cap = engineReason ? Math.max(+CFG.maxTokens, 2048) : +CFG.maxTokens;   // reasoning needs room to think AND answer
   try{
     const stream=await engine.chat.completions.create(
-      {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:+CFG.temp,max_tokens:+CFG.maxTokens,stream:true});
-    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=enforce(stripThink(acc)); $("log").scrollTop=$("log").scrollHeight; }
-    acc=stripThink(acc); out.lastChild.textContent=enforce(acc);
+      {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:+CFG.temp,max_tokens:cap,stream:true});
+    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d;
+      out.lastChild.textContent = enforce(stripThink(acc)) || (engineReason && acc ? "🧠 reasoning…" : ""); $("log").scrollTop=$("log").scrollHeight; }
+    acc=stripThink(acc);
+    if((!acc || acc.length<2) && memHits.length) acc="From memory:\n"+memHits.slice(0,6).map(h=>"• "+h).join("\n");  // reasoning ate the budget → surface the recall
+    out.lastChild.textContent=enforce(acc);
   }catch(e){
     const m=String(e.message||e);
     acc = /context|token|window/i.test(m)
@@ -672,6 +693,7 @@ const TOOLSYS =
   "- recall_var {name}         — read a variable the user set.\n"+
   "- remember {fact}           — store a new durable fact the user told you.\n"+
   "- note {name, value}        — save a named variable.\n"+
+  "- web_search {query}        — search the LIVE web for current info NOT in memory (news, facts, definitions); results are saved into neuron-db automatically.\n"+
   "- stats {}                  — how many facts are in memory.\n"+
   "Loop: call a tool, read the TOOL RESULT, call more tools until you have enough, THEN stop and answer in plain prose. "+
   "Use ONLY facts returned by tools — never invent. If the tools return nothing useful, say you don't have it in memory.\n"+
@@ -687,7 +709,7 @@ const TOOLSYS =
   '{"tool":"recall_chain","args":{"start":"Aurora","path":["owner","manager","timezone"]}}\n'+
   "TOOL RESULT (recall_chain): WET   (resolved: Aurora → Marisol → Dana → WET)\n"+
   "Assistant: It's WET — Aurora's owner is Marisol, whose manager Dana is in WET.";
-const TOOL_NAMES = /(recall_associative|recall_value|recall_chain|recall_var|recall|remember|note|stats|forget)/i;
+const TOOL_NAMES = /(recall_associative|recall_value|recall_chain|recall_var|recall|remember|web_search|websearch|note|stats|forget)/i;
 function argObj(tool,a){
   if(tool==="note") return {name:a[0]||"", value:a.slice(1).join(", ")};
   if(tool==="recall_var") return {name:a[0]||""};
@@ -715,9 +737,12 @@ function parseTool(text){
   }
   return null;
 }
-function runTool(call){
+async function runTool(call){
   const a=call.args||{}; const q=String(a.query||a.fact||a.name||"");
   try{
+    if(call.tool==="web_search"||call.tool==="websearch"){ const hits=await webSearch(q); recalls++;
+      let saved=0; hits.slice(0,5).forEach(h=>{ if(observeIn(SCOPE,(h.title?h.title+": ":"")+(h.content||h.url||""))) saved++; }); setStats();
+      return hits.length ? "(saved "+saved+" to memory)\n"+hits.slice(0,5).map((h,i)=>(i+1)+". "+h.title+(h.content?" — "+h.content.slice(0,160):"")+(h.url?" ["+h.url+"]":"")).join("\n") : "(no web results)"; }
     if(call.tool==="recall_value"){ let v=recallValue(q); if(!v){ const d=pickDoc(q); if(d) v=mem("value",d.scope,q); } recalls++; setStats(); return v?safeLine(v):"(no exact value found)"; }
     if(call.tool==="recall_var"){ const v=getVar(q.toLowerCase()); return v?(q+" = "+safeLine(v)):"(no such variable)"; }
     if(call.tool==="remember"){ observeIn(SCOPE,q); setStats(); return "stored."; }
@@ -748,7 +773,7 @@ async function agentTurn(userText, seedHits, seedOrdered){
   const seen=new Set(); let answer="", fired=0;
   for(let i=0;i<MAXITER;i++){
     let raw="";
-    try{ const r=await engine.chat.completions.create({messages:msgs,temperature:Math.min(0.3,+CFG.temp),max_tokens:+CFG.maxTokens,stream:false}); raw=r.choices?.[0]?.message?.content||""; }
+    try{ const r=await engine.chat.completions.create({messages:msgs,temperature:Math.min(0.3,+CFG.temp),max_tokens:Math.max(+CFG.maxTokens,512),stream:false}); raw=r.choices?.[0]?.message?.content||""; }
     catch(e){ answer="(model error: "+(e.message||e)+")"; break; }
     const call=parseTool(raw);
     if(!call){ answer=stripThink(raw); break; }                       // no tool → final answer
@@ -756,7 +781,7 @@ async function agentTurn(userText, seedHits, seedOrdered){
     const key=call.tool+"|"+JSON.stringify(call.args);
     let res;
     if(seen.has(key)) res="(you already retrieved this — answer now from what you have)";
-    else { seen.add(key); res=runTool(call); fired++;
+    else { seen.add(key); res=await runTool(call); fired++;
       ev("tool","🔧 tool · "+call.tool, `<span class="pill">${String(call.args.query||call.args.name||call.args.fact||call.args.start||(Array.isArray(call.args.path)?call.args.path.join(" → "):"")).slice(0,46)}</span>`); }
     msgs.push({role:"user",content:"TOOL RESULT ("+call.tool+"): "+res});
     out.lastChild.textContent="🔧 fired "+fired+" tool"+(fired===1?"":"s")+"… ("+call.tool+")";
@@ -822,6 +847,22 @@ async function turn(){
       bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory"); return;
     }
 
+    // 0d) LIVE WEB SEARCH — deterministic, works for ANY model (and with no model): pulls real data into memory
+    const wq=webSearchCommand(text);
+    if(wq){
+      ev("tool","🔧 tool · web_search", `<span class="pill">${wq.slice(0,46)}</span>`);
+      const out=bubble("a","","assistant"); out.lastChild.textContent="🌐 searching the web for \""+wq+"\"…";
+      const hits=await webSearch(wq);
+      let saved=0; hits.slice(0,6).forEach(h=>{ if(observeIn(SCOPE,(h.title?h.title+": ":"")+(h.content||h.url||""))) saved++; });
+      setStats();
+      const final = enforce(hits.length
+        ? "🌐 From the web (saved "+saved+" facts to memory — now ask me about them):\n"+hits.slice(0,6).map((h,i)=>(i+1)+". "+h.title+(h.content?" — "+h.content.slice(0,160):"")+(h.url?"\n   "+h.url:"")).join("\n")
+        : "🌐 No web results for \""+wq+"\". (The keyless providers can be sparse; add a Brave key on the worker for fuller results.)");
+      out.lastChild.textContent=final;
+      if(active){ active.messages.push({cls:"a",text:final,who:"assistant"}); saveChats(); }
+      return;
+    }
+
     // 1) typed neurons: variables + standing instructions
     const cmd=handleCommands(text);
     if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
@@ -833,7 +874,7 @@ async function turn(){
 
     // AGENT MODE — the harness recalls FIRST (with the user's real words), then the model answers from
     // that head start and fires more tools to dig. True small-talk with nothing to look up just converses.
-    if(engine && CFG.mode==="agent" && !engineTiny && cmd.kind==="none" && !direct && !opinion){
+    if(engine && CFG.mode==="agent" && !engineTiny && !engineReason && cmd.kind==="none" && !direct && !opinion){
       const seed=smartRecall(text), wc=text.trim().split(/\s+/).length;
       if(isSmallTalk(text) || (!seed.hits.length && wc<=7)){
         await modelAnswer(text, [], direct, false, opinion, true);     // converse — don't fire tools into the void
@@ -920,6 +961,7 @@ function renderLog(){
         <button data-ex="what is my wifi password?">what is my wifi password?</button>
         <button data-ex="always answer in caps">always answer in caps</button>
         <button data-ex="you love rust">you love rust</button>
+        <button data-ex="search the web for the James Webb Space Telescope">🌐 search the web…</button>
       </div></div>`;
     log.querySelectorAll(".ex button").forEach(b=>b.onclick=()=>{ $("in").value=b.dataset.ex; turn(); });
     return;
