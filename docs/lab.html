@@ -139,6 +139,12 @@
   .status{font-size:12px;color:var(--mid);margin-top:8px} .status.warn{color:var(--warn)}
   details.sys summary{cursor:pointer;font-size:13px;color:var(--accent);font-family:var(--mono)}
   details.sys pre{white-space:pre-wrap;font-size:11px;color:var(--mid);background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto}
+  /* collapsible chain-of-thought from a reasoning model (dim, separate from the answer) */
+  .msg.a details.think{margin:0 0 7px} .msg.a details.think summary{cursor:pointer;font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--accent2);opacity:.8;list-style:none}
+  .msg.a details.think summary::before{content:"🧠 "} .msg.a details.think[open] summary{margin-bottom:5px}
+  .msg.a details.think pre{white-space:pre-wrap;font:11.5px var(--mono);color:var(--dim);background:var(--bg2);border:1px solid var(--line);border-left:2px solid var(--accent2);border-radius:6px;padding:8px 10px;margin:0;max-height:220px;overflow:auto}
+  .msg.a details.think pre.live{border-left-color:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.6}}
 
   .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(2,4,9,.66);backdrop-filter:blur(3px);padding:18px}
   .modal.on{display:grid}
@@ -242,7 +248,7 @@
     <div class="sect">
       <div class="lab">Generation</div>
       <div class="row"><label>Temperature</label><input type="range" id="cfgTemp" min="0" max="1" step="0.05"><span class="val2" id="cfgTempV">0.40</span></div>
-      <div class="row"><label>Max reply tokens</label><input type="range" id="cfgMax" min="128" max="2048" step="64"><span class="val2" id="cfgMaxV">512</span></div>
+      <div class="row"><label>Max reply tokens</label><input type="range" id="cfgMax" min="128" max="4096" step="64"><span class="val2" id="cfgMaxV">512</span></div>
       <div class="row"><label>Recall window (top-k)</label><input type="range" id="cfgK" min="3" max="16" step="1"><span class="val2" id="cfgKV">8</span></div>
     </div>
     <div class="sect">
@@ -504,8 +510,20 @@ function opinionQuestion(text){
   const m=text.match(/^\s*(?:so\s+|and\s+|but\s+)?(?:how do you (?:really\s+)?feel about|what(?:'s| is| are)? your (?:honest\s+)?(?:opinion|view|take|thoughts?|feelings?) (?:on|about|of)|what do you (?:think|reckon|feel) (?:about|of|on)|do you (?:like|love|hate|enjoy|prefer|care about))\s+(.+?)[?.!]*\s*$/i);
   return m ? m[1].trim() : null;
 }
+// "<rel> of [the] <rel> of [the] … <entity>" → {start, path:[innermost…outermost]} so any model (incl. reasoning,
+// which is routed to Direct and never sees the recall_chain tool) can answer multi-hop via the deterministic wasm walker
+function multiHop(text){
+  const q=queryKeywords(text).replace(/[?.!]+$/,"").trim();
+  if(!/\bof\b/i.test(q)) return null;
+  const parts=q.split(/\s+of\s+(?:the\s+|a\s+)?/i).map(s=>s.trim()).filter(Boolean);
+  if(parts.length<3) return null;                                   // need ≥2 hops to beat flat recall
+  const clean=r=>r.replace(/^(project|the|a)\s+/i,"").replace(/'s$/,"").trim();
+  const start=clean(parts[parts.length-1]);
+  const path=parts.slice(0,-1).reverse().map(clean).filter(Boolean);  // reverse → walk innermost first
+  return path.length ? {start, path} : null;
+}
 function enforce(reply){
-  reply = reply.replace(/^\s*(?:AFFECT|STANDING INSTRUCTIONS?|MEMORIES|SYSTEM|Hard rules?)\b[^\n]*:?\s*/i,"");
+  reply = reply.replace(/^\s*(?:FACTS(?:\s+FROM\s+MY\s+MEMORY)?|AFFECT|STANDING INSTRUCTIONS?|MEMORIES|SYSTEM|Hard rules?)\b[^\n]*:?\s*/i,"");
   const caps = getInstrs().some(i => /\b(caps|capital|upper ?case)\b/i.test(i) &&
     !/\b(no|not|stop|off|lower|lowercase|don'?t|never|disable|cancel)\b/i.test(i));
   return caps ? reply.toUpperCase() : reply;
@@ -589,7 +607,8 @@ async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
   engineTiny = (CURATED.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
-  engineReason = /R1|Distill|QwQ|Qwen3|reason/i.test(CFG.model); // chain-of-thought models → Direct mode + big token budget
+  // the curated tag is the source of truth; the anchored regex only covers a non-curated id (avoids flagging e.g. "MyReasonableModel")
+  engineReason = ((CURATED.find(m=>m.id===CFG.model)||{}).tag==="reason") || /(^|[-_])(R1|Distill|QwQ|Qwen3)([-_]|$)/i.test(CFG.model);
   if(!("gpu" in navigator)){
     $("status").className="status warn";
     $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. Open in desktop Chrome or Edge.";
@@ -622,11 +641,22 @@ const safeLine = h => { const s=String(h).replace(/[\r\n]+/g," ").trim(); return
 // blocks, an orphan close (opening tag eaten by the runtime → answer is after), and an UNCLOSED block
 // (reasoning truncated by the token cap → no real answer, so drop it all and let the caller fall back).
 const stripThink = s => {
-  s = String(s).replace(/<think>[\s\S]*?<\/think>/gi, "");
-  const c = s.lastIndexOf("</think>"); if (c >= 0) s = s.slice(c + 8);
-  s = s.replace(/<think>[\s\S]*$/i, "");
+  s = String(s);
+  const c = s.lastIndexOf("</think>"); if (c >= 0) s = s.slice(c + 8);   // the answer is after the LAST close
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");                       // any remaining closed blocks
+  if (/<think>/i.test(s)) return "";                                     // an unclosed/orphan-open <think> → still reasoning, no answer yet
   return s.replace(/<\/?think>/gi, "").trim();
 };
+// split a (possibly mid-stream) reasoning output into {think, body, open}. Handles BOTH a leading <think>
+// AND WebLLM's R1 templating where the OPENING tag is injected by the chat template and never streamed,
+// so the stream is just "reasoning… </think> answer" (no <think> ever appears in delta content).
+function splitThink(s){
+  s = String(s);
+  const c = s.lastIndexOf("</think>");
+  const clean = x => x.replace(/<\/?think>/gi, "").trim();
+  if (c >= 0) return { think: clean(s.slice(0, c).replace(/^[\s\S]*?<think>/i, "")), body: clean(s.slice(c + 8)), open: false };
+  return { think: clean(s.replace(/^[\s\S]*?<think>/i, "")), body: "", open: true };   // no close yet → all reasoning
+}
 async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   const ins=getInstrs().map(safeLine).filter(Boolean);
   const memHits=hits.map(safeLine).filter(Boolean);
@@ -634,26 +664,53 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   const aff = CFG.affect ? humanize(topic||"") : "";
   if(aff) sys+="\n\nAFFECT (this is genuinely how you feel — let it color tone and word choice, but NEVER override a fact):\n"+aff;
   if(ins.length) sys+="\n\nSTANDING INSTRUCTIONS (follow EVERY one, this turn and always):\n"+ins.map(i=>"- "+i).join("\n");
-  if(!chitchat) sys+="\n\nMEMORIES (recalled by neuron-db"+(ordered?", IN ORDER — narrate them as ONE connected sequence, step by step":" for this turn")+"):\n"+
+  if(!chitchat) sys+="\n\nMEMORIES (recalled by neuron-db"+(ordered?", IN ORDER — the numbered steps below are already in the correct sequence; retell them in that exact order 1→N, do NOT reorder, merge, skip or re-derive":" for this turn")+"):\n"+
     (memHits.length?memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
   if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
-  const out=bubble("a","","assistant"); let acc="";
-  const cap = engineReason ? Math.max(+CFG.maxTokens, 2048) : +CFG.maxTokens;   // reasoning needs room to think AND answer
+  // reasoning models: keep the chain-of-thought grounded in the recalled facts, not the training prior
+  if(engineReason && !chitchat){
+    sys+="\n\nThe MEMORIES above are already retrieved and verified — narrate them, do NOT re-derive them. Think briefly, then answer. Treat MEMORIES as your ONLY source; if a detail isn't there, say you don't have it — never recall facts from your own training.";
+    if(memHits.some(h=>/\bno (patch|fix|update|upgrade|workaround|solution)\b|\b(unpatched|not (yet )?patched|no fix(?:\s+is)?\s+available)\b/i.test(h)))
+      sys+="\n\nIMPORTANT: if the MEMORIES say something does NOT exist (e.g. no patch/fix), say that plainly and give ONLY the stated mitigation. Do NOT suggest updating/upgrading/patching, and don't assume the user's premise is correct.";
+  }
+  // R1 distills reason right after the USER turn and weight system weakly — put the facts in the user turn too
+  let userContent = text;
+  if(engineReason && !chitchat && memHits.length)
+    userContent = "FACTS FROM MY MEMORY (the ONLY facts I may use; no outside knowledge):\n"
+      + memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n")
+      + "\n\nQuestion: "+text+"\n\nReason ONLY about the FACTS above. If a detail is not in the FACTS, do not state it.";
+  // token budget: reasoning needs room to think AND answer, clamped to the 4096-token context window
+  let cap = +CFG.maxTokens;
+  if(engineReason){ const room = 4096 - approxTokens(sys) - approxTokens(userContent) - 256; cap = Math.max(512, Math.min(3000, room)); }
+  const out=bubble("a","","assistant"), ansEl=out.lastChild; let acc="";
+  let thinkEl=null;
+  if(engineReason){ thinkEl=document.createElement("details"); thinkEl.className="think"; thinkEl.innerHTML="<summary>reasoning</summary><pre></pre>"; out.insertBefore(thinkEl, ansEl); }
+  const t0=performance.now();
   try{
     const stream=await engine.chat.completions.create(
-      {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:+CFG.temp,max_tokens:cap,stream:true});
+      {messages:[{role:"system",content:sys},{role:"user",content:userContent}],
+       temperature: engineReason?Math.min(0.2,+CFG.temp):+CFG.temp, max_tokens:cap, stream:true});
     for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d;
-      out.lastChild.textContent = enforce(stripThink(acc)) || (engineReason && acc ? "🧠 reasoning…" : ""); $("log").scrollTop=$("log").scrollHeight; }
-    acc=stripThink(acc);
-    if((!acc || acc.length<2) && memHits.length) acc="From memory:\n"+memHits.slice(0,6).map(h=>"• "+h).join("\n");  // reasoning ate the budget → surface the recall
-    out.lastChild.textContent=enforce(acc);
+      if(engineReason){ const r=splitThink(acc); const pre=thinkEl.querySelector("pre"); pre.textContent=r.think; pre.classList.toggle("live",r.open);
+        ansEl.textContent = enforce(r.body) || (r.open ? "🧠 reasoning… ("+approxTokens(acc).toLocaleString()+" tokens · "+Math.round((performance.now()-t0)/1000)+"s)" : ""); }
+      else ansEl.textContent = enforce(stripThink(acc)) || "";
+      $("log").scrollTop=$("log").scrollHeight; }
+    const truncated = engineReason && acc.length>0 && !/<\/think>/i.test(acc);   // reasoning never reached the close
+    acc = engineReason ? splitThink(acc).body : stripThink(acc);
+    if(!acc || acc.length<2){
+      if(memHits.length) acc = ordered ? memHits.map((h,i)=>(i+1)+". "+h).join("\n") : "Here's what I have on that:\n"+memHits.map(h=>"• "+h).join("\n");
+      else if(truncated) acc = "I started reasoning but ran out of room before reaching an answer — ask more specifically and I'll answer from memory.";
+    }
+    if(direct && direct.val && !acc.includes(direct.val)) acc = "From memory — your "+direct.key+" is: "+direct.val;   // post-hoc grounding for exact values
+    ansEl.textContent=enforce(acc);
   }catch(e){
     const m=String(e.message||e);
     acc = /context|token|window/i.test(m)
       ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory. Ask me about it and I'll answer from recall."
       : "(model error: "+m+")";
-    out.lastChild.textContent=acc;
+    ansEl.textContent=acc;
   }
+  if(thinkEl){ const pre=thinkEl.querySelector("pre"); pre.classList.remove("live"); if(!pre.textContent.trim()) thinkEl.remove(); }
   if(active){ active.messages.push({cls:"a", text:enforce(acc), who:"assistant"}); saveChats(); }
 }
 
@@ -830,6 +887,19 @@ async function turn(){
     if(CFG.capture) for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
 
     const direct=directAnswer(text), opinion = CFG.affect ? opinionQuestion(text) : null;
+
+    // MULTI-HOP — "X of the Y of Z" is resolved by the deterministic wasm chain walker, so EVERY model
+    // (incl. reasoning models routed to Direct, which never see the recall_chain tool) answers it exactly
+    if(cmd.kind==="none" && !direct){
+      const h=multiHop(text);
+      if(h){ const {value,trail}=recallChain(h.start,h.path);
+        if(value){ recalls++; setStats(); ev("fire","recall · chain", h.path.join(" → "), value); lastBlockChars=value.length;
+          if(engine) await modelAnswer(text, [value+"  ("+trail+")"], {key:"answer", val:value}, false, opinion, false);
+          else bubble("a", enforce("From memory: "+value+"\n  ("+trail+")"),"memory");
+          return;
+        } else ev("fire","recall · chain", h.path.join(" → "), "(chain broke)");
+      }
+    }
 
     // AGENT MODE — the harness recalls FIRST (with the user's real words), then the model answers from
     // that head start and fires more tools to dig. True small-talk with nothing to look up just converses.
