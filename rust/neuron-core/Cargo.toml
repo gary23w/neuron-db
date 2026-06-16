@@ -21,6 +21,7 @@ secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:ge
 server = ["sqlite"]
 mcp = ["sqlite", "semantic"]   # the MCP server ships with semantic-ranked recall by default
 semantic = []
+http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }

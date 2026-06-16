@@ -170,6 +170,24 @@ fn topic_matches(stored: &str, asked: &str) -> bool {
 /// Reset the whole in-browser database (all scopes, vars, instructions).
 #[no_mangle] pub extern "C" fn mem_reset() { unsafe { MEM = Some(MemDB::new()); } }
 
+// ---- opt-in HTTP capability (`--features http`) — the WASM owns the request, the host owns the socket.
+// The guest calls `host_http` to START a fetch and gets a token; the host runs the fetch and delivers the
+// body back via `http_deliver`; the guest reads it with the `fetched` op. This is the only way a
+// wasm32-unknown-unknown module reaches the network in a browser: the runtime/host exposes the transport
+// as an import the guest calls (per the WASI/HTTP discussion — no in-module TCP exists).
+#[cfg(all(feature = "http", target_arch = "wasm32"))]
+#[link(wasm_import_module = "env")]
+extern "C" { fn host_http(ptr: *const u8, len: usize) -> i32; }
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+unsafe fn host_http(_ptr: *const u8, _len: usize) -> i32 { -1 }   // no host transport off-wasm (native tests)
+#[cfg(feature = "http")]
+static mut HTTP: Option<HashMap<i32, String>> = None;
+#[cfg(feature = "http")]
+fn httpmap() -> &'static mut HashMap<i32, String> { unsafe { HTTP.get_or_insert_with(HashMap::new) } }
+/// The host calls this to deliver a fetched body for `token` (bytes written into wasm memory at ptr/len).
+#[cfg(feature = "http")]
+#[no_mangle] pub extern "C" fn http_deliver(token: i32, ptr: *const u8, len: usize) { httpmap().insert(token, input(ptr, len)); }
+
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
 /// ops: observe | obsmany | recall | value | assoc | chain | setvar | getvar | addinstr | instrs |
 ///      delinstr | clearinstr | forget | stats | episodes | feel | stance | humanize | mood |
@@ -264,6 +282,19 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
                 }
             }
             format!("{}\t{}", if broke { String::new() } else { current }, trail.join(" → "))
+        }
+        // --- opt-in web fetch (feature "http"): the guest INITIATES an HTTP GET through the host
+        // transport and gets a token; poll `fetched <token>` until the host delivers the body ---
+        #[cfg(feature = "http")]
+        "fetch" => {
+            let url = arg(2);
+            let token = unsafe { host_http(url.as_ptr(), url.len()) };
+            if token < 0 { "http-unavailable".into() } else { format!("pending:{}", token) }
+        }
+        #[cfg(feature = "http")]
+        "fetched" => {
+            let token: i32 = arg(2).parse().unwrap_or(-1);
+            httpmap().get(&token).cloned().unwrap_or_else(|| "pending".into())
         }
         // --- affective layer: a transient mood + accumulating, decaying stances + the humanize basis ---
         "feel" => {
