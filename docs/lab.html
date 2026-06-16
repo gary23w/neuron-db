@@ -414,25 +414,26 @@ async function webSearch(query){
         if(c) return {provider:"open-meteo", facts:[ loc.name+(loc.country?", "+loc.country:"")+" weather right now: "+(WCODE[c.weather_code]||"code "+c.weather_code)+", "+c.temperature_2m+"°C, precipitation "+c.precipitation+" mm, wind "+c.wind_speed_10m+" km/h." ]}; } }
   }
   const facts=[];
-  // general -> DuckDuckGo Instant Answer (keyless, CORS)
+  // general -> DuckDuckGo Instant Answer (best for named entities)
   const d=await jget("https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q="+encodeURIComponent(query));
   if(d){ if(d.AbstractText) facts.push((d.Heading||query)+": "+d.AbstractText);
     for(const t of (d.RelatedTopics||[])){ if(facts.length>=6) break; if(t.Text&&t.FirstURL) facts.push(t.Text); else if(t.Topics) for(const s of t.Topics){ if(facts.length>=6) break; if(s.Text) facts.push(s.Text); } } }
   if(facts.length) return {provider:"DuckDuckGo", facts};
-  // fallback -> Wikipedia (opensearch + summary), trying the query then its key terms
-  for(const term of [...new Set([query, keywords(query).slice(0,3).join(" "), keywords(query).slice(0,2).join(" ")].filter(Boolean))]){
-    const os=await jget("https://en.wikipedia.org/w/api.php?action=opensearch&limit=3&format=json&search="+encodeURIComponent(term));
-    const titles=(os&&os[1])||[], descs=(os&&os[2])||[];
-    if(titles.length){ for(let i=0;i<titles.length;i++) facts.push(titles[i]+(descs[i]?": "+descs[i]:""));
-      const sum=await jget("https://en.wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(titles[0].replace(/ /g,"_")));
-      if(sum&&sum.extract) facts[0]=titles[0]+": "+sum.extract;
-      return {provider:"Wikipedia", facts}; }
+  // fallback -> Wikipedia FULL-TEXT search (returns relevant snippets for ANY query string), enrich the top hit
+  const dehtml=s=>String(s||"").replace(/<[^>]+>/g,"").replace(/&quot;/g,'"').replace(/&amp;/g,"&").replace(/&#?\w+;/g,"").replace(/\s+/g," ").trim();
+  const ws=await jget("https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=4&format=json&origin=*&srsearch="+encodeURIComponent(query));
+  const srh=ws&&ws.query&&ws.query.search;
+  if(srh&&srh.length){
+    for(const h of srh){ const sn=dehtml(h.snippet); facts.push(h.title+(sn?": "+sn:"")); }
+    const sum=await jget("https://en.wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(srh[0].title.replace(/ /g,"_")));
+    if(sum&&sum.extract) facts[0]=srh[0].title+": "+sum.extract;
+    return {provider:"Wikipedia", facts};
   }
   return {provider:"none", facts:[]};
 }
 // "check the web for X" / "google X" / "search X" / "look up X" / "browse X"
 function webCommand(text){
-  const m=text.match(/^\s*(?:please\s+)?(?:check (?:the )?web(?: for)?|search(?: the web)?(?: for)?|google|look up(?: online)?|web ?search|find (?:online|on the web)|browse(?: for)?)\b[:\-]?\s*(.+)$/i);
+  const m=text.match(/^\s*(?:please\s+)?(?:check (?:the )?web(?: for)?|search(?: the web)?(?: for)?|google|duck ?duck ?go|ddg|bing|look up(?: online)?|web ?search|find (?:online|on the web)|browse(?: for)?)\b[:\-]?\s*(.+)$/i);
   if(m) return m[1].trim().replace(/[?.!]+$/,"");
   // a bare weather question with a place → route to the live weather fetch (don't let the model invent it)
   if(/\b(weather|did it rain|is it rain|temperature|forecast|how (hot|cold)|is it (snow|sunny|cloud))/i.test(text) && /\bin\s+[a-z]/i.test(text)) return text.replace(/[?.!]+$/,"").trim();
