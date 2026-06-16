@@ -158,11 +158,21 @@ impl MemDB {
 static mut MEM: Option<MemDB> = None;
 fn memdb() -> &'static mut MemDB { unsafe { MEM.get_or_insert_with(MemDB::new) } }
 
+/// Match a stored stance topic against an asked-about topic by whole word / exact phrase — never a
+/// bare substring, so "rust" does not fire for "trust" and an empty topic never matches anything.
+fn topic_matches(stored: &str, asked: &str) -> bool {
+    if stored.is_empty() || asked.is_empty() { return false; }
+    stored == asked
+        || asked.split_whitespace().any(|w| w == stored)
+        || stored.split_whitespace().any(|w| w == asked)
+}
+
 /// Reset the whole in-browser database (all scopes, vars, instructions).
 #[no_mangle] pub extern "C" fn mem_reset() { unsafe { MEM = Some(MemDB::new()); } }
 
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
-/// ops: observe | recall | value | assoc | setvar | getvar | addinstr | instrs | forget | stats.
+/// ops: observe | recall | value | assoc | setvar | getvar | addinstr | instrs | delinstr |
+///      clearinstr | forget | stats | episodes | feel | stance | humanize | mood | topstance | stanceof.
 #[no_mangle]
 pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
     let req = input(ptr, len);
@@ -192,8 +202,27 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
             "ok".into()
         }
         "instrs" => db.instrs.get(&scope).map(|v| v.join("\n")).unwrap_or_default(),
+        // remove every standing instruction whose text contains the (case-insensitive) needle; returns count removed
+        "delinstr" => {
+            let needle = arg(2).trim().to_lowercase();
+            match db.instrs.get_mut(&scope) {
+                Some(v) if !needle.is_empty() => {
+                    let before = v.len();
+                    v.retain(|i| !i.to_lowercase().contains(&needle));
+                    (before - v.len()).to_string()
+                }
+                _ => "0".into(),
+            }
+        }
+        // drop all standing instructions for the scope; returns count removed
+        "clearinstr" => db.instrs.get_mut(&scope).map(|v| { let n = v.len(); v.clear(); n.to_string() }).unwrap_or_else(|| "0".into()),
         "forget" => db.n(&scope).forget_prefix(arg(2)).to_string(),
         "stats" => db.scopes.get(&scope).map(|n| n.fact_count()).unwrap_or(0).to_string(),
+        // the scope's stored episode texts, in insertion order — so a caller's ordered view matches
+        // exactly what was stored (the JS sentence splitter and Rust's differ, e.g. on ';')
+        "episodes" => db.scopes.get(&scope)
+            .map(|n| n.episodes.iter().map(|e| e.t.clone()).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default(),
         // --- affective layer: a transient mood + accumulating, decaying stances + the humanize basis ---
         "feel" => {
             let e = arg(2).trim();
@@ -203,42 +232,47 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         "stance" => {
             let topic = arg(2).trim().to_lowercase();
             let feeling = arg(3).trim().to_string();
-            let v = db.stances.entry(scope.clone()).or_default();
-            for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * 0.9).max(0.5); } }   // neglected views fade
-            match v.iter_mut().find(|s| s.0 == topic) {
-                Some(s) => { s.2 += 1.0; s.1 = feeling; format!("{:.0}", s.2) }
-                None => { v.push((topic, feeling, 1.0)); "1".into() }
+            if topic.is_empty() || !topic.chars().any(|c| c.is_alphanumeric()) { "0".into() }   // no empty/punctuation topics
+            else {
+                let v = db.stances.entry(scope.clone()).or_default();
+                for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * 0.9).max(0.5); } }   // neglected views fade
+                match v.iter_mut().find(|s| s.0 == topic) {
+                    Some(s) => { s.2 += 1.0; s.1 = feeling; format!("{:.0}", s.2) }
+                    None => { v.push((topic, feeling, 1.0)); "1".into() }
+                }
             }
         }
         "humanize" => {
             let topic = arg(2).trim().to_lowercase();   // optional: bias toward the asked-about topic's stance
-            let mut out = String::from("You are NOT a neutral assistant — you have genuine opinions and feelings, and they show in how you write.");
+            let mut body = String::new();
             if let Some(m) = db.moods.get(&scope) {
-                out.push_str(&format!(" Right now you feel {}; let it drive your tone, energy and word choice.", m));
+                body.push_str(&format!(" Right now you feel {}; let it drive your tone, energy and word choice.", m));
             }
             let pick = db.stances.get(&scope).and_then(|v| {
                 if !topic.is_empty() {
-                    if let Some(s) = v.iter().find(|s| topic.contains(&s.0) || s.0.contains(&topic)) { return Some(s); }
+                    if let Some(s) = v.iter().find(|s| topic_matches(&s.0, &topic)) { return Some(s); }
                 }
                 v.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
             });
             if let Some(s) = pick {
-                let asked = !topic.is_empty() && (topic.contains(&s.0) || s.0.contains(&topic));
+                let asked = topic_matches(&s.0, &topic);
                 if s.2 >= 1.5 || asked {   // express a hardened view always; a budding one only when asked about it
-                    out.push_str(&format!(" You hold a real opinion, built up over time, about {} (intensity x{}): \"{}\" — let it bias how you react to anything related.", s.0, s.2 as i64, s.1));
+                    body.push_str(&format!(" You hold a real opinion, built up over time, about {} (intensity x{:.0}): \"{}\" — let it bias how you react to anything related.", s.0, s.2, s.1));
                 }
             }
-            out
+            // only assert a persona when there is genuine affect to express — a neutral session stays neutral
+            if body.is_empty() { String::new() }
+            else { format!("You are NOT a neutral assistant — you have genuine opinions and feelings, and they show in how you write.{body}") }
         }
         "mood" => db.moods.get(&scope).cloned().unwrap_or_default(),
         "topstance" => db.stances.get(&scope)
             .and_then(|v| v.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)))
-            .map(|s| format!("{}\t{}\t{:.0}", s.0, s.1, s.2)).unwrap_or_default(),
+            .map(|s| format!("{}\t{}\t{:.1}", s.0, s.1, s.2)).unwrap_or_default(),
         "stanceof" => {
             let topic = arg(2).trim().to_lowercase();
             db.stances.get(&scope)
-                .and_then(|v| v.iter().find(|s| topic.contains(&s.0) || s.0.contains(&topic)))
-                .map(|s| format!("{}\t{}\t{:.0}", s.0, s.1, s.2)).unwrap_or_default()
+                .and_then(|v| v.iter().find(|s| topic_matches(&s.0, &topic)))
+                .map(|s| format!("{}\t{}\t{:.1}", s.0, s.1, s.2)).unwrap_or_default()
         }
         _ => String::new(),
     };
