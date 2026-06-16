@@ -34,12 +34,16 @@
   .top a.lnk{color:var(--mid);text-decoration:none;font-size:13.5px;border:1px solid var(--line2);
              border-radius:8px;padding:6px 11px;white-space:nowrap}
   .top a.lnk:hover{color:var(--ink);border-color:var(--accent)}
-  /* ---- intro ---- */
-  .intro{padding:16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0a0d15,#080a0f)}
-  .intro h1{margin:0 0 6px;font-size:clamp(20px,4.6vw,30px);letter-spacing:-.03em;font-weight:760}
-  .intro p{margin:0;color:var(--mid);font-size:14px;max-width:70ch}
+  /* ---- intro (collapsible) ---- */
+  .intro{padding:11px 16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0a0d15,#080a0f)}
+  .intro summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:14px}
+  .intro summary::-webkit-details-marker{display:none}
+  .intro summary b{font-size:clamp(15px,2.8vw,19px);letter-spacing:-.02em;font-weight:740}
+  .intro summary .more{margin-left:auto;font:600 11.5px var(--mono);color:var(--accent);white-space:nowrap}
+  .intro[open] summary .more::after{content:" ▴"} .intro:not([open]) summary .more::after{content:" ▾"}
+  .intro p{margin:11px 0 2px;color:var(--mid);font-size:13.5px;max-width:78ch;line-height:1.6}
   .intro .tag{display:inline-block;font:600 11px var(--mono);color:var(--accent);background:#0b1a18;
-              border:1px solid #14443c;border-radius:999px;padding:3px 9px;margin-bottom:9px}
+              border:1px solid #14443c;border-radius:999px;padding:3px 9px}
   /* ---- model loader ---- */
   .loader{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--bg2)}
   select,button,input{font-family:inherit;font-size:14px}
@@ -104,14 +108,15 @@
     <a class="lnk" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a>
   </div>
 
-  <div class="intro">
-    <span class="tag">100% IN YOUR BROWSER · NO SERVER · NO API KEY</span>
-    <h1>The hippocampus and the neocortex, both client-side.</h1>
+  <details class="intro">
+    <summary><span class="tag">IN YOUR BROWSER · NO SERVER · NO KEY</span> <b>The hippocampus &amp; the neocortex, both client-side.</b> <span class="more">what is this?</span></summary>
     <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.4&nbsp;MB WebAssembly module, running locally.
        Every message you send is stored and recalled by it; watch the neurons fire on the right. The optional
        <b>local Llama</b> (via WebLLM, WebGPU) is the voice on top — it never sees your whole history, only what the
-       memory recalls. Memory works on any device; the model needs a WebGPU browser (desktop Chrome/Edge).</p>
-  </div>
+       memory recalls. <b>Paste something bigger than the model's context window</b> and neuron-db simply absorbs it
+       into memory — the model still answers from recall. That's the whole point. Memory works on any device; the
+       model needs a WebGPU browser (desktop Chrome/Edge).</p>
+  </details>
 
   <div class="loader">
     <select id="model" title="WebLLM model (downloaded + run in your browser via WebGPU)">
@@ -137,8 +142,10 @@
       <h2>neuron-db · live memory</h2>
       <div class="stats">
         <div class="stat"><b id="nFacts">0</b><span>facts stored</span></div>
-        <div class="stat"><b id="nRecall">0</b><span>recalls fired</span></div>
+        <div class="stat"><b id="memKB">0</b><span>KB in memory</span></div>
         <div class="stat"><b id="tRecall">0</b><span>µs last recall</span></div>
+        <div class="stat"><b id="nRecall">0</b><span>recalls fired</span></div>
+        <div class="stat" style="flex-basis:100%"><b id="ctxSaved" style="color:var(--accent)">0</b><span>tokens kept out of the model's context</span></div>
       </div>
       <div class="syn" id="syn"><div class="empty">No activity yet.<br>Store a fact and recall it.</div></div>
     </aside>
@@ -151,21 +158,32 @@ const $ = id => document.getElementById(id);
 const td = new TextDecoder(), te = new TextEncoder();
 
 // ---------- neuron-db WASM (the memory) ----------
-let EX = null, facts = [], recalls = 0;
+let EX = null, facts = [], recalls = 0, memBytes = 0, lastBlockChars = 0;
+const approxTokens = s => Math.round((typeof s === "number" ? s : s.length) / 4);
+function isDocument(t){ return t.length > 600 || (t.match(/[.!?]+/g) || []).length >= 6; }
+function setStats(){
+  $("nFacts").textContent = facts.filter(Boolean).length;
+  $("memKB").textContent = (memBytes/1024).toFixed(1);
+  $("nRecall").textContent = recalls;
+  // what neuron-db is holding that the model never had to: total memory minus the recalled block
+  $("ctxSaved").textContent = Math.max(0, approxTokens(memBytes) - approxTokens(lastBlockChars)).toLocaleString();
+}
 async function loadWasm(){
   const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm"), {});
   EX = r.instance.exports; EX.syn_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
 function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
-function addFact(s){ const [p,l]=wstr(s); const i=EX.syn_add(p,l); if(i>=0){ facts[i]=s; $("nFacts").textContent=facts.filter(Boolean).length; } return i; }
+function addFact(s){ const [p,l]=wstr(s); const i=EX.syn_add(p,l); if(i>=0) facts[i]=s; return i; }
+const BLOCK_K = 6;   // top-k facts injected into the model — a memory BLOCK, never the whole store
 function fire(q){
   const t0=performance.now(); const [p,l]=wstr(q); const n=EX.syn_fire(p,l);
   const us=Math.max(1,Math.round((performance.now()-t0)*1000));
   const out=readBuf(n); const [value,bestIdx,clist]=out.split("\t");
   const idxs=(clist||"").split(",").filter(x=>x!=="").map(Number);
-  const hits=[...new Set([Number(bestIdx),...idxs])].filter(i=>i>=0&&facts[i]).map(i=>facts[i]);
-  return {value:value||"", hits, us};
+  const all=[...new Set([Number(bestIdx),...idxs])].filter(i=>i>=0&&facts[i]);  // every neuron that fired
+  const hits=all.slice(0,BLOCK_K).map(i=>facts[i]);                              // cap the injected block
+  return {value:value||"", hits, fired:all.length, us};
 }
 // split a message into storable statements (skip questions; observe() also filters)
 function statements(text){
@@ -221,33 +239,50 @@ async function loadModel(){
   loading=false;
 }
 
+// ---------- model reply (streams; a context overflow becomes the "absorbed" message) ----------
+async function modelReply(sys, userMsg, memBlock){
+  const sysContent = memBlock!=null ? sys+"\n\nMEMORIES (recalled by neuron-db for this turn):\n"+memBlock : sys;
+  const out=bubble("a","","assistant"); let acc="";
+  try{
+    const stream=await engine.chat.completions.create(
+      {messages:[{role:"system",content:sysContent},{role:"user",content:userMsg}],temperature:0.6,stream:true});
+    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=acc; $("log").scrollTop=$("log").scrollHeight; }
+  }catch(e){
+    const m=String(e.message||e);
+    out.lastChild.textContent = /context|token|window/i.test(m)
+      ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory instead. Ask me about it and I'll answer from recall."
+      : "(model error: "+m+")";
+  }
+}
+
 // ---------- a turn ----------
 let busy=false;
 async function turn(){
   const text=$("in").value.trim(); if(!text||busy) return;
   if(!EX){ bubble("s","memory core still loading — one moment…"); return; }  // never proceed before WASM is ready
   busy=true; $("send").disabled=true; $("in").value="";
-  bubble("u",text,"you");
+  const doc=isDocument(text);
+  bubble("u", text.length>600 ? text.slice(0,600)+" …  ["+text.length.toLocaleString()+" chars]" : text, "you");
   try{
     // 1) STORE (passive encoding) — one episode per statement
     const stored=statements(text);
-    for(const s of stored){ const i=addFact(s); if(i>=0) ev("store","stored",s); }
+    for(const s of stored){ const i=addFact(s); if(i>=0){ memBytes+=s.length; ev("store","stored",s); } }
 
-    // 2) RECALL for this turn
-    const r=fire(text); recalls++; $("nRecall").textContent=recalls; $("tRecall").textContent=r.us;
-    if(r.hits.length) ev("fire","recall · "+r.hits.length+" fired", r.hits.map(h=>`<span class="pill">${h}</span>`).join(""), r.value||null);
+    // 2) RECALL — capped to a top-k BLOCK, never the whole store
+    const r=fire(text); recalls++; $("tRecall").textContent=r.us;
+    lastBlockChars=r.hits.reduce((a,h)=>a+h.length,0); setStats();
+    if(r.fired) ev("fire","recall · "+r.fired+" fired"+(r.fired>r.hits.length?" · top "+r.hits.length+" injected":""),
+                   r.hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), r.value||null);
     else ev("fire","recall","(nothing matched)");
 
-    // 3) ANSWER — WebLLM if loaded, else a memory-only reply
-    if(engine){
+    // 3) ANSWER
+    if(doc){
+      // the document lives in memory now; the raw text never reaches the model -> no context blow-up
+      bubble("s","🧠 neuron-db absorbed the context — "+stored.length+" facts stored, ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
+      bubble("a","Got it — I absorbed that whole thing into memory (it never had to fit in a context window). Ask me anything about it and I'll answer from what recall surfaces.","memory");
+    } else if(engine){
       const memBlock = r.hits.length ? r.hits.map(h=>"- "+h).join("\n") : "(no relevant memories)";
-      const msgs=[{role:"system",content:SYS+"\n\nMEMORIES (recalled by neuron-db for this turn):\n"+memBlock},
-                  {role:"user",content:text}];
-      const out=bubble("a","","assistant"); let acc="";
-      try{
-        const stream=await engine.chat.completions.create({messages:msgs,temperature:0.6,stream:true});
-        for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=acc; $("log").scrollTop=$("log").scrollHeight; }
-      }catch(e){ out.lastChild.textContent="(model error: "+(e.message||e)+")"; }
+      await modelReply(SYS, text, memBlock);
     } else {
       const low=text.toLowerCase().replace(/[^\w\s]/g,"").trim();
       const greet=/^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/.test(low);
