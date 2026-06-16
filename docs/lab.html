@@ -187,8 +187,7 @@
       <button class="newchat" id="newChat">＋ New chat</button>
       <div class="chatlist" id="chatList"></div>
       <div class="railfoot">
-        <button class="acct" id="acctBtn"><span class="avatar" id="avatar">?</span><span id="acctLabel">Sign in / Register</span></button>
-        <div class="raillinks"><a href="index.html">Site</a> · <a href="demos/synapse-3d.html">3D demo</a> · <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a></div>
+        <div class="raillinks" style="line-height:1.7"><b style="color:var(--accent)">100% local</b> · nothing leaves your browser<br><a href="index.html">Site</a> · <a href="demos/synapse-3d.html">3D demo</a> · <a href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a></div>
       </div>
     </aside>
 
@@ -271,29 +270,7 @@
       <button class="dbtn danger" id="wipeBtn" style="margin-top:8px">Wipe this chat's memory</button>
     </div>
     <div class="sect">
-      <div class="lab">Cloud account (optional · off = fully local)</div>
-      <div class="row"><label>Enable cloud account <span class="hint">— calls a worker; off keeps the lab 100% local</span></label><span class="sw"><input type="checkbox" id="cfgCloudOn"><span class="tr"></span></span></div>
-      <input type="text" id="cfgCloud" placeholder="https://…workers.dev">
-      <div class="status">Off by default: the lab runs entirely in your browser and never calls a server. Turn this on only if you want an account + email list (routes to the worker).</div>
-    </div>
-    <div class="sect">
       <details class="sys"><summary>Reveal the system prompt</summary><pre id="sysDump"></pre></details>
-    </div>
-  </div>
-
-  <!-- AUTH MODAL -->
-  <div class="modal" id="authModal">
-    <div class="card">
-      <div class="ch"><h3 id="authTitle">Welcome back</h3><p class="sub" id="authSub">Sign in to save your chats and join the list.</p></div>
-      <div class="tabs"><button id="tabLogin" class="on">Log in</button><button id="tabReg">Register</button></div>
-      <div class="body">
-        <input type="email" id="authEmail" placeholder="you@email.com" autocomplete="email">
-        <input type="password" id="authPw" placeholder="password (min 6 chars)" autocomplete="current-password">
-        <div class="err" id="authErr"></div>
-        <button class="dbtn primary" id="authGo">Log in</button>
-        <button class="ghost" id="authSkip">Continue without an account</button>
-        <p class="muted">Demo-grade auth. Passwords are hashed (never plaintext); your email joins the project list.</p>
-      </div>
     </div>
   </div>
 
@@ -332,8 +309,7 @@ const td = new TextDecoder(), te = new TextEncoder();
 
 // ============================ settings ============================
 const CFG_DEF = { model:"Llama-3.2-3B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
-  mode:"agent", capture:true, affect:true, ordered:true, internals:true, theme:"dark",
-  cloudAccount:false, cloud:"https://neuron-db-auth.fdvlol.workers.dev" };   // cloudAccount OFF → fully local, no worker calls
+  mode:"agent", capture:true, affect:true, ordered:true, internals:true, theme:"dark" };   // 100% local — no network config
 let CFG = Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem("nblab.cfg")||"{}"));
 const saveCfg = () => localStorage.setItem("nblab.cfg", JSON.stringify(CFG));
 function applyCfg(){
@@ -345,9 +321,6 @@ function applyCfg(){
   $("cfgK").value = CFG.recallK; $("cfgKV").textContent = CFG.recallK;
   $("cfgCapture").checked = CFG.capture; $("cfgAffect").checked = CFG.affect;
   $("cfgOrdered").checked = CFG.ordered; $("cfgInternals").checked = CFG.internals;
-  $("cfgCloud").value = CFG.cloud;
-  $("cfgCloudOn").checked = CFG.cloudAccount;
-  $("acctBtn").style.display = CFG.cloudAccount ? "" : "none";   // local by default — no account, no worker calls
   [...$("themeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.t===CFG.theme));
   [...$("modeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.m===CFG.mode));
 }
@@ -994,50 +967,9 @@ function replayAll(){
   }
 }
 
-// ============================ cloud account (the worker) ============================
-let auth = JSON.parse(localStorage.getItem("nblab.auth")||"null");
-let authMode="login";
-function renderAcct(){
-  if(auth && auth.email){
-    $("avatar").textContent=auth.email[0].toUpperCase();
-    $("acctLabel").textContent=auth.email;
-  } else { $("avatar").textContent="?"; $("acctLabel").textContent="Sign in / Register"; }
-}
-async function authApi(path, body){
-  const r=await fetch(CFG.cloud.replace(/\/$/,"")+path, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
-  return r.json().catch(()=>({error:"bad response"}));
-}
-async function doAuth(){
-  const email=$("authEmail").value.trim(), pw=$("authPw").value;
-  $("authErr").textContent="";
-  if(!email||!pw){ $("authErr").textContent="Enter an email and password."; return; }
-  $("authGo").disabled=true; $("authGo").textContent="…";
-  try{
-    const j=await authApi(authMode==="login"?"/login":"/register", {email,password:pw});
-    if(j.token){
-      auth={token:j.token,email:j.email}; localStorage.setItem("nblab.auth",JSON.stringify(auth));
-      renderAcct(); closeModals();
-      toast(authMode==="register"||j.onList ? "✓ Signed in — you're on the list" : "✓ Signed in");
-    } else { $("authErr").textContent=j.error||"Something went wrong."; }
-  }catch(e){ $("authErr").textContent="Couldn't reach the auth worker. Check the URL in Settings, or continue without an account."; }
-  $("authGo").disabled=false; $("authGo").textContent=authMode==="login"?"Log in":"Create account";
-}
-function openAuth(){
-  if(auth && auth.email){ if(confirm("Log out of "+auth.email+"?")){ auth=null; localStorage.removeItem("nblab.auth"); renderAcct(); toast("Logged out"); } return; }
-  setAuthMode("login"); $("authErr").textContent=""; document.body.classList.remove("railopen"); $("authModal").classList.add("on"); $("authEmail").focus();
-}
-function setAuthMode(m){
-  authMode=m;
-  $("tabLogin").classList.toggle("on",m==="login"); $("tabReg").classList.toggle("on",m==="register");
-  $("authTitle").textContent = m==="login"?"Welcome back":"Create your account";
-  $("authSub").textContent = m==="login"?"Sign in to save your chats and join the list.":"Register to save your chats and join the email list.";
-  $("authGo").textContent = m==="login"?"Log in":"Create account";
-  $("authPw").autocomplete = m==="login"?"current-password":"new-password";
-}
-
 // ============================ misc UI ============================
 function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("on"); setTimeout(()=>t.classList.remove("on"),2600); }
-function closeModals(){ $("authModal").classList.remove("on"); $("helpModal").classList.remove("on"); }
+function closeModals(){ $("helpModal").classList.remove("on"); }
 function closeOverlays(){ document.body.classList.remove("setopen","memopen","railopen"); closeModals(); }
 function exportChat(){
   if(!active) return;
@@ -1077,13 +1009,6 @@ $("setClose").addEventListener("click",()=>document.body.classList.remove("setop
 $("helpBtn").addEventListener("click",()=>$("helpModal").classList.add("on"));
 $("helpClose").addEventListener("click",closeModals);
 $("scrim").addEventListener("click",closeOverlays);
-$("acctBtn").addEventListener("click",openAuth);
-$("tabLogin").addEventListener("click",()=>setAuthMode("login"));
-$("tabReg").addEventListener("click",()=>setAuthMode("register"));
-$("authGo").addEventListener("click",doAuth);
-$("authPw").addEventListener("keydown",e=>{ if(e.key==="Enter") doAuth(); });
-$("authSkip").addEventListener("click",closeModals);
-$("authModal").addEventListener("click",e=>{ if(e.target.id==="authModal") closeModals(); });
 $("helpModal").addEventListener("click",e=>{ if(e.target.id==="helpModal") closeModals(); });
 // settings controls
 $("cfgTemp").addEventListener("input",e=>{ CFG.temp=+e.target.value; $("cfgTempV").textContent=CFG.temp.toFixed(2); saveCfg(); });
@@ -1093,8 +1018,6 @@ $("cfgCapture").addEventListener("change",e=>{ CFG.capture=e.target.checked; sav
 $("cfgAffect").addEventListener("change",e=>{ CFG.affect=e.target.checked; saveCfg(); });
 $("cfgOrdered").addEventListener("change",e=>{ CFG.ordered=e.target.checked; saveCfg(); });
 $("cfgInternals").addEventListener("change",e=>{ CFG.internals=e.target.checked; document.body.classList.toggle("noint",!CFG.internals); saveCfg(); });
-$("cfgCloud").addEventListener("change",e=>{ CFG.cloud=e.target.value.trim()||CFG_DEF.cloud; saveCfg(); });
-$("cfgCloudOn").addEventListener("change",e=>{ CFG.cloudAccount=e.target.checked; $("acctBtn").style.display=CFG.cloudAccount?"":"none"; saveCfg(); });
 $("themeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.theme=b.dataset.t; applyCfg(); saveCfg(); });
 $("modeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.mode=b.dataset.m; applyCfg(); saveCfg(); });
 $("model").addEventListener("change",e=>{ CFG.model=e.target.value; saveCfg(); });
@@ -1108,7 +1031,6 @@ $("wipeBtn").addEventListener("click",wipeChat);
   populateModels();
   applyCfg();
   $("sysDump").textContent=SYS+"\n\n— — — AGENT-MODE TOOL PROMPT — — —\n\n"+TOOLSYS;
-  renderAcct();
   try{
     await loadWasm();
     // load or seed chats
