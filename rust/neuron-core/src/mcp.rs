@@ -301,7 +301,8 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
 }
 
 /// Handle one JSON-RPC message; returns Some(response) for requests, None for notifications.
-fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
+/// Public so the line handler can be embedded or parity-tested without spawning the stdio loop.
+pub fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
     let method = json_field(line, "method").unwrap_or_default();
     let id = raw_id(line);
     match method.as_str() {

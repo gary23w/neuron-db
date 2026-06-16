@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>neuron-db · WASM web-call lab test</title>
+<meta name="description" content="Lab test: the neuron-db WASM module makes a real HTTP call through a host_http import, fetches a public CORS API directly (no worker), and stores the result into neuron-db memory.">
+<style>
+  :root{ --bg:#080a0f; --panel:#0f1320; --ink:#e9edf6; --mid:#9aa6bd; --dim:#6b7690; --line:#1b2233; --line2:#28324a;
+         --accent:#5eead4; --accent2:#7c9cff; --warn:#f0c453; --pink:#f472b6; --mono:ui-monospace,Menlo,Consolas,monospace; --sans:system-ui,Segoe UI,Roboto,sans-serif; }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;max-width:920px;margin-inline:auto;padding:22px 18px 60px}
+  a{color:var(--accent)} h1{font-size:21px;letter-spacing:-.02em;margin:0 0 4px} .sub{color:var(--mid);font-size:14px;margin:0 0 18px}
+  .tag{display:inline-block;font:600 11px var(--mono);color:var(--accent);background:#0b1a18;border:1px solid #14443c;border-radius:999px;padding:3px 9px;margin-bottom:10px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  input,select,button{font:14px var(--sans)}
+  input{flex:1;min-width:160px;background:#10131d;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;color:var(--ink)}
+  input:focus{outline:none;border-color:var(--accent)}
+  button{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border:none;border-radius:10px;padding:0 16px;font-weight:700;cursor:pointer}
+  button.alt{background:#10131d;color:var(--ink);border:1px solid var(--line2)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .lab{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
+  .trace{font:12px var(--mono);color:var(--mid);background:#0b0e16;border:1px solid var(--line);border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;min-height:40px;max-height:280px;overflow:auto}
+  .trace .g{color:var(--accent)} .trace .b{color:var(--accent2)} .trace .p{color:var(--pink)} .trace .w{color:var(--warn)}
+  .out{white-space:pre-wrap;word-wrap:break-word;font-size:14px}
+  .pill{display:inline-block;font:11px var(--mono);color:var(--accent);border:1px solid var(--line2);border-radius:6px;padding:1px 7px;margin:2px 4px 0 0}
+  .muted{color:var(--dim);font-size:12.5px} code{font-family:var(--mono);color:var(--accent2)}
+</style>
+</head>
+<body>
+  <span class="tag">LAB TEST · NOT THE PRODUCTION DEMO</span>
+  <h1>neuron-db WASM — making a real web call</h1>
+  <p class="sub">Proof that <code>wasm32-unknown-unknown</code> can reach the network in a browser: the WASM declares a
+  <code>host_http</code> import, the page provides it with <code>fetch</code>, and the <b>WASM owns the request</b> — it calls
+  out, the host runs the socket, the body comes back into wasm memory via <code>http_deliver</code>, and neuron-db stores it.
+  The call goes <b>straight to a public CORS API (Wikipedia), no worker, no proxy</b>.</p>
+
+  <div class="card">
+    <div class="lab">1 · the WASM fetches a topic (Wikipedia REST summary)</div>
+    <div class="row">
+      <input id="q" placeholder="a topic, e.g.  Ada Lovelace,  WebAssembly,  Halifax" value="Ada Lovelace" autocomplete="off">
+      <button id="go">WASM fetch →</button>
+    </div>
+    <div class="lab" style="margin-top:14px">host_http transport trace</div>
+    <div class="trace" id="trace">idle — the WASM hasn't called out yet.</div>
+  </div>
+
+  <div class="card">
+    <div class="lab">2 · what came back (stored into neuron-db)</div>
+    <div class="out" id="out"><span class="muted">nothing yet</span></div>
+  </div>
+
+  <div class="card">
+    <div class="lab">3 · recall it back out of neuron-db (pure WASM, no network)</div>
+    <div class="row">
+      <input id="rq" placeholder="ask about what you fetched, e.g.  who was Ada Lovelace" autocomplete="off">
+      <button class="alt" id="recallBtn">recall</button>
+    </div>
+    <div class="out" id="recallOut" style="margin-top:10px"><span class="muted">fetch something first, then recall it</span></div>
+  </div>
+
+  <p class="muted">Back to the <a href="lab.html">local lab</a> (which has <b>no</b> web calls) · <a href="index.html">site</a>.
+  This page builds <code>neuron_core_http.wasm</code> with <code>--features http</code>; the production build omits it.</p>
+
+<script type="module">
+const $=id=>document.getElementById(id);
+const td=new TextDecoder(), te=new TextEncoder();
+let EX=null, httpTok=0;
+const trace=(cls,msg)=>{ const t=$("trace"); if(t.dataset.fresh!=="1"){ t.innerHTML=""; t.dataset.fresh="1"; } t.innerHTML+=`<span class="${cls}">${msg}</span>\n`; t.scrollTop=t.scrollHeight; };
+
+// the host transport the WASM imports — this is the ONLY place a socket exists; the WASM decides WHEN to call it
+function host_http(ptr, len){
+  const url = td.decode(new Uint8Array(EX.memory.buffer, ptr, len));
+  const tok = ++httpTok;
+  trace("b", `← guest called host_http("${url.length>70?url.slice(0,70)+"…":url}")  → token ${tok}`);
+  fetch(url)
+    .then(r => { trace("g", `  host fetch ${r.status} ${r.statusText}`); return r.text(); })
+    .then(body => deliver(tok, body))
+    .catch(e => deliver(tok, "ERROR: "+(e.message||e)));
+  return tok;
+}
+function deliver(tok, body){
+  const b=te.encode(body); const p=EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b);
+  EX.http_deliver(tok, p, b.length);
+  trace("p", `→ host delivered ${b.length.toLocaleString()} bytes to the guest (token ${tok})`);
+}
+function wstr(s){ const b=te.encode(s); const p=EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
+function mem(...a){ const [p,l]=wstr(a.join("\t")); const n=EX.mem(p,l); return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function wasmFetch(url){
+  const start = mem("fetch", "_", url);            // protocol is op\tscope\targ → "_" scope, url in arg(2)
+  if(!start.startsWith("pending:")){ trace("w", `guest got "${start}" (no http transport)`); return null; }
+  const tok = start.split(":")[1];
+  trace("b", `  guest holding token ${tok}, polling fetched…`);
+  for(let i=0;i<300;i++){ const r=mem("fetched", "_", tok); if(r!=="pending"){ trace("g", `  guest read the body back from its own memory ✓`); return r; } await sleep(40); }
+  return null;
+}
+
+async function run(){
+  const topic=$("q").value.trim(); if(!topic||!EX) return;
+  $("go").disabled=true; $("trace").dataset.fresh="0"; $("trace").textContent="";
+  $("out").innerHTML='<span class="muted">the WASM is calling out…</span>';
+  const url="https://en.wikipedia.org/api/rest_v1/page/summary/"+encodeURIComponent(topic.replace(/ /g,"_"));
+  const raw=await wasmFetch(url);
+  if(!raw){ $("out").innerHTML='<span class="muted">no response</span>'; $("go").disabled=false; return; }
+  let title=topic, extract=raw;
+  try{ const j=JSON.parse(raw); title=j.title||topic; extract=j.extract||j.detail||raw; }catch{}
+  // store what the WASM fetched into neuron-db memory (so it's recallable, pure-WASM, offline)
+  const sentences=extract.split(/(?<=[.!?])\s+/).filter(s=>s.trim().length>10);
+  for(const s of sentences) mem("observe","web", title+": "+s);
+  const facts=mem("stats","web");
+  trace("g", `neuron-db stored ${facts} facts from the fetched page`);
+  $("out").innerHTML=`<b>${title}</b><br>${extract}<br><br><span class="muted">→ ${facts} facts now in neuron-db (scope “web”). Recall them below.</span>`;
+  $("rq").value="who was "+title; $("go").disabled=false;
+}
+function recall(){
+  const q=$("rq").value.trim(); if(!q||!EX) return;
+  const hits=mem("recall","web",q,"5").split("\n").filter(Boolean);
+  $("recallOut").innerHTML = hits.length ? hits.map(h=>"• "+h).join("<br>") : '<span class="muted">nothing matched — fetch a topic first</span>';
+}
+
+$("go").addEventListener("click",run);
+$("q").addEventListener("keydown",e=>{ if(e.key==="Enter") run(); });
+$("recallBtn").addEventListener("click",recall);
+$("rq").addEventListener("keydown",e=>{ if(e.key==="Enter") recall(); });
+
+(async()=>{
+  try{
+    const r=await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=1"), { env: { host_http } });
+    EX=r.instance.exports; EX.mem_reset();
+    trace("g", "neuron_core_http.wasm instantiated with the host_http import — web-call capability live.");
+  }catch(e){
+    $("trace").textContent="⚠ failed to load the http-enabled wasm: "+(e.message||e)+"\n(must be served over http(s), not file://)";
+  }
+})();
+</script>
+</body>
+</html>
