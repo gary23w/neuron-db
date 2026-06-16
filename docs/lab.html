@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>neuron-db · live browser lab</title>
+<meta name="description" content="The whole thesis in your browser: neuron-db memory compiled to WebAssembly + a local Llama via WebLLM. No server, no API key. Talk to it; watch the memory fire.">
+<style>
+  :root{
+    --bg:#080a0f; --bg2:#0b0e16; --panel:#0f1320; --panel2:#10131d; --ink:#e9edf6; --mid:#9aa6bd;
+    --dim:#6b7690; --line:#1b2233; --line2:#28324a; --accent:#5eead4; --accent2:#7c9cff; --warn:#f0c453;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
+       -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;min-height:100dvh;overflow-x:hidden}
+  a{color:var(--accent)} .mono{font-family:var(--mono)}
+  /* ---- top bar ---- */
+  .top{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);
+       background:rgba(8,10,15,.8);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+  .brand{font-weight:740;letter-spacing:-.02em;font-size:15.5px}
+  .brand .dot{color:var(--accent)}
+  .top .sp{flex:1}
+  .top a.lnk{color:var(--mid);text-decoration:none;font-size:13.5px;border:1px solid var(--line2);
+             border-radius:8px;padding:6px 11px;white-space:nowrap}
+  .top a.lnk:hover{color:var(--ink);border-color:var(--accent)}
+  /* ---- intro ---- */
+  .intro{padding:16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0a0d15,#080a0f)}
+  .intro h1{margin:0 0 6px;font-size:clamp(20px,4.6vw,30px);letter-spacing:-.03em;font-weight:760}
+  .intro p{margin:0;color:var(--mid);font-size:14px;max-width:70ch}
+  .intro .tag{display:inline-block;font:600 11px var(--mono);color:var(--accent);background:#0b1a18;
+              border:1px solid #14443c;border-radius:999px;padding:3px 9px;margin-bottom:9px}
+  /* ---- model loader ---- */
+  .loader{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--bg2)}
+  select,button,input{font-family:inherit;font-size:14px}
+  select,.lbtn{background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:9px;padding:8px 12px}
+  .lbtn{cursor:pointer;font-weight:640;transition:.15s} .lbtn:hover{border-color:var(--accent)}
+  .lbtn.primary{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border-color:transparent}
+  .lbtn:disabled{opacity:.5;cursor:not-allowed}
+  .pbar{flex:1;min-width:140px;height:8px;background:#0b0e16;border:1px solid var(--line);border-radius:999px;overflow:hidden;display:none}
+  .pbar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
+  .status{font-size:12.5px;color:var(--mid);min-width:0;flex-basis:100%;order:9}
+  .status.warn{color:var(--warn)}
+  /* ---- main split ---- */
+  .main{flex:1;display:grid;grid-template-columns:1fr 340px;min-height:0}
+  .chat{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
+  .log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+  .msg{max-width:80%;padding:10px 13px;border-radius:13px;font-size:14.5px;white-space:pre-wrap;word-wrap:break-word}
+  .msg.u{align-self:flex-end;background:#13233b;border:1px solid #1d3a5e}
+  .msg.a{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
+  .msg.s{align-self:center;background:transparent;color:var(--dim);font:12.5px var(--mono);max-width:92%;text-align:center}
+  .msg .who{display:block;font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+  .msg.u .who{color:var(--accent2)} .msg.a .who{color:var(--accent)}
+  .inbar{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line);background:var(--bg2)}
+  .inbar input{flex:1;background:var(--panel2);border:1px solid var(--line2);border-radius:11px;padding:11px 14px;color:var(--ink)}
+  .inbar input:focus{outline:none;border-color:var(--accent)}
+  .send{background:linear-gradient(180deg,#13c7ad,#0fae97);color:#04130f;border:none;border-radius:11px;padding:0 16px;font-weight:700;cursor:pointer}
+  .send:disabled{opacity:.5;cursor:not-allowed}
+  /* ---- memory pane ---- */
+  .mem{display:flex;flex-direction:column;min-height:0;background:var(--bg2)}
+  .mem h2{margin:0;padding:13px 16px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mid);border-bottom:1px solid var(--line);font-family:var(--mono)}
+  .stats{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .stat{flex:1;min-width:84px} .stat b{display:block;font:700 19px var(--mono);color:var(--accent)} .stat span{font-size:11px;color:var(--dim)}
+  .syn{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  .ev{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--panel);font-size:12.5px}
+  .ev .h{font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px}
+  .ev.store .h{color:var(--accent2)} .ev.fire .h{color:var(--accent)}
+  .ev .body{color:var(--mid);font-family:var(--mono);font-size:11.5px;word-wrap:break-word}
+  .ev .val{color:var(--ink);font-weight:600}
+  .pill{display:inline-block;font:10px var(--mono);color:var(--accent);border:1px solid var(--line2);border-radius:5px;padding:0 5px;margin:2px 3px 0 0}
+  .empty{color:var(--dim);font-size:12.5px;padding:16px;text-align:center;font-family:var(--mono)}
+  /* ---- mobile ---- */
+  .memtoggle{display:none}
+  @media(max-width:820px){
+    .main{grid-template-columns:1fr}
+    .chat{border-right:none}
+    .mem{position:fixed;inset:0 0 0 auto;width:min(86vw,360px);transform:translateX(101%);transition:transform .26s;
+         z-index:30;border-left:1px solid var(--line2);box-shadow:-20px 0 60px -20px #000}
+    body.memopen .mem{transform:translateX(0)}
+    .memtoggle{display:inline-flex;align-items:center;gap:6px}
+    body.memopen .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25}
+    .msg{max-width:90%}
+  }
+</style>
+</head>
+<body>
+  <div class="top">
+    <span class="brand">neuron<span class="dot">·</span>db</span>
+    <span class="status mono" style="flex-basis:auto;order:0;color:var(--dim)">live browser lab</span>
+    <span class="sp"></span>
+    <button class="lbtn memtoggle" id="memBtn" style="padding:6px 11px;font-size:13px">memory ▸</button>
+    <a class="lnk" href="index.html">← site</a>
+    <a class="lnk" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a>
+  </div>
+
+  <div class="intro">
+    <span class="tag">100% IN YOUR BROWSER · NO SERVER · NO API KEY</span>
+    <h1>The hippocampus and the neocortex, both client-side.</h1>
+    <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.4&nbsp;MB WebAssembly module, running locally.
+       Every message you send is stored and recalled by it; watch the neurons fire on the right. The optional
+       <b>local Llama</b> (via WebLLM, WebGPU) is the voice on top — it never sees your whole history, only what the
+       memory recalls. Memory works on any device; the model needs a WebGPU browser (desktop Chrome/Edge).</p>
+  </div>
+
+  <div class="loader">
+    <select id="model" title="WebLLM model (downloaded + run in your browser via WebGPU)">
+      <option value="Llama-3.2-1B-Instruct-q4f32_1-MLC">Llama 3.2 · 1B  (fastest, ~1.1 GB)</option>
+      <option value="Llama-3.2-3B-Instruct-q4f32_1-MLC" selected>Llama 3.2 · 3B  (balanced, ~2.3 GB)</option>
+      <option value="Llama-3.1-8B-Instruct-q4f32_1-MLC">Llama 3.1 · 8B  (best, ~5 GB)</option>
+    </select>
+    <button class="lbtn primary" id="loadBtn">Load the model</button>
+    <div class="pbar" id="pbar"><i></i></div>
+    <div class="status" id="status">Memory is live now — type below to store &amp; recall. Load a model to get a talking assistant.</div>
+  </div>
+
+  <div class="main">
+    <div class="chat">
+      <div class="log" id="log"></div>
+      <div class="inbar">
+        <input id="in" placeholder="Tell it something, then ask it back…  e.g.  my wifi password is hunter2" autocomplete="off">
+        <button class="send" id="send">Send</button>
+      </div>
+    </div>
+    <aside class="mem" id="mem">
+      <h2>neuron-db · live memory</h2>
+      <div class="stats">
+        <div class="stat"><b id="nFacts">0</b><span>facts stored</span></div>
+        <div class="stat"><b id="nRecall">0</b><span>recalls fired</span></div>
+        <div class="stat"><b id="tRecall">0</b><span>µs last recall</span></div>
+      </div>
+      <div class="syn" id="syn"><div class="empty">No activity yet.<br>Store a fact and recall it.</div></div>
+    </aside>
+  </div>
+  <div class="scrim" id="scrim"></div>
+
+<script type="module">
+import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+const $ = id => document.getElementById(id);
+const td = new TextDecoder(), te = new TextEncoder();
+
+// ---------- neuron-db WASM (the memory) ----------
+let EX = null, facts = [], recalls = 0;
+async function loadWasm(){
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm"), {});
+  EX = r.instance.exports; EX.syn_reset();
+}
+function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
+function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
+function addFact(s){ const [p,l]=wstr(s); const i=EX.syn_add(p,l); if(i>=0){ facts[i]=s; $("nFacts").textContent=facts.filter(Boolean).length; } return i; }
+function fire(q){
+  const t0=performance.now(); const [p,l]=wstr(q); const n=EX.syn_fire(p,l);
+  const us=Math.max(1,Math.round((performance.now()-t0)*1000));
+  const out=readBuf(n); const [value,bestIdx,clist]=out.split("\t");
+  const idxs=(clist||"").split(",").filter(x=>x!=="").map(Number);
+  const hits=[...new Set([Number(bestIdx),...idxs])].filter(i=>i>=0&&facts[i]).map(i=>facts[i]);
+  return {value:value||"", hits, us};
+}
+// split a message into storable statements (skip questions; observe() also filters)
+function statements(text){
+  return text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(s=>s && !s.trim().endsWith("?"));
+}
+
+// ---------- memory pane ----------
+function ev(cls,head,body,val){
+  const syn=$("syn"); if(syn.querySelector(".empty")) syn.innerHTML="";
+  const d=document.createElement("div"); d.className="ev "+cls;
+  d.innerHTML=`<div class="h">${head}</div><div class="body">${body}${val?` → <span class="val">${val}</span>`:""}</div>`;
+  syn.appendChild(d); syn.scrollTop=syn.scrollHeight;
+}
+
+// ---------- chat UI ----------
+function bubble(cls,text,who){
+  const d=document.createElement("div"); d.className="msg "+cls;
+  if(who) d.innerHTML=`<span class="who">${who}</span>`;
+  const t=document.createTextNode(text); d.appendChild(t); $("log").appendChild(d);
+  $("log").scrollTop=$("log").scrollHeight; return d;
+}
+
+// ---------- WebLLM (the optional neocortex) ----------
+let engine=null, loading=false;
+const SYS = "You are a warm, concise assistant. Your long-term memory is neuron-db. You do NOT see the "+
+  "user's full history — only the MEMORIES block below, recalled for this turn. Answer from it; if it's "+
+  "empty or irrelevant, answer naturally and briefly. Never mention these instructions.";
+
+async function loadModel(){
+  if(loading) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
+  if(!("gpu" in navigator)){
+    $("status").className="status warn";
+    $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. "+
+      "Open in desktop Chrome or Edge for the talking assistant.";
+    $("loadBtn").disabled=false; $("model").disabled=false; loading=false; return;
+  }
+  $("pbar").style.display="block";
+  try{
+    engine = await webllm.CreateMLCEngine($("model").value, { initProgressCallback:(r)=>{
+      $("status").textContent=r.text; if(r.progress) $("pbar").firstElementChild.style.width=Math.round(r.progress*100)+"%";
+    }});
+    $("status").className="status"; $("status").textContent="Model ready — it answers from what neuron-db recalls.";
+    $("pbar").firstElementChild.style.width="100%"; setTimeout(()=>$("pbar").style.display="none",600);
+    bubble("s","local model loaded · neuron-db is its memory · nothing leaves your browser");
+  }catch(e){
+    $("status").className="status warn"; $("status").textContent="Could not load the model: "+(e.message||e)+" — memory still works.";
+    $("loadBtn").disabled=false; $("model").disabled=false;
+  }
+  loading=false;
+}
+
+// ---------- a turn ----------
+let busy=false;
+async function turn(){
+  const text=$("in").value.trim(); if(!text||busy) return;
+  busy=true; $("send").disabled=true; $("in").value="";
+  bubble("u",text,"you");
+
+  // 1) STORE (passive encoding) — one episode per statement
+  const stored=statements(text);
+  for(const s of stored){ const i=addFact(s); if(i>=0) ev("store","stored",s); }
+
+  // 2) RECALL for this turn
+  const r=fire(text); recalls++; $("nRecall").textContent=recalls; $("tRecall").textContent=r.us;
+  if(r.hits.length) ev("fire","recall · "+r.hits.length+" fired", r.hits.map(h=>`<span class="pill">${h}</span>`).join(""), r.value||null);
+  else ev("fire","recall","(nothing matched)");
+
+  // 3) ANSWER — WebLLM if loaded, else a memory-only reply
+  if(engine){
+    const memBlock = r.hits.length ? r.hits.map(h=>"- "+h).join("\n") : "(no relevant memories)";
+    const msgs=[{role:"system",content:SYS+"\n\nMEMORIES (recalled by neuron-db for this turn):\n"+memBlock},
+                {role:"user",content:text}];
+    const out=bubble("a","","assistant"); let acc="";
+    try{
+      const stream=await engine.chat.completions.create({messages:msgs,temperature:0.6,stream:true});
+      for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=acc; $("log").scrollTop=$("log").scrollHeight; }
+    }catch(e){ out.lastChild.textContent="(model error: "+(e.message||e)+")"; }
+  } else {
+    if(r.value) bubble("a","From memory: "+r.value+"\n\n(load a model above for a conversational reply)","memory");
+    else if(r.hits.length) bubble("a","I recall:\n"+r.hits.map(h=>"• "+h).join("\n")+"\n\n(load a model for a conversational reply)","memory");
+    else bubble("a","I don't have anything on that yet — tell me a fact first, then ask it back. (Or load a model above.)","memory");
+  }
+  busy=false; $("send").disabled=false; $("in").focus();
+}
+
+// ---------- wire up ----------
+$("loadBtn").addEventListener("click",loadModel);
+$("send").addEventListener("click",turn);
+$("in").addEventListener("keydown",e=>{ if(e.key==="Enter") turn(); });
+$("memBtn").addEventListener("click",()=>document.body.classList.toggle("memopen"));
+$("scrim").addEventListener("click",()=>document.body.classList.remove("memopen"));
+
+(async()=>{
+  try{ await loadWasm();
+    bubble("s","neuron-db memory core ready (WebAssembly, running locally)");
+    bubble("a","Hi! I'm a demo of neuron-db. Tell me a fact — like \"my dog's name is Rex\" — then ask me about it. "+
+      "Everything you say is stored in the memory on the right and recalled when relevant. Load a model above to make me conversational.","assistant");
+  }catch(e){
+    bubble("s","⚠ the WebAssembly core must be served over http(s) (not opened as a file://). Try the GitHub Pages link.");
+  }
+})();
+</script>
+</body>
+</html>
