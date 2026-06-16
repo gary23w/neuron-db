@@ -405,6 +405,18 @@ function recallChain(start,path){ const r=mem("chain",SCOPE,start,...(path||[]))
 const WCODE={0:"clear sky",1:"mainly clear",2:"partly cloudy",3:"overcast",45:"fog",48:"rime fog",51:"light drizzle",53:"drizzle",55:"heavy drizzle",61:"light rain",63:"rain",65:"heavy rain",66:"freezing rain",71:"light snow",73:"snow",75:"heavy snow",77:"snow grains",80:"light showers",81:"showers",82:"violent showers",85:"snow showers",95:"thunderstorm",96:"thunderstorm w/ hail",99:"severe thunderstorm"};
 const jget=async u=>{ try{ return JSON.parse((await wasmFetch(u))||"null"); }catch{ return null; } };
 async function webSearch(query){
+  const dehtml=s=>String(s||"").replace(/<[^>]+>/g,"").replace(/&quot;/g,'"').replace(/&amp;/g,"&").replace(/&#?\w+;/g,"").replace(/\s+/g," ").trim();
+  // news intent -> Hacker News (live, dated) + Wikinews (real articles) — both CORS-open, keyless
+  if(/\b(news|headlines?|breaking|current events|happening|going on)\b/i.test(query)){
+    const topic=(query.replace(/\b(news|headlines?|breaking|current events|happening|going on|the|latest|recent|today'?s?|me|some|find|get|whats|what'?s|in|about|on|for|please)\b/ig,"").replace(/[^a-z0-9 .'\-]/ig," ").replace(/\s+/g," ").trim())||query;
+    const nf=[];
+    const hn=await jget("https://hn.algolia.com/api/v1/search?tags=story&hitsPerPage=5&query="+encodeURIComponent(topic));
+    if(hn&&hn.hits) for(const h of hn.hits){ if(h.title) nf.push("[Hacker News"+(h.created_at?", "+h.created_at.slice(0,10):"")+"] "+h.title+(h.url?" — "+h.url:"")); }
+    const wn=await jget("https://en.wikinews.org/w/api.php?action=query&list=search&srlimit=5&format=json&origin=*&srsearch="+encodeURIComponent(topic));
+    const wns=wn&&wn.query&&wn.query.search;
+    if(wns) for(const s of wns){ nf.push("[Wikinews"+(s.timestamp?", "+s.timestamp.slice(0,10):"")+"] "+s.title+": "+dehtml(s.snippet)); }
+    if(nf.length) return {provider:[hn&&hn.hits&&hn.hits.length?"Hacker News":"", wns&&wns.length?"Wikinews":""].filter(Boolean).join(" + "), facts:nf.slice(0,8)};
+  }
   // weather intent -> open-meteo (geocode then current conditions)
   if(/\b(weather|rain|raining|temperature|forecast|snow|snowing|how (hot|cold)|degrees|sunny|cloudy)\b/i.test(query)){
     let place=(query.match(/\b(?:in|at|for)\s+(.+)$/i)||[])[1] || query;
@@ -420,7 +432,6 @@ async function webSearch(query){
     for(const t of (d.RelatedTopics||[])){ if(facts.length>=6) break; if(t.Text&&t.FirstURL) facts.push(t.Text); else if(t.Topics) for(const s of t.Topics){ if(facts.length>=6) break; if(s.Text) facts.push(s.Text); } } }
   if(facts.length) return {provider:"DuckDuckGo", facts};
   // fallback -> Wikipedia FULL-TEXT search (returns relevant snippets for ANY query string), enrich the top hit
-  const dehtml=s=>String(s||"").replace(/<[^>]+>/g,"").replace(/&quot;/g,'"').replace(/&amp;/g,"&").replace(/&#?\w+;/g,"").replace(/\s+/g," ").trim();
   const ws=await jget("https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=4&format=json&origin=*&srsearch="+encodeURIComponent(query));
   const srh=ws&&ws.query&&ws.query.search;
   if(srh&&srh.length){
