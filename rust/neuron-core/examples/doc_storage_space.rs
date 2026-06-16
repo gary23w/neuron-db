@@ -3,7 +3,9 @@
 //!   1. SQLite store    — the sentence text (~text size, linear)
 //!   2. semantic space  — context vectors, SHARED across docs, vocabulary-bound
 //!   3. embedding cache — int8 fuzzy-recall vectors, lazily ~400 B per recalled fact
+//!
 //! Then compact_semantic() int8-quantizes the space to show the read-mostly serving footprint.
+//!
 //! Run: cargo run --release --features "sqlite semantic" --example doc_storage_space
 use neuron_core::db::NeuronDB;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};

@@ -365,7 +365,7 @@ Reproduce: `python examples/mcp-chat/bench_compare.py --sizes 1000,6000 --chain`
 
 ## 9. Status
 
-- **131/131 tests pass** (`--features "sqlite secure server mcp semantic"`), 0 warnings on the
+- **133/133 tests pass** (`--features "sqlite secure server mcp semantic"`), 0 warnings on the
   full and wasm32 builds.
 - 3 original issues fixed (UTF-8 panic, arithmetic `?`, stemming false positives), plus a later
   adversarial-testing round (§10); recall hot path + index made ~4× / O(1)-incremental (§8).
@@ -409,3 +409,31 @@ over 2.4× the facts), while exact recall via the inverted index stays scope-ind
 `note` (`fact`/`user`/`instruction`/`var`) + `recall_var`; semantic demoted to an opt-in ranking
 signal; int8 quantization; opt-in write-behind (`NEURON_FLUSH_EVERY`); allocation-free `load()` and
 index-on-load. Verified live with `gpt-4o-mini`, `o4-mini`, and `o3` driving the MCP tools.
+
+## 11. Latest run — 2026-06-15 (release)
+
+- **Unit suite: 133 tests, 0 failures.**
+
+**vs dense vectors (head-to-head, full table in `docs/guide/VS_VECTORS.md`).** On one frozen dataset
+fed identically to both engines:
+
+| | neuron-db (lexical) | hosted `text-embedding-3-small` (1536-d) |
+|---|---|---|
+| recall latency p50 | **13.8 µs** | **320 ms end-to-end (~23,000× slower)** |
+| footprint | ~48 B/fact structural | **6,144 B/fact** |
+| accuracy (incl. paraphrase) | lexical misses zero-shot paraphrase | **100% on every class** |
+
+The hosted embedder is **accuracy-complete** (100% across classes including paraphrase), so neuron-db
+does **not** win on accuracy. Its win is **structural — latency (~23,000×), footprint (~20–128×),
+ingest, and zero infrastructure** — because it never embeds. Stated honestly: a strong hosted embedder
+matches or beats neuron-db on recall accuracy; neuron-db wins everywhere else.
+
+**MCP round-trip.** A full stdio round-trip is **~0.5–0.75 ms** (the store itself is microseconds).
+The model call dominates every turn — the MCP transport is never the bottleneck. A lab-side
+agentic-loop fix (default low reasoning_effort for tool-selection round-trips + a hop cap) sped up
+reasoning tool-calling **~48%**; that is a harness finding, not an MCP cost.
+
+**Book-scale (single public-domain book).** A ~64k-word book → **3,381 facts** ingests in **~3.6 s
+(~940 facts/s)**. Lexical recall stays **~0.1–0.24 ms**, returning a top-k block (the book never enters
+the model's context). A pure-paraphrase *miss* falls to the semantic scan at **~29 ms**, bounded by the
+4,000-fact fallback cap. Footprint **~5 MB**, dominated by the learned semantic space.

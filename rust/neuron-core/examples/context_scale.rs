@@ -4,6 +4,7 @@
 //!   - broad-cue recall  (word shared by all) -> the O(N) limiter
 //!   - recall_many(k)    -> the block actually injected per turn (must stay flat as N grows)
 //!   - index (re)build cost on growth, and serialized store size
+//!
 //! Run: cargo run --release --example context_scale
 use neuron_core::Neuron;
 use std::time::Instant;

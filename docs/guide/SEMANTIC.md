@@ -81,6 +81,21 @@ costs ~90 ms over 29k facts. That's the headline provisioning finding: fuzzy rec
 **embedding cache + an approximate-nearest-neighbour index** to stay fast at book scale; the
 lexical path already is. In normal per-entity use (small scopes) the fallback is sub-ms.
 
+### Single-book scale (latest measured run)
+
+One full public-domain book (**~64k words → 3,381 facts**) ingests in **~3.6 s (~940 facts/s)**.
+
+| path | latency |
+|---|---|
+| lexical recall (top-k block) | **~0.1–0.24 ms** |
+| semantic fallback (pure-paraphrase miss) | **~29 ms** |
+| footprint | **~5 MB** (dominated by the learned semantic space) |
+
+The book never enters the model's context — recall returns only a top-k block. The miss-path is now
+**bounded by the 4,000-fact fallback cap**, which is what keeps the semantic scan at ~29 ms instead of
+the unbounded O(N) growth the 5-book run above shows. Same shape: lexical is sub-millisecond, the
+fallback is the cost, and capping it keeps a miss flat as a scope grows.
+
 ### The semantic space actually learned meaning
 
 Nearest words, learned **only** from the books (no external model):

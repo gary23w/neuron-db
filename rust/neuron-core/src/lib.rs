@@ -388,7 +388,7 @@ impl Neuron {
                 .min().unwrap_or(9999);
             scored.push(((exact, ov as i64, spec, -first_cue), i));
         }
-        scored.sort_by(|a,b| b.0.cmp(&a.0));
+        scored.sort_by_key(|e| std::cmp::Reverse(e.0));
         scored.truncate(k);
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let out: Vec<Recall> = scored.into_iter().map(|(sc,i)| {
@@ -482,7 +482,7 @@ impl Neuron {
                 .filter(|(_, w)| in_q(w)).map(|(p, _)| p as i64).min().unwrap_or(9999);
             scored.push(((ov, spec, -first_pos, i as i64), i));
         }
-        scored.sort_by(|a,b| b.0.cmp(&a.0));
+        scored.sort_by_key(|e| std::cmp::Reverse(e.0));
         scored.truncate(k);
         scored.into_iter().map(|(sc, i)| {
             let e = &self.episodes[i];

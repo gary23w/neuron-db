@@ -14,6 +14,9 @@ neuron --db app.db get  me 'what plan am i on?'      # -> pro
 
 ▶ **[Watch the synapse fire in 3D](https://gary23w.github.io/neuron-db/demos/synapse-3d.html)** — the real Rust core, in your browser.
 
+▶ **Try it in your browser — no server, no key.** A fully client-side lab runs a WebLLM model with
+neuron-db compiled to WASM as its memory, so the whole loop (recall + a real model) runs locally.
+
 ## LLM memory: link infinite neurons, at flat cost
 
 An LLM's context window is small; neuron-db is the memory that lives *outside* it. A
