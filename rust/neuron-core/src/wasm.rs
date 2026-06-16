@@ -143,9 +143,14 @@ struct MemDB {
     scopes: HashMap<String, Neuron>,
     vars: HashMap<String, HashMap<String, String>>,
     instrs: HashMap<String, Vec<String>>,
+    moods: HashMap<String, String>,
+    stances: HashMap<String, Vec<(String, String, f32)>>,   // scope -> [(topic, feeling, strength)]
 }
 impl MemDB {
-    fn new() -> Self { MemDB { scopes: HashMap::new(), vars: HashMap::new(), instrs: HashMap::new() } }
+    fn new() -> Self {
+        MemDB { scopes: HashMap::new(), vars: HashMap::new(), instrs: HashMap::new(),
+                moods: HashMap::new(), stances: HashMap::new() }
+    }
     fn n(&mut self, scope: &str) -> &mut Neuron {
         self.scopes.entry(scope.to_string()).or_insert_with(|| Neuron::new(1_000_000))
     }
@@ -189,6 +194,52 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         "instrs" => db.instrs.get(&scope).map(|v| v.join("\n")).unwrap_or_default(),
         "forget" => db.n(&scope).forget_prefix(arg(2)).to_string(),
         "stats" => db.scopes.get(&scope).map(|n| n.fact_count()).unwrap_or(0).to_string(),
+        // --- affective layer: a transient mood + accumulating, decaying stances + the humanize basis ---
+        "feel" => {
+            let e = arg(2).trim();
+            if e.is_empty() { db.moods.remove(&scope); } else { db.moods.insert(scope.clone(), e.to_string()); }
+            "ok".into()
+        }
+        "stance" => {
+            let topic = arg(2).trim().to_lowercase();
+            let feeling = arg(3).trim().to_string();
+            let v = db.stances.entry(scope.clone()).or_default();
+            for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * 0.9).max(0.5); } }   // neglected views fade
+            match v.iter_mut().find(|s| s.0 == topic) {
+                Some(s) => { s.2 += 1.0; s.1 = feeling; format!("{:.0}", s.2) }
+                None => { v.push((topic, feeling, 1.0)); "1".into() }
+            }
+        }
+        "humanize" => {
+            let topic = arg(2).trim().to_lowercase();   // optional: bias toward the asked-about topic's stance
+            let mut out = String::from("You are NOT a neutral assistant — you have genuine opinions and feelings, and they show in how you write.");
+            if let Some(m) = db.moods.get(&scope) {
+                out.push_str(&format!(" Right now you feel {}; let it drive your tone, energy and word choice.", m));
+            }
+            let pick = db.stances.get(&scope).and_then(|v| {
+                if !topic.is_empty() {
+                    if let Some(s) = v.iter().find(|s| topic.contains(&s.0) || s.0.contains(&topic)) { return Some(s); }
+                }
+                v.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            if let Some(s) = pick {
+                let asked = !topic.is_empty() && (topic.contains(&s.0) || s.0.contains(&topic));
+                if s.2 >= 1.5 || asked {   // express a hardened view always; a budding one only when asked about it
+                    out.push_str(&format!(" You hold a real opinion, built up over time, about {} (intensity x{}): \"{}\" — let it bias how you react to anything related.", s.0, s.2 as i64, s.1));
+                }
+            }
+            out
+        }
+        "mood" => db.moods.get(&scope).cloned().unwrap_or_default(),
+        "topstance" => db.stances.get(&scope)
+            .and_then(|v| v.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)))
+            .map(|s| format!("{}\t{}\t{:.0}", s.0, s.1, s.2)).unwrap_or_default(),
+        "stanceof" => {
+            let topic = arg(2).trim().to_lowercase();
+            db.stances.get(&scope)
+                .and_then(|v| v.iter().find(|s| topic.contains(&s.0) || s.0.contains(&topic)))
+                .map(|s| format!("{}\t{}\t{:.0}", s.0, s.1, s.2)).unwrap_or_default()
+        }
         _ => String::new(),
     };
     put(&out)
