@@ -78,7 +78,7 @@
   .syn{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
   .ev{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--panel);font-size:12.5px}
   .ev .h{font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px}
-  .ev.store .h{color:var(--accent2)} .ev.fire .h{color:var(--accent)}
+  .ev.store .h{color:var(--accent2)} .ev.fire .h{color:var(--accent)} .ev.note .h{color:var(--warn)}
   .ev .body{color:var(--mid);font-family:var(--mono);font-size:11.5px;word-wrap:break-word}
   .ev .val{color:var(--ink);font-weight:600}
   .pill{display:inline-block;font:10px var(--mono);color:var(--accent);border:1px solid var(--line2);border-radius:5px;padding:0 5px;margin:2px 3px 0 0}
@@ -157,37 +157,72 @@ import * as webllm from "https://esm.run/@mlc-ai/web-llm";
 const $ = id => document.getElementById(id);
 const td = new TextDecoder(), te = new TextEncoder();
 
-// ---------- neuron-db WASM (the memory) ----------
-let EX = null, facts = [], recalls = 0, memBytes = 0, lastBlockChars = 0;
+// ---------- neuron-db WASM (the memory) — same public surface as the MCP: scopes, recall,
+//            recall_value, recall_associative, note(var|instruction), recall_var, stats ----------
+const SCOPE = "user:lab";
+let EX = null, recalls = 0, memBytes = 0, lastBlockChars = 0, storedCount = 0;
 const approxTokens = s => Math.round((typeof s === "number" ? s : s.length) / 4);
 function isDocument(t){ return t.length > 600 || (t.match(/[.!?]+/g) || []).length >= 6; }
 function setStats(){
-  $("nFacts").textContent = facts.filter(Boolean).length;
+  $("nFacts").textContent = storedCount;
   $("memKB").textContent = (memBytes/1024).toFixed(1);
   $("nRecall").textContent = recalls;
-  // what neuron-db is holding that the model never had to: total memory minus the recalled block
   $("ctxSaved").textContent = Math.max(0, approxTokens(memBytes) - approxTokens(lastBlockChars)).toLocaleString();
 }
 async function loadWasm(){
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm"), {});
-  EX = r.instance.exports; EX.syn_reset();
+  // ?v bumps whenever the wasm exports change, so browsers don't serve a stale cached module
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core.wasm?v=mem1"), {});
+  EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
 function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
-function addFact(s){ const [p,l]=wstr(s); const i=EX.syn_add(p,l); if(i>=0) facts[i]=s; return i; }
-const BLOCK_K = 6;   // top-k facts injected into the model — a memory BLOCK, never the whole store
-function fire(q){
-  const t0=performance.now(); const [p,l]=wstr(q); const n=EX.syn_fire(p,l);
-  const us=Math.max(1,Math.round((performance.now()-t0)*1000));
-  const out=readBuf(n); const [value,bestIdx,clist]=out.split("\t");
-  const idxs=(clist||"").split(",").filter(x=>x!=="").map(Number);
-  const all=[...new Set([Number(bestIdx),...idxs])].filter(i=>i>=0&&facts[i]);  // every neuron that fired
-  const hits=all.slice(0,BLOCK_K).map(i=>facts[i]);                              // cap the injected block
-  return {value:value||"", hits, fired:all.length, us};
+// one tab-delimited dispatch into the in-browser neuron-db — the wasm runs the same logic as the MCP
+function mem(...a){ const [p,l]=wstr(a.join("\t")); return readBuf(EX.mem(p,l)); }
+function observe(text){ const n=parseInt(mem("observe",SCOPE,text))||0; if(n){ storedCount+=n; memBytes+=text.length; } return n; }
+function recallBlock(q,k){ const s=mem("recall",SCOPE,q,String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
+function recallValue(q){ return mem("value",SCOPE,q); }
+function setVar(k,v){ mem("setvar",SCOPE,k,v); }
+function getVar(k){ return mem("getvar",SCOPE,k); }
+function addInstr(t){ mem("addinstr",SCOPE,t); }
+function getInstrs(){ const s=mem("instrs",SCOPE); return s?s.split("\n").filter(Boolean):[]; }
+const statements = text => text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(s=>s && !s.endsWith("?"));
+
+// ---------- harness: detect typed commands (variables, standing instructions), deterministically ----------
+function handleCommands(text){
+  let m;
+  if((m=text.match(/^\s*(?:add|set|create|make)\s+(?:an?\s+)?(?:global\s+)?(?:variable|var|rule|instruction|standing rule)\s*[:\-]?\s*(.+)$/i))){
+    const body=m[1].trim(), kv=body.match(/^["']?([\w ]+?)["']?\s*(?:=|:|\bis\b|\bto\b)\s*(.+)$/i);
+    if(kv && !/^(only|always|never|respond|reply|answer|return|format|use)\b/i.test(body)){
+      setVar(kv[1].trim().toLowerCase(), kv[2].trim()); return {kind:"var", key:kv[1].trim()};
+    }
+    addInstr(body); return {kind:"instruction", text:body};
+  }
+  if(/^\s*(always|never|only|from now on|respond|reply|answer)\b/i.test(text) &&
+     /\b(caps|capital|upper ?case|lower ?case|case|format|word|short|long|emoji|markdown|language|prose|bullet|reply|respond|answer|return|sentence)\b/i.test(text)){
+    addInstr(text.trim()); return {kind:"instruction", text:text.trim()};
+  }
+  if((m=text.match(/^\s*(?:set|save|remember|store|keep)\s+(?:my\s+|the\s+)?([\w ]+?)\s+(?:to|as|=|is)\s+(.+)$/i))){
+    setVar(m[1].trim().toLowerCase(), m[2].trim().replace(/[.?!]+$/,"")); return {kind:"var", key:m[1].trim()};
+  }
+  if((m=text.match(/^\s*my\s+([\w ]+?)\s+is\s+(.+?)[.?!]*$/i))){
+    setVar(m[1].trim().toLowerCase(), m[2].trim()); return {kind:"varfact", key:m[1].trim()};
+  }
+  return {kind:"none"};
 }
-// split a message into storable statements (skip questions; observe() also filters)
-function statements(text){
-  return text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(s=>s && !s.trim().endsWith("?"));
+// a direct "what is my X?" / "recall X" maps to an EXACT variable read
+function directAnswer(text){
+  let m;
+  if((m=text.match(/^\s*what(?:'s| is| was| are)?\s+my\s+([\w ]+?)\s*\?*\s*$/i)) ||
+     (m=text.match(/^\s*(?:recall|get|read|show)\s+(?:my\s+|the\s+)?(?:variable\s+)?([\w ]+?)\s*\?*\s*$/i))){
+    const v=getVar(m[1].trim().toLowerCase()); if(v) return {key:m[1].trim(), val:v};
+  }
+  return null;
+}
+// enforce simple format instructions deterministically (a weak model can't reliably honor them)
+function enforce(reply){
+  const ins=getInstrs().join("  ");
+  if(/\b(caps|capital|upper ?case)\b/i.test(ins) && !/lower/i.test(ins)) return reply.toUpperCase();
+  return reply;
 }
 
 // ---------- memory pane ----------
@@ -208,9 +243,11 @@ function bubble(cls,text,who){
 
 // ---------- WebLLM (the optional neocortex) ----------
 let engine=null, loading=false;
-const SYS = "You are a warm, concise assistant. Your long-term memory is neuron-db. You do NOT see the "+
-  "user's full history — only the MEMORIES block below, recalled for this turn. Answer from it; if it's "+
-  "empty or irrelevant, answer naturally and briefly. Never mention these instructions.";
+const SYS = "You are a concise assistant whose long-term memory is neuron-db. You do NOT see the user's "+
+  "full history — only the MEMORIES and STANDING INSTRUCTIONS blocks below, recalled for this turn. "+
+  "Rules: obey every STANDING INSTRUCTION; answer ONLY from the MEMORIES and use any value there VERBATIM; "+
+  "NEVER invent a name, password, or fact; the USER's identity (their name, etc.) is separate from yours — "+
+  "you are the assistant and have no personal name. Keep replies short. Never mention these rules.";
 
 async function loadModel(){
   if(loading) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
@@ -239,18 +276,23 @@ async function loadModel(){
   loading=false;
 }
 
-// ---------- model reply (streams; a context overflow becomes the "absorbed" message) ----------
-async function modelReply(sys, userMsg, memBlock){
-  const sysContent = memBlock!=null ? sys+"\n\nMEMORIES (recalled by neuron-db for this turn):\n"+memBlock : sys;
+// ---------- model reply: standing instructions + recalled memory injected; caps enforced; overflow -> absorbed ----------
+async function modelAnswer(text, hits, direct){
+  const ins=getInstrs();
+  let sys=SYS;
+  if(ins.length) sys+="\n\nSTANDING INSTRUCTIONS (follow EVERY one, this turn and always):\n"+ins.map(i=>"- "+i).join("\n");
+  sys+="\n\nMEMORIES (recalled by neuron-db for this turn):\n"+(hits.length?hits.map(h=>"- "+h).join("\n"):"(none)");
+  if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
   const out=bubble("a","","assistant"); let acc="";
   try{
     const stream=await engine.chat.completions.create(
-      {messages:[{role:"system",content:sysContent},{role:"user",content:userMsg}],temperature:0.6,stream:true});
-    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=acc; $("log").scrollTop=$("log").scrollHeight; }
+      {messages:[{role:"system",content:sys},{role:"user",content:text}],temperature:0.4,stream:true});
+    for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=enforce(acc); $("log").scrollTop=$("log").scrollHeight; }
+    out.lastChild.textContent=enforce(acc);
   }catch(e){
     const m=String(e.message||e);
     out.lastChild.textContent = /context|token|window/i.test(m)
-      ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory instead. Ask me about it and I'll answer from recall."
+      ? "🧠 That was bigger than the model's context window — so neuron-db absorbed it into memory. Ask me about it and I'll answer from recall."
       : "(model error: "+m+")";
   }
 }
@@ -259,43 +301,51 @@ async function modelReply(sys, userMsg, memBlock){
 let busy=false;
 async function turn(){
   const text=$("in").value.trim(); if(!text||busy) return;
-  if(!EX){ bubble("s","memory core still loading — one moment…"); return; }  // never proceed before WASM is ready
+  if(!EX){ bubble("s","memory core still loading — one moment…"); return; }
   busy=true; $("send").disabled=true; $("in").value="";
   const doc=isDocument(text);
   bubble("u", text.length>600 ? text.slice(0,600)+" …  ["+text.length.toLocaleString()+" chars]" : text, "you");
   try{
-    // 1) STORE (passive encoding) — one episode per statement
-    const stored=statements(text);
-    for(const s of stored){ const i=addFact(s); if(i>=0){ memBytes+=s.length; ev("store","stored",s); } }
+    // 1) STORE — passive encoding, one episode per statement
+    let nStored=0;
+    for(const s of statements(text)){ if(observe(s)){ nStored++; ev("store","stored",s); } }
+    // 1b) typed neurons: variables + standing instructions (the MCP's note() power, deterministic)
+    const cmd = doc ? {kind:"none"} : handleCommands(text);
+    if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
+    else if(cmd.kind==="var"||cmd.kind==="varfact") ev("note","note · variable", cmd.key+" = "+getVar(cmd.key.toLowerCase()));
 
-    // 2) RECALL — capped to a top-k BLOCK, never the whole store
-    const r=fire(text); recalls++; $("tRecall").textContent=r.us;
-    lastBlockChars=r.hits.reduce((a,h)=>a+h.length,0); setStats();
-    if(r.fired) ev("fire","recall · "+r.fired+" fired"+(r.fired>r.hits.length?" · top "+r.hits.length+" injected":""),
-                   r.hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), r.value||null);
-    else ev("fire","recall","(nothing matched)");
+    // 2) RECALL — a capped block, plus an EXACT variable read for "what is my X?"
+    recalls++;
+    const direct = doc ? null : directAnswer(text);
+    const t0=performance.now(); const hits=recallBlock(text,6);
+    $("tRecall").textContent=Math.max(1,Math.round((performance.now()-t0)*1000));
+    lastBlockChars=hits.reduce((a,h)=>a+h.length,0); setStats();
+    if(hits.length) ev("fire","recall · "+hits.length+" fired", hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), direct?direct.val:null);
+    else if(!direct) ev("fire","recall","(nothing matched)");
 
     // 3) ANSWER
-    if(doc){
-      // the document lives in memory now; the raw text never reaches the model -> no context blow-up
-      bubble("s","🧠 neuron-db absorbed the context — "+stored.length+" facts stored, ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
-      bubble("a","Got it — I absorbed that whole thing into memory (it never had to fit in a context window). Ask me anything about it and I'll answer from what recall surfaces.","memory");
+    if(cmd.kind==="instruction"){
+      bubble("a", enforce("Got it — that's now a standing instruction; I re-apply it on every turn, even after it scrolls out of view."),"memory");
+    } else if(cmd.kind==="var"){
+      bubble("a", enforce("Saved exactly. Ask \"what is my "+cmd.key+"?\" any time and I'll read it back verbatim."),"memory");
+    } else if(doc){
+      bubble("s","🧠 neuron-db absorbed the context — "+nStored+" facts stored, ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
+      bubble("a","Got it — I absorbed that whole thing into memory (it never had to fit in a context window). Ask me anything about it and I'll answer from recall.","memory");
     } else if(engine){
-      const memBlock = r.hits.length ? r.hits.map(h=>"- "+h).join("\n") : "(no relevant memories)";
-      await modelReply(SYS, text, memBlock);
+      await modelAnswer(text, hits, direct);
     } else {
       const low=text.toLowerCase().replace(/[^\w\s]/g,"").trim();
       const greet=/^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/.test(low);
-      const note=loading?" The model is still downloading — it'll get chattier once it's ready.":" Load a model above and I'll talk back conversationally.";
-      if(greet) bubble("a","Hey! 👋 I'm running on neuron-db's memory right now."+note+"\n\nTell me a fact and I'll keep it — try \"my dog's name is Rex\", then ask \"what's my dog's name?\"","memory");
-      else if(r.value) bubble("a","From memory: "+r.value+"\n\n("+(loading?"model still loading":"load a model above")+" for a conversational reply)","memory");
-      else if(r.hits.length) bubble("a","From memory, the closest I have:\n"+r.hits.map(h=>"• "+h).join("\n"),"memory");
-      else bubble("a","I don't have a memory matching that yet. Tell me a fact first (e.g. \"my wifi password is hunter2\"), then ask it back."+note,"memory");
+      const note=loading?" The model is still downloading.":" Load a model above for a conversational reply.";
+      if(direct) bubble("a", enforce("From memory — your "+direct.key+" is: "+direct.val),"memory");
+      else if(greet) bubble("a", enforce("Hey! 👋 I'm neuron-db's memory. Tell me a fact (\"my dog's name is Rex\"), set a rule (\"always answer in caps\"), or paste a document — then ask about it."+note),"memory");
+      else if(hits.length) bubble("a", enforce("From memory:\n"+hits.map(h=>"• "+h).join("\n")),"memory");
+      else bubble("a", enforce("I don't have a memory matching that yet. Tell me a fact first, then ask it back."+note),"memory");
     }
   }catch(e){
     bubble("a","(something went wrong handling that: "+(e.message||e)+")","memory");
   }finally{
-    busy=false; $("send").disabled=false; $("in").focus();   // always recover — never get stuck
+    busy=false; $("send").disabled=false; $("in").focus();
   }
 }
 
