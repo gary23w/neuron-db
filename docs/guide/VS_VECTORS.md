@@ -72,15 +72,15 @@ identifiers — which a vector store cannot do; it retrieves a fact, then an LLM
 |---|---|---|---|
 | neuron-db lexical | **13.8 µs** | 330.9 µs | in-process: stem → inverted-index → score the episodes that share a cue |
 | neuron-db blended | 86.2 µs | 92.1 µs | adds the int8 semantic re-rank over the lit candidates |
-| dense vectors (end-to-end) | 5.1 ms | 6.4 ms | **query forward-pass + cosine** — the production cost |
-| dense vectors (search only) | 0.02 ms | 0.03 ms | cosine alone, embed excluded |
+| dense vectors — local (end-to-end) | 5.1 ms | 6.4 ms | local MiniLM forward-pass + cosine (network-free floor) |
+| **dense vectors — hosted (end-to-end)** | **320 ms** | **457 ms** | **`text-embedding-3-small` query-embed RTT + cosine — measured, the real production cost** |
+| dense vectors (search only) | 0.02–11 ms | — | cosine alone, embed excluded |
 
-**neuron-db is ~373× faster end-to-end at the median (13.8 µs vs 5.1 ms)** — and that 5.1 ms is the
-*network-free* floor of a tiny local model. A hosted embedding API adds 50–150 ms RTT per query, which
-would push the gap to ~1,000–10,000×. The cosine loop itself is fast (0.02 ms); **the decisive,
-intrinsic vector cost is that a vector query must first turn the text into a vector at all.** neuron-db
-never embeds, so it skips that step entirely. (Both search steps are in-process here; the honest basis
-of the win is the embed step, not the cosine.)
+**neuron-db is ~373× faster than a *local* embedder and ~23,000× faster than a *hosted* one at the
+median (13.8 µs vs 320 ms measured).** The hosted query-embed round-trip — the unavoidable "turn the
+text into a vector first" step — was measured at **320 ms p50**, even worse than the 50–150 ms I'd
+projected. The cosine loop itself is cheap; **the decisive, intrinsic vector cost is that a vector
+query must embed at all.** neuron-db never embeds, so it skips that step entirely.
 
 ## Footprint
 
@@ -128,9 +128,14 @@ written.
 - Single machine, N=236, one run. Selective-recall scaling to ~flat µs at 1M facts is measured
   separately in `BENCHMARKS.md` (not re-run here); neuron-db's broad-cue worst case (a stem in every
   fact) is O(matches)=O(N) and is **not** the selective number.
-- The dense baseline is a *local* 384-d model; a hosted 1536-d API would be slower (RTT) and larger
-  (4×) but may score higher on paraphrase. The hosted run was not performed (no available API key);
-  hosted latency/footprint above are arithmetic + the well-known RTT, labeled as projections.
+- Two dense baselines were run: a *local* 384-d model (MiniLM) and the *hosted* 1536-d
+  `text-embedding-3-small` (now **measured**, not projected: 320 ms p50 end-to-end, 6144 B/fact).
+  **Important honesty correction:** the hosted model scores **100% on every class — including
+  paraphrase**, so neuron-db does **not** beat a good hosted embedder on *accuracy*. The "neuron-db
+  edges vectors on exact/distractor precision" note above held against the *small local* model
+  (94/93%); the hosted model ties those at 100% and wins paraphrase outright. neuron-db's durable,
+  structural advantage is **latency (~23,000×), footprint (~20–128×), ingest, and zero infra** — not
+  recall accuracy. That is the honest shape of the win.
 - The blended paraphrase win depends on the background corpus (disclosed above).
 - Paraphrase queries were authored without reading the synonym table, so the lexical path got no
   unfair alias coverage.
