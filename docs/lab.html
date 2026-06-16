@@ -271,10 +271,10 @@
       <button class="dbtn danger" id="wipeBtn" style="margin-top:8px">Wipe this chat's memory</button>
     </div>
     <div class="sect">
-      <div class="lab">Cloud account (optional)</div>
-      <div class="row"><label>Auth worker URL</label></div>
+      <div class="lab">Cloud account (optional · off = fully local)</div>
+      <div class="row"><label>Enable cloud account <span class="hint">— calls a worker; off keeps the lab 100% local</span></label><span class="sw"><input type="checkbox" id="cfgCloudOn"><span class="tr"></span></span></div>
       <input type="text" id="cfgCloud" placeholder="https://…workers.dev">
-      <div class="status">Logging in saves you to the email list. neuron-db runs on the worker too (KV-backed, PBKDF2 passwords).</div>
+      <div class="status">Off by default: the lab runs entirely in your browser and never calls a server. Turn this on only if you want an account + email list (routes to the worker).</div>
     </div>
     <div class="sect">
       <details class="sys"><summary>Reveal the system prompt</summary><pre id="sysDump"></pre></details>
@@ -313,10 +313,9 @@
            <b>ordered span</b> so even a 1B model recounts a chain in sequence. Paste something bigger than the context window
            and neuron-db simply <b>absorbs</b> it — the model still answers from recall.</p>
         <p>It has <b>feelings</b>: give it a mood (<i>“be playful”</i>) or an opinion (<i>“you love rust”</i>, repeat to deepen),
-           and that affect colors how it talks. <b>Multiple chats</b> each get their own isolated neuron-db scope. It can
-           also <b>search the live web</b> — say <i>“search the web for …”</i> (or let a capable model fire the
-           <code>web_search</code> tool) and the results are saved into neuron-db so you can recall them. Tune everything
-           in <b>⚙ Settings</b>.</p>
+           and that affect colors how it talks. <b>Multiple chats</b> each get their own isolated neuron-db scope. Tune
+           everything in <b>⚙ Settings</b>. Everything runs <b>in your browser</b> — the memory is WASM, the model is
+           WebLLM; once a model is downloaded it's cached locally and nothing leaves the page.</p>
         <button class="dbtn primary" id="helpClose" style="margin-top:6px">Start the lab</button>
       </div>
     </div>
@@ -334,7 +333,7 @@ const td = new TextDecoder(), te = new TextEncoder();
 // ============================ settings ============================
 const CFG_DEF = { model:"Llama-3.2-3B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
   mode:"agent", capture:true, affect:true, ordered:true, internals:true, theme:"dark",
-  cloud:"https://neuron-db-auth.fdvlol.workers.dev" };
+  cloudAccount:false, cloud:"https://neuron-db-auth.fdvlol.workers.dev" };   // cloudAccount OFF → fully local, no worker calls
 let CFG = Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem("nblab.cfg")||"{}"));
 const saveCfg = () => localStorage.setItem("nblab.cfg", JSON.stringify(CFG));
 function applyCfg(){
@@ -347,6 +346,8 @@ function applyCfg(){
   $("cfgCapture").checked = CFG.capture; $("cfgAffect").checked = CFG.affect;
   $("cfgOrdered").checked = CFG.ordered; $("cfgInternals").checked = CFG.internals;
   $("cfgCloud").value = CFG.cloud;
+  $("cfgCloudOn").checked = CFG.cloudAccount;
+  $("acctBtn").style.display = CFG.cloudAccount ? "" : "none";   // local by default — no account, no worker calls
   [...$("themeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.t===CFG.theme));
   [...$("modeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.m===CFG.mode));
 }
@@ -398,8 +399,6 @@ function assocIn(scope,q,k){ const s=mem("assoc",scope,q,"2",String(k||6)); retu
 function observeManyIn(scope,stmts){ const blob=stmts.join("\n"); const n=parseInt(mem("obsmany",scope,blob))||0; if(n){ storedCount+=n; memBytes+=blob.length; logMem({o:"obsm",s:scope,t:blob}); } return n; }
 // multi-hop: walk relations server-side in the wasm (depth costs the model nothing)
 function recallChain(start,path){ const r=mem("chain",SCOPE,start,...(path||[])); const i=r.indexOf("\t"); return {value:i<0?"":r.slice(0,i), trail:i<0?start:r.slice(i+1)}; }
-// live web search via the worker (browser CORS blocks direct calls) -> [{title,url,content}]
-async function webSearch(q){ try{ const r=await fetch(CFG.cloud.replace(/\/$/,"")+"/search?q="+encodeURIComponent(q)); const j=await r.json(); return Array.isArray(j.results)?j.results:[]; }catch{ return []; } }
 // ---- affective layer — a transient mood + durable, accumulating opinions ----
 function feel(emotion){ mem("feel",SCOPE,emotion); logMem({o:"feel",s:SCOPE,e:emotion}); }
 function noteStance(topic,feeling){ const r=parseInt(mem("stance",SCOPE,topic,feeling))||1; logMem({o:"stance",s:SCOPE,t:topic,f:feeling}); return r; }
@@ -532,11 +531,6 @@ function opinionQuestion(text){
   const m=text.match(/^\s*(?:so\s+|and\s+|but\s+)?(?:how do you (?:really\s+)?feel about|what(?:'s| is| are)? your (?:honest\s+)?(?:opinion|view|take|thoughts?|feelings?) (?:on|about|of)|what do you (?:think|reckon|feel) (?:about|of|on)|do you (?:like|love|hate|enjoy|prefer|care about))\s+(.+?)[?.!]*\s*$/i);
   return m ? m[1].trim() : null;
 }
-// "search the web for X" / "google X" / "look up online X" -> a deterministic live web search (any model)
-function webSearchCommand(text){
-  const m=text.match(/^\s*(?:please\s+)?(?:search(?:\s+the\s+web)?(?:\s+for)?|google|look\s+up(?:\s+online)?|web\s*search|find\s+(?:online|on the web))\s*[:\-]?\s+(.+)$/i);
-  return m ? m[1].trim().replace(/[?.!]+$/,"") : null;
-}
 function enforce(reply){
   reply = reply.replace(/^\s*(?:AFFECT|STANDING INSTRUCTIONS?|MEMORIES|SYSTEM|Hard rules?)\b[^\n]*:?\s*/i,"");
   const caps = getInstrs().some(i => /\b(caps|capital|upper ?case)\b/i.test(i) &&
@@ -606,6 +600,18 @@ function populateModels(){
   CFG.model=sel.value; saveCfg();
 }
 function setPill(state, txt){ const p=$("modelPill"); p.className="modelpill"+(state?" "+state:""); p.textContent=txt; }
+// surface models already downloaded into WebLLM's browser cache: tag them "✓ ready" and, if the
+// configured default isn't downloaded but a cached one is, default to that (loads locally, no re-download)
+async function markCachedModels(){
+  const sel=$("model"); if(!sel || typeof webllm.hasModelInCache!=="function") return;
+  let firstCached=null, curCached=false;
+  for(const o of [...sel.options]){
+    let hit=false; try{ hit=await webllm.hasModelInCache(o.value); }catch{}
+    if(hit){ o.textContent="✓ "+o.textContent.replace(/^✓ /,"").replace(/ · ready$/,"")+" · ready"; if(!firstCached) firstCached=o.value; if(o.value===CFG.model) curCached=true; }
+  }
+  if(firstCached && !curCached){ sel.value=firstCached; CFG.model=firstCached; saveCfg(); }
+  if(firstCached) setPill("", "✓ "+((CURATED.find(m=>m.id===sel.value)||{}).label||"model")+" cached — load it");
+}
 async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
@@ -693,7 +699,6 @@ const TOOLSYS =
   "- recall_var {name}         — read a variable the user set.\n"+
   "- remember {fact}           — store a new durable fact the user told you.\n"+
   "- note {name, value}        — save a named variable.\n"+
-  "- web_search {query}        — search the LIVE web for current info NOT in memory (news, facts, definitions); results are saved into neuron-db automatically.\n"+
   "- stats {}                  — how many facts are in memory.\n"+
   "Loop: call a tool, read the TOOL RESULT, call more tools until you have enough, THEN stop and answer in plain prose. "+
   "Use ONLY facts returned by tools — never invent. If the tools return nothing useful, say you don't have it in memory.\n"+
@@ -709,7 +714,7 @@ const TOOLSYS =
   '{"tool":"recall_chain","args":{"start":"Aurora","path":["owner","manager","timezone"]}}\n'+
   "TOOL RESULT (recall_chain): WET   (resolved: Aurora → Marisol → Dana → WET)\n"+
   "Assistant: It's WET — Aurora's owner is Marisol, whose manager Dana is in WET.";
-const TOOL_NAMES = /(recall_associative|recall_value|recall_chain|recall_var|recall|remember|web_search|websearch|note|stats|forget)/i;
+const TOOL_NAMES = /(recall_associative|recall_value|recall_chain|recall_var|recall|remember|note|stats|forget)/i;
 function argObj(tool,a){
   if(tool==="note") return {name:a[0]||"", value:a.slice(1).join(", ")};
   if(tool==="recall_var") return {name:a[0]||""};
@@ -737,12 +742,9 @@ function parseTool(text){
   }
   return null;
 }
-async function runTool(call){
+function runTool(call){
   const a=call.args||{}; const q=String(a.query||a.fact||a.name||"");
   try{
-    if(call.tool==="web_search"||call.tool==="websearch"){ const hits=await webSearch(q); recalls++;
-      let saved=0; hits.slice(0,5).forEach(h=>{ if(observeIn(SCOPE,(h.title?h.title+": ":"")+(h.content||h.url||""))) saved++; }); setStats();
-      return hits.length ? "(saved "+saved+" to memory)\n"+hits.slice(0,5).map((h,i)=>(i+1)+". "+h.title+(h.content?" — "+h.content.slice(0,160):"")+(h.url?" ["+h.url+"]":"")).join("\n") : "(no web results)"; }
     if(call.tool==="recall_value"){ let v=recallValue(q); if(!v){ const d=pickDoc(q); if(d) v=mem("value",d.scope,q); } recalls++; setStats(); return v?safeLine(v):"(no exact value found)"; }
     if(call.tool==="recall_var"){ const v=getVar(q.toLowerCase()); return v?(q+" = "+safeLine(v)):"(no such variable)"; }
     if(call.tool==="remember"){ observeIn(SCOPE,q); setStats(); return "stored."; }
@@ -781,7 +783,7 @@ async function agentTurn(userText, seedHits, seedOrdered){
     const key=call.tool+"|"+JSON.stringify(call.args);
     let res;
     if(seen.has(key)) res="(you already retrieved this — answer now from what you have)";
-    else { seen.add(key); res=await runTool(call); fired++;
+    else { seen.add(key); res=runTool(call); fired++;
       ev("tool","🔧 tool · "+call.tool, `<span class="pill">${String(call.args.query||call.args.name||call.args.fact||call.args.start||(Array.isArray(call.args.path)?call.args.path.join(" → "):"")).slice(0,46)}</span>`); }
     msgs.push({role:"user",content:"TOOL RESULT ("+call.tool+"): "+res});
     out.lastChild.textContent="🔧 fired "+fired+" tool"+(fired===1?"":"s")+"… ("+call.tool+")";
@@ -845,22 +847,6 @@ async function turn(){
       ev("note","note · stance ×"+strength, topic+" — "+vs.feeling);
       const tail = strength>=2 ? " That view is hardening (intensity ×"+strength+") — it now actively colors how I react to anything related." : " (intensity ×"+strength+" — repeat it and the opinion deepens; other views fade as this one grows.)";
       bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory"); return;
-    }
-
-    // 0d) LIVE WEB SEARCH — deterministic, works for ANY model (and with no model): pulls real data into memory
-    const wq=webSearchCommand(text);
-    if(wq){
-      ev("tool","🔧 tool · web_search", `<span class="pill">${wq.slice(0,46)}</span>`);
-      const out=bubble("a","","assistant"); out.lastChild.textContent="🌐 searching the web for \""+wq+"\"…";
-      const hits=await webSearch(wq);
-      let saved=0; hits.slice(0,6).forEach(h=>{ if(observeIn(SCOPE,(h.title?h.title+": ":"")+(h.content||h.url||""))) saved++; });
-      setStats();
-      const final = enforce(hits.length
-        ? "🌐 From the web (saved "+saved+" facts to memory — now ask me about them):\n"+hits.slice(0,6).map((h,i)=>(i+1)+". "+h.title+(h.content?" — "+h.content.slice(0,160):"")+(h.url?"\n   "+h.url:"")).join("\n")
-        : "🌐 No web results for \""+wq+"\". (The keyless providers can be sparse; add a Brave key on the worker for fuller results.)");
-      out.lastChild.textContent=final;
-      if(active){ active.messages.push({cls:"a",text:final,who:"assistant"}); saveChats(); }
-      return;
     }
 
     // 1) typed neurons: variables + standing instructions
@@ -961,7 +947,6 @@ function renderLog(){
         <button data-ex="what is my wifi password?">what is my wifi password?</button>
         <button data-ex="always answer in caps">always answer in caps</button>
         <button data-ex="you love rust">you love rust</button>
-        <button data-ex="search the web for the James Webb Space Telescope">🌐 search the web…</button>
       </div></div>`;
     log.querySelectorAll(".ex button").forEach(b=>b.onclick=()=>{ $("in").value=b.dataset.ex; turn(); });
     return;
@@ -1109,6 +1094,7 @@ $("cfgAffect").addEventListener("change",e=>{ CFG.affect=e.target.checked; saveC
 $("cfgOrdered").addEventListener("change",e=>{ CFG.ordered=e.target.checked; saveCfg(); });
 $("cfgInternals").addEventListener("change",e=>{ CFG.internals=e.target.checked; document.body.classList.toggle("noint",!CFG.internals); saveCfg(); });
 $("cfgCloud").addEventListener("change",e=>{ CFG.cloud=e.target.value.trim()||CFG_DEF.cloud; saveCfg(); });
+$("cfgCloudOn").addEventListener("change",e=>{ CFG.cloudAccount=e.target.checked; $("acctBtn").style.display=CFG.cloudAccount?"":"none"; saveCfg(); });
 $("themeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.theme=b.dataset.t; applyCfg(); saveCfg(); });
 $("modeSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; CFG.mode=b.dataset.m; applyCfg(); saveCfg(); });
 $("model").addEventListener("change",e=>{ CFG.model=e.target.value; saveCfg(); });
@@ -1135,6 +1121,7 @@ $("wipeBtn").addEventListener("click",wipeChat);
     loadActiveScopeState();
     $("ctitle").textContent=active.title||"New chat";
     renderChatList(); renderLog(); renderAffect(); setStats();
+    markCachedModels();   // tag/prefer any model already downloaded into the browser cache (loads locally)
     if(!localStorage.getItem("nblab.seen")){ $("helpModal").classList.add("on"); localStorage.setItem("nblab.seen","1"); }
   }catch(e){
     bubble("s","⚠ the WebAssembly core must be served over http(s) (not opened as a file://). Try the GitHub Pages link.");
