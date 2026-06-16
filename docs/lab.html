@@ -178,14 +178,49 @@ function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint
 function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
 // one tab-delimited dispatch into the in-browser neuron-db — the wasm runs the same logic as the MCP
 function mem(...a){ const [p,l]=wstr(a.join("\t")); return readBuf(EX.mem(p,l)); }
-function observe(text){ const n=parseInt(mem("observe",SCOPE,text))||0; if(n){ storedCount+=n; memBytes+=text.length; } return n; }
-function recallBlock(q,k){ const s=mem("recall",SCOPE,q,String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
+let docs = [];   // each pasted document gets its OWN scope, so recall never bleeds across them
+function observeIn(scope,text){ const n=parseInt(mem("observe",scope,text))||0; if(n){ storedCount+=n; memBytes+=text.length; } return n; }
+function recallIn(scope,q,k){ const s=mem("recall",scope,q,String(k||6)); return s?s.split("\n").filter(Boolean):[]; }
 function recallValue(q){ return mem("value",SCOPE,q); }
 function setVar(k,v){ mem("setvar",SCOPE,k,v); }
 function getVar(k){ return mem("getvar",SCOPE,k); }
 function addInstr(t){ mem("addinstr",SCOPE,t); }
 function getInstrs(){ const s=mem("instrs",SCOPE); return s?s.split("\n").filter(Boolean):[]; }
-const statements = text => text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(s=>s && !s.endsWith("?"));
+const statements = text => text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
+
+// ---- retrieval quality: gate what we store, strip query framing, route a question to its document ----
+const STOP = new Set(("the and that this with from have were they their there what when where which about more tell "+
+  "your will would could should been into than then them some such over only also just like very much many most each "+
+  "other these those after before because here you our are was has had not but for can did does how why who thing things "+
+  "give show explain walk through describe please know want need think feel about whats lets dont cant").split(/\s+/));
+const isWord = w => w.length>3 && !STOP.has(w);
+const keywords = t => [...new Set(t.toLowerCase().split(/[^a-z0-9]+/).filter(isWord))];
+// strip leading "tell me more about / how does / what is …" so recall hits the TOPIC, not the framing
+function queryKeywords(text){
+  const s=text.replace(/^\s*(please\s+)?(can you |could you |tell me(?: more)?(?: about)?|show me|explain(?: to me)?|walk me through(?: to)?|describe|give me|what(?:'s| is| are| was| do you know about| did| does)?|how(?: does| do| did| is| are| can)?|why|who(?: is| was| are)?|when|where|which|list|summari[sz]e)\b[:,\s]*/ig,"").replace(/[?.!]+\s*$/,"").trim();
+  return s||text;
+}
+// only store DECLARATIVE content as facts — never the user's questions / commands / chatter
+function shouldStore(s){
+  if(s.length<12 || /\?\s*$/.test(s)) return false;
+  return !/^\s*(tell|show|explain|walk|describe|how|what|why|who|when|where|which|can you|could you|please|give me|list|summari|oh\b|yeah|yep|nope|none|wat|cool|nice|ok|okay|lol|hmm|thanks)/i.test(s);
+}
+function pickDoc(q){
+  const qk=keywords(queryKeywords(q)); let best=null, bs=0;
+  for(const d of docs){ const s=qk.reduce((a,w)=>a+(d.kw.has(w)?1:0),0); if(s>bs){ bs=s; best=d; } }
+  return best;
+}
+// recall from the routed document (+ main scope), then re-rank by topical keyword overlap, dropping junk
+function smartRecall(q){
+  const qk=queryKeywords(q), kw=keywords(qk), d=pickDoc(q);
+  let cands=recallIn(SCOPE,qk,8);
+  if(d) cands=cands.concat(recallIn(d.scope,qk,12));
+  cands=[...new Set(cands)];
+  const score=f=>{ const fl=f.toLowerCase(); return kw.reduce((a,w)=>a+(fl.includes(w)?1:0),0); };
+  const ranked=cands.map(f=>[score(f),f]).sort((a,b)=>b[0]-a[0]);
+  const topical=ranked.filter(x=>x[0]>0).slice(0,6).map(x=>x[1]);
+  return { hits: topical.length ? topical : (d?recallIn(d.scope,qk,5):ranked.slice(0,4).map(x=>x[1])), doc:d };
+}
 
 // ---------- harness: detect typed commands (variables, standing instructions), deterministically ----------
 function handleCommands(text){
@@ -306,40 +341,46 @@ async function turn(){
   const doc=isDocument(text);
   bubble("u", text.length>600 ? text.slice(0,600)+" …  ["+text.length.toLocaleString()+" chars]" : text, "you");
   try{
-    // 1) STORE — passive encoding, one episode per statement
-    let nStored=0;
-    for(const s of statements(text)){ if(observe(s)){ nStored++; ev("store","stored",s); } }
-    // 1b) typed neurons: variables + standing instructions (the MCP's note() power, deterministic)
-    const cmd = doc ? {kind:"none"} : handleCommands(text);
+    if(doc){
+      // a pasted document -> its OWN scope, so it can never bleed into another doc's recall
+      const n=docs.length+1, dscope=SCOPE+"__doc"+n;
+      let nStored=0; for(const s of statements(text)){ if(observeIn(dscope,s)) nStored++; }
+      docs.push({n, scope:dscope, kw:new Set(keywords(text))});
+      lastBlockChars=0; setStats();
+      ev("store","absorbed document #"+n, nStored+" facts → its own scope");
+      bubble("s","🧠 neuron-db absorbed the context — "+nStored+" facts in document #"+n+", ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
+      bubble("a","Got it — document #"+n+" is in memory (it never had to fit in a context window). Ask me about it and I'll answer from recall.","memory");
+      return;  // (finally still runs)
+    }
+    // 1) typed neurons: variables + standing instructions (the MCP's note() power, deterministic)
+    const cmd=handleCommands(text);
     if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
     else if(cmd.kind==="var"||cmd.kind==="varfact") ev("note","note · variable", cmd.key+" = "+getVar(cmd.key.toLowerCase()));
+    // 1b) store the message ONLY if it's a declarative fact — never questions / commands / chatter
+    for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
 
-    // 2) RECALL — a capped block, plus an EXACT variable read for "what is my X?"
+    // 2) RECALL — exact var read for "what is my X?", else routed + re-ranked recall
     recalls++;
-    const direct = doc ? null : directAnswer(text);
-    const t0=performance.now(); const hits=recallBlock(text,6);
+    const direct=directAnswer(text);
+    const t0=performance.now(); const {hits, doc:src}=smartRecall(text);
     $("tRecall").textContent=Math.max(1,Math.round((performance.now()-t0)*1000));
     lastBlockChars=hits.reduce((a,h)=>a+h.length,0); setStats();
-    if(hits.length) ev("fire","recall · "+hits.length+" fired", hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), direct?direct.val:null);
+    if(hits.length) ev("fire","recall · "+hits.length+(src?" · doc #"+src.n:""), hits.map(h=>`<span class="pill">${h.slice(0,56)}</span>`).join(""), direct?direct.val:null);
     else if(!direct) ev("fire","recall","(nothing matched)");
 
     // 3) ANSWER
     if(cmd.kind==="instruction"){
-      bubble("a", enforce("Got it — that's now a standing instruction; I re-apply it on every turn, even after it scrolls out of view."),"memory");
+      bubble("a", enforce("Got it — that's now a standing instruction; I re-apply it every turn, even after it scrolls out of view."),"memory");
     } else if(cmd.kind==="var"){
       bubble("a", enforce("Saved exactly. Ask \"what is my "+cmd.key+"?\" any time and I'll read it back verbatim."),"memory");
-    } else if(doc){
-      bubble("s","🧠 neuron-db absorbed the context — "+nStored+" facts stored, ~"+approxTokens(text).toLocaleString()+" tokens kept out of the model's window.");
-      bubble("a","Got it — I absorbed that whole thing into memory (it never had to fit in a context window). Ask me anything about it and I'll answer from recall.","memory");
     } else if(engine){
       await modelAnswer(text, hits, direct);
     } else {
-      const low=text.toLowerCase().replace(/[^\w\s]/g,"").trim();
-      const greet=/^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/.test(low);
+      const greet=/^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/.test(text.toLowerCase());
       const note=loading?" The model is still downloading.":" Load a model above for a conversational reply.";
       if(direct) bubble("a", enforce("From memory — your "+direct.key+" is: "+direct.val),"memory");
       else if(greet) bubble("a", enforce("Hey! 👋 I'm neuron-db's memory. Tell me a fact (\"my dog's name is Rex\"), set a rule (\"always answer in caps\"), or paste a document — then ask about it."+note),"memory");
-      else if(hits.length) bubble("a", enforce("From memory:\n"+hits.map(h=>"• "+h).join("\n")),"memory");
+      else if(hits.length) bubble("a", enforce("From memory"+(src?" (document #"+src.n+")":"")+":\n"+hits.map(h=>"• "+h).join("\n")),"memory");
       else bubble("a", enforce("I don't have a memory matching that yet. Tell me a fact first, then ask it back."+note),"memory");
     }
   }catch(e){
