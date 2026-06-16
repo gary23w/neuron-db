@@ -26,6 +26,13 @@
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
+  /* dark-theme scrollbars (Firefox + WebKit) */
+  *{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:2px solid var(--bg)}
+  ::-webkit-scrollbar-thumb:hover{background:#3a4a66}
+  ::-webkit-scrollbar-corner{background:transparent}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden}
   a{color:var(--accent2);text-decoration:none}
   a:hover{color:var(--accent)}

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>neuron-db · live browser lab</title>
 <meta name="description" content="The whole thesis in your browser: neuron-db memory compiled to WebAssembly + a local Llama via WebLLM. No server, no API key. Talk to it; watch the memory fire.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='5' fill='%235eead4'/%3E%3Ccircle cx='6' cy='7' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='26' cy='9' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='7' cy='25' r='2.4' fill='%23f472b6'/%3E%3Ccircle cx='25' cy='24' r='2.4' fill='%2334d399'/%3E%3Cg stroke='%235eead4' stroke-width='1.1' opacity='.6'%3E%3Cline x1='16' y1='16' x2='6' y2='7'/%3E%3Cline x1='16' y1='16' x2='26' y2='9'/%3E%3Cline x1='16' y1='16' x2='7' y2='25'/%3E%3Cline x1='16' y1='16' x2='25' y2='24'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root{
     --bg:#080a0f; --bg2:#0b0e16; --panel:#0f1320; --panel2:#10131d; --ink:#e9edf6; --mid:#9aa6bd;
@@ -15,6 +16,13 @@
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
        -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;min-height:100dvh;overflow-x:hidden}
   a{color:var(--accent)} .mono{font-family:var(--mono)}
+  /* dark-theme scrollbars (Firefox + WebKit) */
+  *{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:2px solid var(--bg)}
+  ::-webkit-scrollbar-thumb:hover{background:#3a4a66}
+  ::-webkit-scrollbar-corner{background:transparent}
   /* ---- top bar ---- */
   .top{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);
        background:rgba(8,10,15,.8);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20;flex-wrap:wrap}
@@ -209,34 +217,43 @@ async function loadModel(){
 let busy=false;
 async function turn(){
   const text=$("in").value.trim(); if(!text||busy) return;
+  if(!EX){ bubble("s","memory core still loading — one moment…"); return; }  // never proceed before WASM is ready
   busy=true; $("send").disabled=true; $("in").value="";
   bubble("u",text,"you");
+  try{
+    // 1) STORE (passive encoding) — one episode per statement
+    const stored=statements(text);
+    for(const s of stored){ const i=addFact(s); if(i>=0) ev("store","stored",s); }
 
-  // 1) STORE (passive encoding) — one episode per statement
-  const stored=statements(text);
-  for(const s of stored){ const i=addFact(s); if(i>=0) ev("store","stored",s); }
+    // 2) RECALL for this turn
+    const r=fire(text); recalls++; $("nRecall").textContent=recalls; $("tRecall").textContent=r.us;
+    if(r.hits.length) ev("fire","recall · "+r.hits.length+" fired", r.hits.map(h=>`<span class="pill">${h}</span>`).join(""), r.value||null);
+    else ev("fire","recall","(nothing matched)");
 
-  // 2) RECALL for this turn
-  const r=fire(text); recalls++; $("nRecall").textContent=recalls; $("tRecall").textContent=r.us;
-  if(r.hits.length) ev("fire","recall · "+r.hits.length+" fired", r.hits.map(h=>`<span class="pill">${h}</span>`).join(""), r.value||null);
-  else ev("fire","recall","(nothing matched)");
-
-  // 3) ANSWER — WebLLM if loaded, else a memory-only reply
-  if(engine){
-    const memBlock = r.hits.length ? r.hits.map(h=>"- "+h).join("\n") : "(no relevant memories)";
-    const msgs=[{role:"system",content:SYS+"\n\nMEMORIES (recalled by neuron-db for this turn):\n"+memBlock},
-                {role:"user",content:text}];
-    const out=bubble("a","","assistant"); let acc="";
-    try{
-      const stream=await engine.chat.completions.create({messages:msgs,temperature:0.6,stream:true});
-      for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=acc; $("log").scrollTop=$("log").scrollHeight; }
-    }catch(e){ out.lastChild.textContent="(model error: "+(e.message||e)+")"; }
-  } else {
-    if(r.value) bubble("a","From memory: "+r.value+"\n\n(load a model above for a conversational reply)","memory");
-    else if(r.hits.length) bubble("a","I recall:\n"+r.hits.map(h=>"• "+h).join("\n")+"\n\n(load a model for a conversational reply)","memory");
-    else bubble("a","I don't have anything on that yet — tell me a fact first, then ask it back. (Or load a model above.)","memory");
+    // 3) ANSWER — WebLLM if loaded, else a memory-only reply
+    if(engine){
+      const memBlock = r.hits.length ? r.hits.map(h=>"- "+h).join("\n") : "(no relevant memories)";
+      const msgs=[{role:"system",content:SYS+"\n\nMEMORIES (recalled by neuron-db for this turn):\n"+memBlock},
+                  {role:"user",content:text}];
+      const out=bubble("a","","assistant"); let acc="";
+      try{
+        const stream=await engine.chat.completions.create({messages:msgs,temperature:0.6,stream:true});
+        for await(const c of stream){ const d=c.choices[0]?.delta?.content||""; acc+=d; out.lastChild.textContent=acc; $("log").scrollTop=$("log").scrollHeight; }
+      }catch(e){ out.lastChild.textContent="(model error: "+(e.message||e)+")"; }
+    } else {
+      const low=text.toLowerCase().replace(/[^\w\s]/g,"").trim();
+      const greet=/^(hi+|hello+|hey+|yo|sup|hiya|howdy|good (morning|afternoon|evening)|thanks?|thank you|ok|okay|cool|nice)\b/.test(low);
+      const note=loading?" The model is still downloading — it'll get chattier once it's ready.":" Load a model above and I'll talk back conversationally.";
+      if(greet) bubble("a","Hey! 👋 I'm running on neuron-db's memory right now."+note+"\n\nTell me a fact and I'll keep it — try \"my dog's name is Rex\", then ask \"what's my dog's name?\"","memory");
+      else if(r.value) bubble("a","From memory: "+r.value+"\n\n("+(loading?"model still loading":"load a model above")+" for a conversational reply)","memory");
+      else if(r.hits.length) bubble("a","From memory, the closest I have:\n"+r.hits.map(h=>"• "+h).join("\n"),"memory");
+      else bubble("a","I don't have a memory matching that yet. Tell me a fact first (e.g. \"my wifi password is hunter2\"), then ask it back."+note,"memory");
+    }
+  }catch(e){
+    bubble("a","(something went wrong handling that: "+(e.message||e)+")","memory");
+  }finally{
+    busy=false; $("send").disabled=false; $("in").focus();   // always recover — never get stuck
   }
-  busy=false; $("send").disabled=false; $("in").focus();
 }
 
 // ---------- wire up ----------
