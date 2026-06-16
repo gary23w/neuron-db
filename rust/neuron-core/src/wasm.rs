@@ -10,6 +10,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 use crate::Neuron;
 use crate::model::GaryModel;
+use std::collections::HashMap;
 
 static mut BUF: [u8; 262144] = [0u8; 262144];
 static mut BUFLEN: usize = 0;
@@ -131,6 +132,66 @@ pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
     let b = ans.as_bytes(); let n = b.len().min(256);
     unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
     n
+}
+
+// ---- in-browser NeuronDB-equivalent: scopes + typed neurons (var, instruction) + recall, so the
+// browser lab has the SAME public surface the MCP server exposes (recall / recall_value /
+// recall_associative / remember / note(var|instruction) / recall_var / forget / stats) — all
+// in-memory, no SQLite (which doesn't target wasm). Vars and instructions are exact key→value /
+// ordered lists; free-text memory is a Neuron per scope. Driven by the tab-delimited mem() call.
+struct MemDB {
+    scopes: HashMap<String, Neuron>,
+    vars: HashMap<String, HashMap<String, String>>,
+    instrs: HashMap<String, Vec<String>>,
+}
+impl MemDB {
+    fn new() -> Self { MemDB { scopes: HashMap::new(), vars: HashMap::new(), instrs: HashMap::new() } }
+    fn n(&mut self, scope: &str) -> &mut Neuron {
+        self.scopes.entry(scope.to_string()).or_insert_with(|| Neuron::new(1_000_000))
+    }
+}
+static mut MEM: Option<MemDB> = None;
+fn memdb() -> &'static mut MemDB { unsafe { MEM.get_or_insert_with(MemDB::new) } }
+
+/// Reset the whole in-browser database (all scopes, vars, instructions).
+#[no_mangle] pub extern "C" fn mem_reset() { unsafe { MEM = Some(MemDB::new()); } }
+
+/// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
+/// ops: observe | recall | value | assoc | setvar | getvar | addinstr | instrs | forget | stats.
+#[no_mangle]
+pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
+    let req = input(ptr, len);
+    let f: Vec<&str> = req.split('\t').collect();
+    let op = f.first().copied().unwrap_or("");
+    let scope = f.get(1).copied().unwrap_or("default").to_string();
+    let arg = |i: usize| f.get(i).copied().unwrap_or("");
+    let num = |i: usize, d: usize| f.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
+    let db = memdb();
+    let out: String = match op {
+        "observe" => {
+            let before = db.n(&scope).fact_count();
+            db.n(&scope).observe(arg(2));
+            (db.n(&scope).fact_count() - before).to_string()
+        }
+        "recall" => db.n(&scope).recall_many(arg(2), num(3, 6))
+            .into_iter().map(|r| r.fact).collect::<Vec<_>>().join("\n"),
+        "value" => db.n(&scope).recall(arg(2)).map(|r| r.value).unwrap_or_default(),
+        "assoc" => db.n(&scope).recall_spreading(arg(2), num(4, 8), num(3, 2))
+            .into_iter().map(|s| s.fact).collect::<Vec<_>>().join("\n"),
+        "setvar" => { db.vars.entry(scope).or_default().insert(arg(2).to_string(), arg(3).to_string()); "ok".into() }
+        "getvar" => db.vars.get(&scope).and_then(|m| m.get(arg(2))).cloned().unwrap_or_default(),
+        "addinstr" => {
+            let v = db.instrs.entry(scope).or_default();
+            let t = arg(2).to_string();
+            if !t.is_empty() && !v.contains(&t) { v.push(t); }
+            "ok".into()
+        }
+        "instrs" => db.instrs.get(&scope).map(|v| v.join("\n")).unwrap_or_default(),
+        "forget" => db.n(&scope).forget_prefix(arg(2)).to_string(),
+        "stats" => db.scopes.get(&scope).map(|n| n.fact_count()).unwrap_or(0).to_string(),
+        _ => String::new(),
+    };
+    put(&out)
 }
 
 // ---- semantic space exports (feature `semantic`), for the in-browser PCA visualization ----
