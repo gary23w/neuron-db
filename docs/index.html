@@ -33,7 +33,7 @@
   ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:2px solid var(--bg)}
   ::-webkit-scrollbar-thumb:hover{background:#3a4a66}
   ::-webkit-scrollbar-corner{background:transparent}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   a{color:var(--accent2);text-decoration:none}
   a:hover{color:var(--accent)}
   h1,h2,h3,h4{line-height:1.15;margin:0;letter-spacing:-.02em;font-weight:680}
@@ -85,6 +85,14 @@
   .cta .btn{padding:12px 20px;font-size:15.5px}
   .hero-terminal{margin-top:38px;max-width:720px}
   .trust{margin-top:26px;display:flex;flex-wrap:wrap;gap:8px 10px}
+  /* two-column hero on desktop: copy left, terminal + trust right — fills the width, no empty gutter */
+  @media(min-width:920px){
+    .hero-wrap{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:48px;align-items:center}
+    .hero-copy{max-width:none}
+    .hero-copy h1{max-width:14ch}
+    .hero-copy .lead{max-width:50ch}
+    .hero-terminal{margin-top:0;max-width:none;width:100%}
+  }
   .chip{font-family:var(--mono);font-size:12.5px;color:var(--mid);border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 12px}
   .chip b{color:var(--accent)}
 
@@ -303,7 +311,7 @@
   @media(max-width:980px){.docs-toggle-side{display:inline-flex}}
 
   /* ---- small phones (≤520px): collapse remaining multi-column rows to single column ---- */
-  html,body{overflow-x:hidden;max-width:100%}
+  html{overflow-x:hidden}   /* clip stray horizontal overflow on the scroll root only — NOT body (that makes body a scroll container and breaks page scroll on some devices) */
   @media(max-width:520px){
     .cols-2{grid-template-columns:1fr}
     .stats-grid{grid-template-columns:1fr 1fr;gap:14px}
@@ -400,17 +408,19 @@
     <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
     <div class="hero-grid-overlay"></div>
   </div>
-  <div class="wrap">
-    <span class="eyebrow"><span class="dotpulse"></span> pure Rust · zero dependencies · compiles to WebAssembly</span>
-    <h1>An associative memory you can <span class="grad">run anywhere.</span></h1>
-    <p class="lead">Write facts in plain language, recall them by meaning. <b>No tables, no schema, no embeddings, no model required.</b> The core is pure Rust with zero dependencies and fits in a 1&nbsp;MB wasm worker. Durable storage, encryption, an HTTP server, and a thinking cortex are opt-in.</p>
-    <div class="cta">
-      <a class="btn primary" href="lab.html">▶ Try the live lab</a>
-      <a class="btn" href="#quickstart">Quickstart →</a>
-      <a class="btn" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">Star on GitHub</a>
-      <button class="btn ghost" id="openDocs2" type="button">Read the docs</button>
+  <div class="wrap hero-wrap">
+    <div class="hero-copy">
+      <span class="eyebrow"><span class="dotpulse"></span> pure Rust · zero dependencies · compiles to WebAssembly</span>
+      <h1>An associative memory you can <span class="grad">run anywhere.</span></h1>
+      <p class="lead">Write facts in plain language, recall them by meaning. <b>No tables, no schema, no embeddings, no model required.</b> The core is pure Rust with zero dependencies and fits in a 1&nbsp;MB wasm worker. Durable storage, encryption, an HTTP server, and a thinking cortex are opt-in.</p>
+      <div class="cta">
+        <a class="btn primary" href="lab.html">▶ Try the live lab</a>
+        <a class="btn" href="#quickstart">Quickstart →</a>
+        <a class="btn" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">Star on GitHub</a>
+        <button class="btn ghost" id="openDocs2" type="button">Read the docs</button>
+      </div>
+      <p class="dim" style="font-size:13px;margin:10px 0 0">↑ a local model <b>thinks</b>, neuron-db (as WASM) <b>remembers and grounds it</b> — it reasons over a knowledge-gap signal and searches the live web when it doesn't know. <b>Entirely in your browser</b> — no server, no API key.</p>
     </div>
-    <p class="dim" style="font-size:13px;margin:10px 0 0">↑ a local model <b>thinks</b>, neuron-db (as WASM) <b>remembers and grounds it</b> — it reasons over a knowledge-gap signal and searches the live web when it doesn't know. <b>Entirely in your browser</b> — no server, no API key.</p>
     <div class="hero-terminal">
       <div class="terminal">
         <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">~/app · neuron</span></div>
@@ -419,13 +429,13 @@
 <span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">get</span>  me <span class="tok-s">'what plan am i on?'</span>      <span class="tok-c"># -&gt;</span> <span class="tok-r">pro</span>
 </code></pre>
       </div>
-    </div>
-    <div class="trust">
-      <span class="chip"><b>~130×</b> denser than a 1536-d vector store</span>
-      <span class="chip"><b>~48 B</b> / fact serialized</span>
-      <span class="chip"><b>~6 µs</b> recall · flat to 1M facts</span>
-      <span class="chip"><b>0</b> deps in the default build</span>
-      <span class="chip">MIT licensed</span>
+      <div class="trust">
+        <span class="chip"><b>~130×</b> denser than a 1536-d vector store</span>
+        <span class="chip"><b>~48 B</b> / fact serialized</span>
+        <span class="chip"><b>~6 µs</b> recall · flat to 1M facts</span>
+        <span class="chip"><b>0</b> deps in the default build</span>
+        <span class="chip">MIT licensed</span>
+      </div>
     </div>
   </div>
 </section>
