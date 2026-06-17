@@ -245,7 +245,7 @@
       </select>
       <button class="dbtn primary" id="loadBtn" style="margin-top:9px">Load the model</button>
       <div class="pbar" id="pbar"><i></i></div>
-      <div class="status" id="status">Memory works now with no model. Load one for a talking assistant (needs desktop Chrome/Edge).</div>
+      <div class="status" id="status">Memory works now with no model. Load one for a talking assistant (needs desktop Chrome/Edge). <b>Tip:</b> start with the smallest ⚡ model — the first load downloads it once (~0.9&nbsp;GB) and it's cached in your browser, so it's instant every time after. Bigger models are better but download once-and-cache too.</div>
     </div>
     <div class="sect">
       <div class="lab">Generation</div>
@@ -320,7 +320,7 @@ const $ = id => document.getElementById(id);
 const td = new TextDecoder(), te = new TextEncoder();
 
 // ============================ settings ============================
-const CFG_DEF = { model:"Llama-3.2-3B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
+const CFG_DEF = { model:"Llama-3.2-1B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
   mode:"agent", think:true, capture:true, affect:true, ordered:true, internals:true, theme:"dark" };   // 100% local — no network config
 let CFG = Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem("nblab.cfg")||"{}"));
 const saveCfg = () => localStorage.setItem("nblab.cfg", JSON.stringify(CFG));
