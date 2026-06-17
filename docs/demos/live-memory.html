@@ -72,8 +72,12 @@
   .foot{flex:none;padding:7px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
   .foot a{color:var(--dim)}
   @media(max-width:760px){
-    main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
-    .pane.chat{border-right:none;border-bottom:1px solid var(--line)}
+    /* stacking both panes into 1fr/1fr of a short phone viewport crammed the chat pane until the
+       composer overlapped the memory stats — instead let the page scroll, each pane a real height */
+    body{overflow:auto}
+    main{grid-template-columns:1fr;grid-template-rows:auto auto}
+    .pane.chat{border-right:none;border-bottom:1px solid var(--line);height:72vh}
+    .pane.mem{min-height:48vh}
     .pills{width:100%;margin-left:0}
   }
 </style>

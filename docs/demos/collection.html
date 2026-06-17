@@ -52,7 +52,7 @@
   .new{animation:flash .6s ease}
   @keyframes flash{from{background:#1d2536}to{background:transparent}}
   footer{padding:6px 16px;border-top:1px solid var(--line);color:var(--dim);font-size:11px;background:var(--panel);display:flex;gap:16px;flex-wrap:wrap}
-  @media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.pane.chat{border-right:0;border-bottom:1px solid var(--line)}}
+  @media(max-width:760px){html,body{height:auto}main{grid-template-columns:1fr;grid-template-rows:auto auto}.pane.chat{border-right:0;border-bottom:1px solid var(--line);height:72vh}.pane{min-height:46vh}}
 </style>
 </head>
 <body>
