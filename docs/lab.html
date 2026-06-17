@@ -788,7 +788,10 @@ function enforce(reply){
 function ev(cls,head,body,val){
   const syn=$("syn"); if(syn.querySelector(".empty")) syn.innerHTML="";
   const d=document.createElement("div"); d.className="ev "+cls;
-  d.innerHTML=`<div class="h">${head}</div><div class="body">${body}${val?` → <span class="val">${val}</span>`:""}</div>`;
+  const b = body==null ? "" : String(body);
+  const hasBody = b.replace(/<[^>]*>/g,"").trim().length>0;   // ignore empty wrapper tags (an empty pill rendered as an orphan dash)
+  d.innerHTML = `<div class="h">${head}</div>` +
+    ((hasBody||val) ? `<div class="body">${hasBody?b:""}${val?` → <span class="val">${val}</span>`:""}</div>` : "");
   syn.appendChild(d); syn.scrollTop=syn.scrollHeight;
 }
 let rendering=false;
@@ -826,7 +829,11 @@ const CURATED = [
   {id:"Llama-3.2-3B-Instruct-q4f16_1-MLC", label:"Llama 3.2 · 3B", tag:"balanced", gb:2.3},
   {id:"Hermes-3-Llama-3.2-3B-q4f16_1-MLC", label:"Hermes 3 · 3B", tag:"tools", gb:2.3},
   {id:"Qwen2.5-3B-Instruct-q4f16_1-MLC", label:"Qwen2.5 · 3B", tag:"tools", gb:2.3},
+  {id:"Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC", label:"Ministral 3 · 3B", tag:"balanced", gb:2.3},
+  {id:"Ministral-3-3B-Reasoning-2512-q4f16_1-MLC", label:"Ministral 3 · 3B reasoning", tag:"reason", gb:2.3},
   {id:"Qwen3-4B-q4f16_1-MLC", label:"Qwen3 · 4B", tag:"reason", gb:3.5},
+  {id:"Mistral-7B-Instruct-v0.3-q4f16_1-MLC", label:"Mistral · 7B", tag:"tools", gb:5},
+  {id:"Hermes-2-Pro-Mistral-7B-q4f16_1-MLC", label:"Hermes 2 Pro Mistral · 7B", tag:"tools", gb:5},
   {id:"Qwen2.5-7B-Instruct-q4f16_1-MLC", label:"Qwen2.5 · 7B", tag:"tools", gb:5},
   {id:"Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC", label:"Hermes 2 Pro · 8B", tag:"tools", gb:5},
   {id:"DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC", label:"DeepSeek-R1 · 7B", tag:"reason", gb:5},
@@ -834,11 +841,21 @@ const CURATED = [
   {id:"Qwen3-8B-q4f16_1-MLC", label:"Qwen3 · 8B", tag:"reason", gb:5.5},
   {id:"Llama-3.1-8B-Instruct-q4f32_1-MLC", label:"Llama 3.1 · 8B", tag:"big", gb:5.5},
 ];
+// non-prebuilt MLC builds — loaded via a custom appConfig (weights repo + a matching WebGPU model_lib).
+// A custom model needs a model_lib compiled for its exact architecture/quant; until one is published the
+// entry will surface a graceful "could not load" (12B q4 ≈ 7 GB + heavy VRAM, so it's a big-GPU option anyway).
+const NEMO_LIB="https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Mistral-Nemo-12B-Instruct-q4f16_1_cs1k-webgpu.wasm";
+const CUSTOM=[
+  {id:"NemoMix-Unleashed-12B-q4f16_1-MLC", label:"NemoMix Unleashed · 12B", tag:"big", gb:7,
+   model:"https://huggingface.co/huggingkot/NemoMix-Unleashed-12B-q4f16_1-MLC", model_lib:NEMO_LIB},
+];
+const MODELS=CURATED.concat(CUSTOM);
 const TAGTXT={fast:"⚡ fast",tools:"🔧 tools",reason:"🧠 reasoning",balanced:"balanced",big:"big"};
 function populateModels(){
   const avail=new Set((webllm.prebuiltAppConfig?.model_list||[]).map(m=>m.model_id));
   const sel=$("model"); if(!sel) return; sel.innerHTML="";
-  for(const m of CURATED){ if(avail.size && !avail.has(m.id)) continue;
+  const show=CURATED.filter(m=>!avail.size||avail.has(m.id)).concat(CUSTOM);   // custom (non-prebuilt) models bypass the filter
+  for(const m of show){
     const o=document.createElement("option"); o.value=m.id;
     o.textContent=`${m.label}  (${TAGTXT[m.tag]||m.tag}, ~${m.gb} GB)`; sel.appendChild(o); }
   if(!sel.options.length){ const o=document.createElement("option"); o.value=CFG.model; o.textContent=CFG.model; sel.appendChild(o); }
@@ -856,22 +873,25 @@ async function markCachedModels(){
     if(hit){ o.textContent="✓ "+o.textContent.replace(/^✓ /,"").replace(/ · ready$/,"")+" · ready"; if(!firstCached) firstCached=o.value; if(o.value===CFG.model) curCached=true; }
   }
   if(firstCached && !curCached){ sel.value=firstCached; CFG.model=firstCached; saveCfg(); }
-  if(firstCached) setPill("", "✓ "+((CURATED.find(m=>m.id===sel.value)||{}).label||"model")+" cached — load it");
+  if(firstCached) setPill("", "✓ "+((MODELS.find(m=>m.id===sel.value)||{}).label||"model")+" cached — load it");
 }
 async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
-  engineTiny = (CURATED.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
+  engineTiny = (MODELS.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
   // the curated tag is the source of truth; the anchored regex only covers a non-curated id (avoids flagging e.g. "MyReasonableModel")
-  engineReason = ((CURATED.find(m=>m.id===CFG.model)||{}).tag==="reason") || /(^|[-_])(R1|Distill|QwQ|Qwen3)([-_]|$)/i.test(CFG.model);
+  engineReason = ((MODELS.find(m=>m.id===CFG.model)||{}).tag==="reason") || /(^|[-_])(R1|Distill|QwQ|Qwen3)([-_]|$)/i.test(CFG.model);
   if(!("gpu" in navigator)){
     $("status").className="status warn";
     $("status").innerHTML="This browser has no WebGPU, so the model can't load — but the <b>memory still works</b>. Open in desktop Chrome or Edge.";
     $("loadBtn").disabled=false; $("model").disabled=false; loading=false; return;
   }
   $("pbar").style.display="block"; setPill("load","loading model…");
+  // custom (non-prebuilt) models need their weights + model_lib registered in a merged appConfig
+  const appConfig = { model_list: (webllm.prebuiltAppConfig?.model_list||[]).concat(
+    CUSTOM.map(m=>({ model:m.model, model_id:m.id, model_lib:m.model_lib }))) };
   try{
-    engine = await webllm.CreateMLCEngine(CFG.model, { initProgressCallback:(r)=>{
+    engine = await webllm.CreateMLCEngine(CFG.model, { appConfig, initProgressCallback:(r)=>{
       const pct = r.progress!=null ? Math.round(r.progress*100) : null;
       $("status").textContent = pct!=null ? "Downloading… "+pct+"% (one-time, then cached)" : (r.text||"loading…");
       setPill("load", pct!=null ? "downloading "+pct+"%" : "loading…");
@@ -1212,8 +1232,9 @@ async function controller(text){
     if(stopRequested) break;
     const act = parseAction(raw);
     if(!act){ break; }                                             // unparseable → fall through
-    const label = act.query||act.topic||act.fact||act.rule||"";
-    ev("fire","🧭 decide · "+act.action, `<span class="pill">${String(label).slice(0,52)}</span>`);
+    const label = act.query||act.topic||act.fact||act.rule||
+      (act.action==="answer" ? (ctxHits.length ? "from "+ctxHits.length+" recalled" : (wm ? "from the conversation" : "")) : "");
+    ev("fire","🧭 decide · "+act.action, label ? `<span class="pill">${String(label).slice(0,52)}</span>` : "");
 
     if(act.action==="answer"){     // generate the full reply with working memory + recalled facts (not the short routing call)
       await modelAnswer(text, ctxHits, null, false, CFG.affect?opinionQuestion(text):null, false, wm);
