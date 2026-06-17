@@ -1,66 +1,97 @@
 ---
 license: mit
-library_name: numpy
 tags:
   - associative-memory
   - tiny-language-model
-  - pure-numpy
+  - micro-llm
   - neuron-db
   - gary-neuron
+  - grounded-qa
+  - on-device
 ---
 
-# gary-neuron-emergent
+# gary-neuron
 
-The emergence-trained cortex behind [neuron-db](https://github.com/gary23w/neuron-db) — a
-1.13M-parameter, pure-NumPy GPT that learned to **read its context window and copy values
-out of it**. It is the optional "thinking" tier that sits on top of the neuron-db store:
-the store retrieves a small working set, this cortex generates the answer over it.
+A **~6.9M-parameter** reasoning cortex that sits **between [neuron-db](https://github.com/gary23w/neuron-db) and the user**: the store retrieves a small working set of facts, and this tiny model reads that window and produces a grounded answer over it. Built by **[gary23w](https://github.com/gary23w)**.
 
-## What it is
+It is deliberately *micro* — small enough to bake straight into a binary (`include_bytes!`, no runtime download, no GPU) yet large enough to **select the right fact among distractors, chain two facts, abstain when the answer isn't present, and copy arbitrary values it has never seen.**
 
-- **arch:** gpt-numpy — 8 layers, 4 heads, dim 96, 384-token context, vocab 2048
-- **params:** 1,128,384
-- **trained:** step 33,597 (curriculum: copy-from-window + masked answer loss + abstention)
-- **emergence:** in-context QA probe reached 5/6 — it copies unseen values from the window
-  (`how many participants? -> 84,512`, `what is the wifi password? -> vekam73`) and learned
-  to abstain ("i don't know right now.") when the answer isn't present.
-- **val:** answer-token loss ~0.20; chat perplexity held (~val_soda 2.2)
+## Architecture
 
-## Files
+A pre-LN decoder-only transformer, served in **int8**:
 
-```
-cortex.bin            packed weight tensors (gpt-numpy layout; see manifest.tsv)
-manifest.tsv          weight tensor manifest (name/shape/offset) for cortex.bin
-vocab.tsv             byte-level BPE vocab (2048)
-petite_merges.txt     BPE merges
-config.json           E/H/L/BLK, vocab, param count, trained step
-```
+| | |
+|---|---|
+| params | **6,908,416** (~6.9M) |
+| dim (E) | 256 |
+| layers | 8 |
+| heads | 8 |
+| context (BLK) | 256 tokens |
+| vocab | 2048 byte-level BPE |
+| activation | tanh-GELU |
+| norm | LayerNorm (eps 1e-5), pre-LN |
+| positions | learned |
+| output | weight-tied to token embedding |
+| weights | per-row **int8** (matmuls) + f32 LayerNorm/bias |
+
+The forward pass is **byte-identical** to the Rust runtime in the neuron-db crate, so a checkpoint exported from training swaps into `cortex.bin` with **zero code changes**.
+
+## How it was trained
+
+A 7M model can't be a general LLM — but it *can* master one **narrow** distribution: *read a working set + a query → grounded answer* (knowing what to retrieve is neuron-db's job, not the model's). So it is trained on exactly that:
+
+- **Distillation seed** — a strong teacher generates natural `(facts, query) → ideal answer` examples across the target tasks, plus a **gary23w identity layer** so the model always knows *it is gary-neuron, built by gary23w*.
+- **Synthetic copy-from-window curriculum** (~16k examples) — keys/values/relations randomized every instance, with the **value shape decoupled from the key**, so the model learns the *mechanism* ("emit the span attached to the asked key") rather than memorizing values. This is what makes copy/select **generalize to values it has never seen**.
+- Answer-masked next-token cross-entropy; AdamW; cosine LR + warmup.
+
+## Evaluation
+
+Held-out exact-match accuracy, **N=80 fresh random cases per task** (values never seen in training), greedy decoding, measured in the real int8 runtime:
+
+| task | gary-neuron ~6.9M | prior 1.13M cortex |
+|---|---|---|
+| copy (arbitrary value shapes) | **90.0%** | 11.2% |
+| number-copy (comma integers) | **100%** | 8.8% |
+| select among 3–5 distractors | **70.0%** | 2.5% |
+| abstain (answer absent) | **87.5%** | 0% |
+| **multi-hop (2 facts)** | **91.2%** | 0% |
+| compare (which is more/fewer) | 53.8% | 0% |
+| **mean** | **~82%** | **~3.8%** |
 
 ## Use
 
-The neuron-db Rust crate **bundles this model into the binary** (`include_bytes!`), so there
-are no files to load at runtime. Build it from the working set the store retrieved:
+The neuron-db Rust crate **bundles this model into the binary** (`include_bytes!`) — nothing to load at runtime:
 
 ```rust
 use neuron_core::model::GaryModel;
 
-let m = GaryModel::embedded();                 // cortex + tokenizer, baked in at compile time
-let facts = vec!["the launch is on Friday".to_string()];
-let answer = m.think(&facts, "when is the launch?", 10);   // -> "Friday"
+let m = GaryModel::embedded();                       // cortex + tokenizer, baked in
+let facts = vec![
+    "the api key is zeta-9931".to_string(),
+    "the launch is on Friday".to_string(),
+];
+let answer = m.think(&facts, "what is the api key?", 16);   // -> "zeta-9931"
 ```
 
 The `think` binary (`rust/neuron-core/src/think.rs`) is a thin CLI over the same call.
 
-> **Legacy (removed):** the original prototype loaded these files in Python via
-> `gpt_numpy` and a `neuron_db.bridge` helper (`from neuron_db.bridge import
-> GaryNeuronBridge`). That Python code is gone from the main tree — it's preserved only on
-> the `legacy-python` branch. The Rust crate above is the supported path.
+## Files
 
-## Honest notes
+```
+cortex.bin          packed int8/f32 weight tensors (layout in manifest.tsv)
+manifest.tsv        tensor manifest: "#cfg E H L BLK VOCAB", then name/qtype/offset/bytelen/rows/cols
+vocab.tsv           byte-level BPE vocab (2048)
+petite_merges.txt   BPE merges
+config.json         E/H/L/BLK, vocab, param count, author
+```
 
-- It was trained on a ~2k everyday-token vocabulary in a `U:/G:` fact format. It excels at
-  copying normalized facts out of a bounded window; it is not a general chatbot.
-- For exact recall you don't need it at all — neuron-db's store returns the value
-  deterministically. This cortex is for generation/association over the working set.
+`config.json` is a compact custom config (not a `transformers` config) — the weights are served by the neuron-db Rust crate, not by `AutoModel`.
+
+## Honest limits
+
+- **compare** (deciding which of two numbers is larger) sits at ~54% — numeric magnitude reasoning is genuinely hard for a char/BPE model this small. Treat it as a stretch task, not a guarantee.
+- **paraphrase** beyond copy-from-window is weak; the 2048-token vocab fragments rare words.
+- Decoding is **greedy**, so **ungrounded open-ended generation** is not a goal — with no facts the model tends to fall back to its identity line. In the application it always receives a retrieved working set.
+- For exact recall you don't need the model at all — neuron-db's store returns the value deterministically. The cortex is for generation/association over the working set.
 
 MIT. Part of the gary-neuron family by [gary23w](https://github.com/gary23w).

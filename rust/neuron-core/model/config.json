@@ -1,11 +1,10 @@
 {
- "arch": "gpt-numpy",
- "E": 96,
- "H": 4,
- "L": 8,
- "BLK": 384,
- "vocab": 2048,
- "n_params": 1128384,
- "trained_step": 33597,
- "val_qa": 0.2
+  "E": 256,
+  "H": 8,
+  "L": 8,
+  "BLK": 256,
+  "vocab": 2048,
+  "params": 6908416,
+  "author": "gary23w",
+  "model": "gary-neuron"
 }
