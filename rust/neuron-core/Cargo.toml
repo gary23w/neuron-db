@@ -1,6 +1,6 @@
 [package]
 name = "neuron-core"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "Associative memory core (the neuron) in pure Rust, std-only. Write facts in language, recall by cue."
 license = "MIT"
