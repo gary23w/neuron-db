@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 //! Cross-scope recall: `recall_many_across` reaches a base scope AND its document sub-scopes
 //! (`base__doc1`, …) so "tell me about X" can find a document the user filed under its own scope,
 //! while typed sub-scopes (`base::var`, `base::stance`, …) and other users stay isolated.

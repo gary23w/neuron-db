@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 //! Scaling + incremental-index correctness. The recall hot-path optimization (binary_search +
 //! precomputed positions) and the incremental inverted index must NOT change any result;
 //! these tests pin the invariants that make "effectively unbounded context" safe.

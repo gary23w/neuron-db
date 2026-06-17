@@ -109,3 +109,8 @@ name = "context_scale"
 [[example]]
 name = "doc_storage_space"
 required-features = ["sqlite", "semantic"]
+
+# head-to-head vs dense-vector embeddings (uses the durable db + the semantic space)
+[[example]]
+name = "vs_vectors"
+required-features = ["sqlite", "semantic"]

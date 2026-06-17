@@ -1,3 +1,4 @@
+#![cfg(all(feature = "sqlite", feature = "semantic"))]
 //! The "document storage" pattern (the chat-lab's design): each pasted document goes into its
 //! OWN scope (e.g. `s__doc1`, `s__doc2`). These tests pin the storage behavior that pattern
 //! relies on — per-document isolation, in-scope recall, independent forget — and a sanity bound

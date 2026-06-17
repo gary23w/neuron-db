@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 //! Comprehensive unit tests for the NeuronDB (sqlite) tier.
 //! Covers observe/observe_many, recall/recall_many/get, turn, forget, stats, neurons,
 //! durability across reopen, LRU cache eviction + reload, max_facts capacity eviction,

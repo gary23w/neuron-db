@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 //! Durable, accumulating stance strength — the affective layer. A stance about a topic
 //! intensifies each time it is re-stated (a disposition deepening with repeated exposure),
 //! and that accumulated strength PERSISTS across a database reopen (cross-restart / over weeks).

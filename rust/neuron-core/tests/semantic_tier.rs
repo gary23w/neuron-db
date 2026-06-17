@@ -1,3 +1,4 @@
+#![cfg(all(feature = "sqlite", feature = "semantic"))]
 //! NeuronDB semantic fallback: paraphrase recall that shares no words with the stored fact.
 #![cfg(all(feature = "sqlite", feature = "semantic"))]
 use neuron_core::db::NeuronDB;

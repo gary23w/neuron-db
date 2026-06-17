@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 //! Opt-in write-behind (open_with_flush): single observes defer the SQLite blob rewrite for
 //! throughput, but recall is unaffected (reads the in-memory cache) and no write is lost — deferred
 //! writes are flushed on flush_all(), on Drop, and on LRU eviction. Default (open) stays immediate.
