@@ -1200,7 +1200,7 @@ async function controller(text){
     const wm = [focus, recent].filter(Boolean).join("\n\n");       // working memory = focus + recent dialogue
     ev("note","🧠 perceive · coverage "+Math.round(a.coverage*100)+"%",
        a.total ? (a.covered+"/"+a.total+" cues in memory"+(a.missing&&a.missing.length?" · missing: "+a.missing.slice(0,4).join(", "):"")) : "no content cues (small talk)",
-       ctxHits.length ? (ctxHits.length+" in context") : "nothing recalled");
+       ctxHits.length ? (ctxHits.length+" in context") : (step>0 ? "still nothing — broadening the search…" : "not in memory yet — figuring out how to find it…"));
     const usr = (focus ? focus+"\n\n" : "")+
                 (recent ? "RECENT CONVERSATION (what we are doing right now — resolve \"it\"/\"the paper\"/\"each section\"/\"continue\" against this, and STAY on this topic):\n"+recent+"\n\n" : "")+
                 "USER MESSAGE: "+text+"\n\nMEMORY COVERAGE for this message: "+Math.round(a.coverage*100)+"%  ("+a.covered+"/"+a.total+" key terms in memory)\n"+
