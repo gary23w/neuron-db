@@ -86,4 +86,37 @@ fn wasm_full_surface() {
 
     // ---- assoc (spreading activation) runs without panicking ----
     let _ = m!("assoc", sc, "Marisol", "2", "6");
+
+    // ---- assess: the knowledge-GAP signal that drives reasoned routing ----
+    let sg = "user:gap";
+    m!("obsmany", sg, "the office wifi password is hunter2\nthe deploy region is us-west-2");
+    let known: Vec<String> = m!("assess", sg, "what is the wifi password").split('\t').map(String::from).collect();
+    assert!(known[0].parse::<f64>().unwrap() > 0.0, "a known query must have >0 coverage: {known:?}");
+    assert_eq!(known[4], "1", "a known query reports a value present");
+    let gap: Vec<String> = m!("assess", sg, "what is the population of newmarket ontario").split('\t').map(String::from).collect();
+    assert_eq!(gap[0], "0.0000", "an unknown query is a total gap (0 coverage): {gap:?}");
+    assert_eq!(gap[4], "0", "an unknown query has no value");
+
+    // ---- recallscored: per-hit confidence (fact<TAB>coverage<TAB>overlap) ----
+    let scored = m!("recallscored", sg, "wifi password", "3");
+    assert!(scored.contains("hunter2"));
+    assert_eq!(scored.lines().next().unwrap().split('\t').count(), 3, "each line is fact<TAB>coverage<TAB>overlap");
+
+    // ---- variable list + delete ----
+    m!("setvar", sg, "city", "Halifax");
+    m!("setvar", sg, "plan", "pro");
+    assert!(m!("vars", sg).contains("city\tHalifax"));
+    assert_eq!(m!("delvar", sg, "city"), "1");
+    assert_eq!(m!("delvar", sg, "city"), "0", "deleting a missing var returns 0");
+    assert!(!m!("vars", sg).contains("city"));
+
+    // ---- dump + load: serialize a scope and rehydrate it into a fresh scope in ONE crossing ----
+    let blob = m!("dump", sg);
+    assert!(!blob.is_empty(), "dump must produce a blob");
+    let loaded = m!("load", "user:restored", &blob);
+    assert!(loaded.parse::<usize>().unwrap() >= 2, "load returns the fact count: {loaded:?}");
+    assert_eq!(m!("value", "user:restored", "wifi password"), "hunter2", "the restored scope recalls the same value (round-trips tabs)");
+
+    // ---- scopes: overview of every live scope ----
+    assert!(m!("scopes", "_").contains("user:restored"), "the scopes overview lists live scopes");
 }

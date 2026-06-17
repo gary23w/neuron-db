@@ -373,7 +373,7 @@ function host_http(ptr, len){
 }
 async function loadWasm(){
   // http-enabled build: same mem() surface + a host_http import the WASM calls to make web requests
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=http1"), { env: { host_http } });
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=http2"), { env: { host_http } });
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }

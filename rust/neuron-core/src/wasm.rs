@@ -12,7 +12,9 @@ use crate::Neuron;
 use crate::model::GaryModel;
 use std::collections::HashMap;
 
-static mut BUF: [u8; 262144] = [0u8; 262144];
+// 1 MiB result buffer — large enough that `dump`/`episodes`/big recalls of a realistic scope (~20k facts)
+// don't truncate. Zero-initialized static, so it costs linear memory at runtime, not module size.
+static mut BUF: [u8; 1048576] = [0u8; 1048576];
 static mut BUFLEN: usize = 0;
 
 // ---- persistent in-browser store, for the live "synapse" visualization ----
@@ -189,9 +191,9 @@ fn httpmap() -> &'static mut HashMap<i32, String> { unsafe { HTTP.get_or_insert_
 #[no_mangle] pub extern "C" fn http_deliver(token: i32, ptr: *const u8, len: usize) { httpmap().insert(token, input(ptr, len)); }
 
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
-/// ops: observe | obsmany | recall | value | assoc | chain | setvar | getvar | addinstr | instrs |
-///      delinstr | clearinstr | forget | stats | episodes | feel | stance | humanize | mood |
-///      topstance | stanceof.
+/// ops: observe | obsmany | recall | recallscored | value | assess | assoc | chain | setvar | getvar |
+///      vars | delvar | addinstr | instrs | delinstr | clearinstr | forget | stats | episodes |
+///      dump | load | scopes | feel | stance | humanize | mood | topstance | stanceof | fetch | fetched.
 #[no_mangle]
 pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
     let req = input(ptr, len);
@@ -347,6 +349,40 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
                 .and_then(|v| v.iter().find(|s| topic_matches(&s.0, &topic)))
                 .map(|s| format!("{}\t{}\t{:.1}", s.0, s.1, s.2)).unwrap_or_default()
         }
+        // --- the knowledge-GAP signal (reasoned-routing keystone, lifted into the core). For a query,
+        // surface the recall engine's OWN confidence for the best hit — coverage/overlap/exact — plus how
+        // many facts fired. A controller reads this to decide "do I know this, or must I go find out?"
+        // Returns "coverage\toverlap\texact\tn_hits\thas_value\tbest_fact".
+        "assess" => {
+            let q = arg(2);
+            let n = db.n(&scope);
+            let n_hits = n.recall_many(q, 8).iter().filter(|r| r.overlap > 0 || r.coverage > 0.0).count();
+            match n.recall(q) {
+                Some(r) => format!("{:.4}\t{}\t{}\t{}\t{}\t{}", r.coverage, r.overlap, r.exact, n_hits, (!r.value.is_empty()) as u8, r.fact),
+                None => format!("0.0000\t0\t0\t{}\t0\t", n_hits),
+            }
+        }
+        // recall WITH per-hit confidence: "fact\tcoverage\toverlap" lines, best first (so the lab can rank + show how sure it is)
+        "recallscored" => db.n(&scope).recall_many(arg(2), num(3, 6))
+            .into_iter().map(|r| format!("{}\t{:.4}\t{}", r.fact, r.coverage, r.overlap)).collect::<Vec<_>>().join("\n"),
+        // list every variable as "key\tvalue" lines (sorted, for a deterministic view)
+        "vars" => db.vars.get(&scope).map(|m| { let mut v: Vec<String> = m.iter().map(|(k,val)| format!("{}\t{}", k, val)).collect(); v.sort(); v.join("\n") }).unwrap_or_default(),
+        // delete one variable; returns "1" if it existed else "0"
+        "delvar" => db.vars.get_mut(&scope).map(|m| if m.remove(arg(2)).is_some() { "1" } else { "0" }).unwrap_or("0").to_string(),
+        // serialize the scope's facts to a portable blob (Neuron::dump) — the host persists it and restores
+        // with `load`, so a tab can rehydrate its whole memory in ONE crossing instead of replaying every observe
+        "dump" => db.scopes.get(&scope).map(|n| n.dump()).unwrap_or_default(),
+        // restore a scope's facts from a dump blob (replaces the scope); returns the fact count loaded.
+        // The blob carries its own tabs, which the protocol split — rejoin fields 2.. to reconstruct it.
+        "load" => {
+            let blob = f.iter().skip(2).copied().collect::<Vec<_>>().join("\t");
+            let n = crate::Neuron::load(&blob, 1_000_000);
+            let c = n.fact_count();
+            db.scopes.insert(scope, n);
+            c.to_string()
+        }
+        // overview: every live scope as "scope\tfactcount" lines (sorted) — for debugging / a memory map
+        "scopes" => { let mut v: Vec<String> = db.scopes.iter().map(|(k,n)| format!("{}\t{}", k, n.fact_count())).collect(); v.sort(); v.join("\n") }
         _ => String::new(),
     };
     put(&out)

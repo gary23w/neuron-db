@@ -354,9 +354,17 @@ impl Neuron {
         // primary would otherwise pick an arbitrary fact about the right entity.
         let prim_ov = { let bs = &self.episodes[bi].s;
                         cue.iter().filter(|c| bs.binary_search(c).is_ok()).count() };
+        // The O(N) root_scan rescue only helps the relation-MORPHOLOGY case (query "owner" vs fact "owned"):
+        // a missing NON-relation word (e.g. "where", "what") can't be matched by a morph scan, so don't pay
+        // O(N) for it. Gating on an unbound relation cue keeps recall O(candidates) for ordinary questions —
+        // value/assess/chain (which all call recall) drop from ~ms to ~µs on a large scope.
         if prim_ov < cue.len() {
-            if let Some(r) = self.root_scan(query, 1).into_iter().next() {
-                if r.overlap > prim_ov { return Some(r); }
+            let bs = &self.episodes[bi].s;
+            let unbound_rel = cue.iter().any(|c| rel_s().contains(c) && bs.binary_search(c).is_err());
+            if unbound_rel {
+                if let Some(r) = self.root_scan(query, 1).into_iter().next() {
+                    if r.overlap > prim_ov { return Some(r); }
+                }
             }
         }
         let e = &self.episodes[bi];
