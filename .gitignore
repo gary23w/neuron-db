@@ -13,3 +13,6 @@ venv/
 .cloudflare_token
 .DS_Store
 .pytest_cache/
+
+# Model training pipeline + corpus — kept local only, never committed
+train/
