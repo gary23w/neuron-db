@@ -74,6 +74,29 @@ required-features = ["secure"]
 name = "db_bench"
 required-features = ["sqlite"]
 
+# "1000 books" density + retrieval-at-scale sweep (storage density, p50/p99 recall, write cost,
+# disk-full mode). The empirical answer to "does the load-factor wall apply to neuron-db?".
+[[example]]
+name = "density_bench"
+required-features = ["sqlite"]
+
+# byte anatomy of a single fact (text vs scalars vs ZERO stored coordinates) + the semantic
+# space's DIM cost. The empirical answer to "how many dimensions does a neuron fill?".
+[[example]]
+name = "dimension_anatomy"
+required-features = ["sqlite", "semantic"]
+
+# (a) semantic DIM sweep: recall quality (neighbor coherence + paraphrase top-1) vs size vs
+# embed speed at DIM 64/128/256/512/1024 — "how would extended dimensions affect recall?".
+[[example]]
+name = "dim_sweep"
+required-features = ["semantic"]
+
+# (b) HDC/VSA superposition capacity micro-test: how many key->value pairs fit in ONE D-bit
+# vector before crosstalk breaks recall (the real, lossy 'pack more into dimensions' idea).
+[[example]]
+name = "hdc_superposition"
+
 [[example]]
 name = "scenario_bench"
 required-features = ["sqlite"]

@@ -12,7 +12,7 @@
 //! Feature-gated behind `semantic`; pure std (HashMap + f32 vectors).
 use std::collections::HashMap;
 
-const DIM: usize = 256;       // dimensionality of the semantic space
+const DEFAULT_DIM: usize = 256;   // default dimensionality (configurable per-space via with_dim)
 const NONZ: usize = 12;       // nonzeros in each word's sparse random index vector
 const WINDOW: usize = 5;      // co-occurrence window (each side)
 
@@ -80,6 +80,7 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 pub struct SemanticSpace {
+    dim: usize,                       // this space's dimensionality (DEFAULT_DIM unless with_dim)
     ctx: HashMap<String, Vec<f32>>,   // word -> dense context vector
     cnt: HashMap<String, u32>,        // word -> occurrence count (for picking top words)
     tokens_seen: u64,
@@ -99,25 +100,28 @@ pub struct Projection {
 }
 
 impl SemanticSpace {
-    pub fn new() -> Self { SemanticSpace { ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new(), ctx_q: HashMap::new() } }
+    pub fn new() -> Self { Self::with_dim(DEFAULT_DIM) }
+    /// Build a space with a chosen dimensionality — the DIM knob. All vectors within one space
+    /// share this dim (mixing spaces of different dim is not meaningful). Default (new) is 256.
+    pub fn with_dim(dim: usize) -> Self { SemanticSpace { dim, ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new(), ctx_q: HashMap::new() } }
     pub fn vocab(&self) -> usize { self.ctx.len() + self.ctx_q.len() }
     pub fn count(&self, w: &str) -> u32 { self.cnt.get(w).copied().unwrap_or(0) }
     pub fn tokens(&self) -> u64 { self.tokens_seen }
-    pub fn dim(&self) -> usize { DIM }
+    pub fn dim(&self) -> usize { self.dim }
     /// Approximate resident bytes: the f32 context vectors plus the int8 embedding cache.
     pub fn bytes(&self) -> usize {
-        self.ctx.keys().map(|k| k.len() + DIM * 4 + 48).sum::<usize>()
-            + self.ctx_q.keys().map(|k| k.len() + DIM + 16).sum::<usize>()
-            + self.emb_cache.keys().map(|k| k.len() + DIM + 16).sum::<usize>()
+        self.ctx.keys().map(|k| k.len() + self.dim * 4 + 48).sum::<usize>()
+            + self.ctx_q.keys().map(|k| k.len() + self.dim + 16).sum::<usize>()
+            + self.emb_cache.keys().map(|k| k.len() + self.dim + 16).sum::<usize>()
     }
     pub fn cached_embeddings(&self) -> usize { self.emb_cache.len() }
 
     /// add the sparse random index vector of `word` into `target`
-    fn add_index(target: &mut [f32], word: &str) {
+    fn add_index(target: &mut [f32], word: &str, dim: usize) {
         let seed = fnv(word);
         for k in 0..NONZ {
             let r = splitmix(seed ^ (k as u64).wrapping_mul(0x100000001B3));
-            let pos = (r % DIM as u64) as usize;
+            let pos = (r % dim as u64) as usize;
             let sign = if (r >> 33) & 1 == 0 { 1.0 } else { -1.0 };
             target[pos] += sign;
         }
@@ -139,15 +143,16 @@ impl SemanticSpace {
     /// Learn from a span of text: each word accumulates the index vectors of its neighbours.
     pub fn train(&mut self, text: &str) {
         if !self.ctx_q.is_empty() { self.expand(); } // resume full-precision training if compacted
+        let dim = self.dim;
         let toks = tokenize(text);
         self.tokens_seen += toks.len() as u64;
         for i in 0..toks.len() {
             let lo = i.saturating_sub(WINDOW);
             let hi = (i + WINDOW + 1).min(toks.len());
             *self.cnt.entry(toks[i].clone()).or_insert(0) += 1;
-            let v = self.ctx.entry(toks[i].clone()).or_insert_with(|| vec![0.0; DIM]);
+            let v = self.ctx.entry(toks[i].clone()).or_insert_with(|| vec![0.0; dim]);
             for j in lo..hi {
-                if j != i { Self::add_index(v, &toks[j]); }
+                if j != i { Self::add_index(v, &toks[j], dim); }
             }
         }
     }
@@ -166,6 +171,7 @@ impl SemanticSpace {
         if n == 0 || k == 0 {
             return Projection { words, coords: Vec::new(), clusters: Vec::new(), variance: Vec::new(), total_variance: 0.0 };
         }
+        let dim = self.dim;
         // build the centered, direction-normalized data matrix (n x DIM)
         let mut x: Vec<Vec<f32>> = words.iter().map(|w| {
             let cv = &self.ctx[w];
@@ -175,10 +181,10 @@ impl SemanticSpace {
         // cluster in TRUE 256-D (on the unit sphere = the cosine geometry the model scores on),
         // BEFORE mean-centering — so colour reflects real meaning, not the 3-D projection.
         let clusters = kmeans_unit(&x, 6, 14);
-        let mut mean = vec![0.0f32; DIM];
-        for row in &x { for d in 0..DIM { mean[d] += row[d]; } }
-        for d in 0..DIM { mean[d] /= n as f32; }
-        for row in &mut x { for d in 0..DIM { row[d] -= mean[d]; } }
+        let mut mean = vec![0.0f32; dim];
+        for row in &x { for d in 0..dim { mean[d] += row[d]; } }
+        for d in 0..dim { mean[d] /= n as f32; }
+        for row in &mut x { for d in 0..dim { row[d] -= mean[d]; } }
         let centered = x.clone();
         let total_variance: f32 = centered.iter().map(|r| r.iter().map(|v| v * v).sum::<f32>()).sum::<f32>() / n as f32;
 
@@ -187,26 +193,26 @@ impl SemanticSpace {
         let mut variance: Vec<f32> = Vec::new();
         for c in 0..k {
             // deterministic random unit init
-            let mut v = vec![0.0f32; DIM];
+            let mut v = vec![0.0f32; dim];
             let mut seed = 0x5EED_C0DEu64 ^ (c as u64).wrapping_mul(0x9E37_79B9);
-            for d in 0..DIM { seed = splitmix(seed); v[d] = ((seed >> 11) as f32 / (1u64 << 53) as f32) - 0.5; }
-            let mut nv = Self::norm(&v).max(1e-9); for d in 0..DIM { v[d] /= nv; }
+            for d in 0..dim { seed = splitmix(seed); v[d] = ((seed >> 11) as f32 / (1u64 << 53) as f32) - 0.5; }
+            let mut nv = Self::norm(&v).max(1e-9); for d in 0..dim { v[d] /= nv; }
             // power iteration on the covariance of the (deflated) data
             for _ in 0..40 {
                 let u: Vec<f32> = x.iter().map(|row| row.iter().zip(&v).map(|(a, b)| a * b).sum::<f32>()).collect();
-                let mut w = vec![0.0f32; DIM];
-                for (i, row) in x.iter().enumerate() { let ui = u[i]; for d in 0..DIM { w[d] += ui * row[d]; } }
-                nv = Self::norm(&w).max(1e-9); for d in 0..DIM { v[d] = w[d] / nv; }
+                let mut w = vec![0.0f32; dim];
+                for (i, row) in x.iter().enumerate() { let ui = u[i]; for d in 0..dim { w[d] += ui * row[d]; } }
+                nv = Self::norm(&w).max(1e-9); for d in 0..dim { v[d] = w[d] / nv; }
             }
             // canonicalize sign (power iteration converges to +-v): largest loading positive,
             // so reloads and axis tweens never randomly mirror the layout.
             let mut piv = 0usize;
-            for d in 1..DIM { if v[d].abs() > v[piv].abs() { piv = d; } }
-            if v[piv] < 0.0 { for d in 0..DIM { v[d] = -v[d]; } }
+            for d in 1..dim { if v[d].abs() > v[piv].abs() { piv = d; } }
+            if v[piv] < 0.0 { for d in 0..dim { v[d] = -v[d]; } }
             // explained variance along v, then deflate
             let proj: Vec<f32> = x.iter().map(|row| row.iter().zip(&v).map(|(a, b)| a * b).sum::<f32>()).collect();
             variance.push(proj.iter().map(|p| p * p).sum::<f32>() / n as f32);
-            for (i, row) in x.iter_mut().enumerate() { let p = proj[i]; for d in 0..DIM { row[d] -= p * v[d]; } }
+            for (i, row) in x.iter_mut().enumerate() { let p = proj[i]; for d in 0..dim { row[d] -= p * v[d]; } }
             comps.push(v);
         }
         // project the ORIGINAL centered rows onto each component
@@ -230,22 +236,23 @@ impl SemanticSpace {
     /// Embed text into the space: the L2-normalized sum of its known words' context vectors
     /// (each normalized first so frequent words don't dominate). None if no word is known.
     pub fn embed(&self, text: &str) -> Option<Vec<f32>> {
-        let mut acc = vec![0.0f32; DIM];
+        let dim = self.dim;
+        let mut acc = vec![0.0f32; dim];
         let mut any = false;
         for t in tokenize(text) {
             if let Some(cv) = self.ctx.get(&t) {
                 let n = Self::norm(cv);
-                if n > 0.0 { for d in 0..DIM { acc[d] += cv[d] / n; } any = true; }
+                if n > 0.0 { for d in 0..dim { acc[d] += cv[d] / n; } any = true; }
             } else if let Some((q, s)) = self.ctx_q.get(&t) {
                 let mut nrm = 0f32; for x in q { let f = *x as f32 * s; nrm += f * f; }
                 let nrm = nrm.sqrt();
-                if nrm > 0.0 { for d in 0..DIM { acc[d] += (q[d] as f32 * s) / nrm; } any = true; }
+                if nrm > 0.0 { for d in 0..dim { acc[d] += (q[d] as f32 * s) / nrm; } any = true; }
             }
         }
         if !any { return None; }
         let n = Self::norm(&acc);
         if n == 0.0 { return None; }
-        for d in 0..DIM { acc[d] /= n; }
+        for d in 0..dim { acc[d] /= n; }
         Some(acc)
     }
 
