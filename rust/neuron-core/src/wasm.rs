@@ -11,6 +11,15 @@
 use crate::Neuron;
 use crate::model::GaryModel;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// The cortex + tokenizer, built ONCE and reused across calls. Rebuilding it per call
+/// (dequantizing ~6.9M int8 weights + reloading the BPE every run()/selftest()) was the
+/// dominant cost of the in-browser inference path.
+fn cortex() -> &'static GaryModel {
+    static M: OnceLock<GaryModel> = OnceLock::new();
+    M.get_or_init(GaryModel::embedded)
+}
 
 // 1 MiB result buffer — large enough that `dump`/`episodes`/big recalls of a realistic scope (~20k facts)
 // don't truncate. Zero-initialized static, so it costs linear memory at runtime, not module size.
@@ -101,7 +110,7 @@ pub extern "C" fn selftest() -> i32 {
     if let Some(r) = s.recall("what is the wifi password?") {
         if r.value == "vekam73" { code |= 1; }
     }
-    let m = GaryModel::embedded();
+    let m = cortex();
     let facts: Vec<String> = s.recall("what is the wifi password?").map(|r| vec![r.fact]).unwrap_or_default();
     let ans = m.think(&facts, "what is the wifi password?", 8);
     if ans.contains("vekam73") { code |= 2; }
@@ -130,7 +139,7 @@ pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
     let mut store = Neuron::new(500);
     for f in lines { if !f.trim().is_empty() { store.observe(f); } }
     let facts: Vec<String> = store.recall(&query).map(|r| vec![r.fact]).unwrap_or_default();
-    let ans = GaryModel::embedded().think(&facts, &query, 10);
+    let ans = cortex().think(&facts, &query, 10);
     let b = ans.as_bytes(); let n = b.len().min(256);
     unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
     n

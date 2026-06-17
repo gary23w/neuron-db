@@ -1,16 +1,47 @@
 // Hand-written numeric kernels below index parallel weight/activation arrays by position; the
 // index-based loops mirror the reference math and read clearer than enumerate/zip chains.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-//! Pure-Rust forward pass for the gary-neuron cortex (the emergence model, 8L/E96/384ctx).
-//! Mirrors the TypeScript port (which matched numpy to 0.0000 MSE). std-only.
-//! Weights load from the int8 blob + flat manifest bundled in model/.
+//! Pure-Rust forward pass for the gary-neuron cortex. std-only, runs natively and in wasm.
+//! Mirrors the reference math (numpy/TS port matched to 0.0000 MSE).
+//!
+//! Two perf decisions matter for the (browser-)wasm hot path:
+//!   * weights are resolved into directly-indexed `Block` slices ONCE at load — the forward
+//!     loop does no `format!()`/HashMap lookups per layer per token.
+//!   * generation is INCREMENTAL via a per-layer K/V cache (`Kv`): the prompt is encoded once,
+//!     then each new token is a single-token step instead of re-forwarding the whole window.
+//! The arithmetic is byte-identical to the old full-window forward, so outputs are unchanged.
 use std::collections::HashMap;
 
 const C: f32 = 0.797_884_6; const A: f32 = 0.044_715;
 fn gelu(x: f32) -> f32 { 0.5 * x * (1.0 + (C * (x + A * x * x * x)).tanh()) }
 
 pub struct Cfg { pub e: usize, pub h: usize, pub l: usize, pub blk: usize, pub vocab: usize }
-pub struct Cortex { pub cfg: Cfg, t: HashMap<String, Vec<f32>> }
+
+/// One transformer block's weights, resolved to flat slices at load (no per-call lookups).
+struct Block {
+    ln1_w: Vec<f32>, ln1_b: Vec<f32>,
+    in_w: Vec<f32>, in_b: Vec<f32>,        // attn.in_proj  [3e, e]
+    out_w: Vec<f32>, out_b: Vec<f32>,      // attn.out_proj [e, e]
+    ln2_w: Vec<f32>, ln2_b: Vec<f32>,
+    mlp0_w: Vec<f32>, mlp0_b: Vec<f32>,    // mlp.0 [4e, e]
+    mlp2_w: Vec<f32>, mlp2_b: Vec<f32>,    // mlp.2 [e, 4e]
+}
+
+pub struct Cortex {
+    pub cfg: Cfg,
+    tok: Vec<f32>, pos: Vec<f32>,
+    lnf_w: Vec<f32>, lnf_b: Vec<f32>,
+    blocks: Vec<Block>,
+}
+
+/// Per-layer key/value cache for incremental decoding. `k[li]`/`v[li]` hold `len` positions,
+/// each a full e-dim vector laid out as `[pos*e + dim]`.
+pub struct Kv { k: Vec<Vec<f32>>, v: Vec<Vec<f32>>, len: usize }
+impl Kv {
+    pub fn new(layers: usize) -> Kv { Kv { k: vec![Vec::new(); layers], v: vec![Vec::new(); layers], len: 0 } }
+    pub fn len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+}
 
 impl Cortex {
     /// bin = cortex.bin ; manifest = manifest.tsv (first line "#cfg\tE\tH\tL\tBLK\tVOCAB")
@@ -40,73 +71,93 @@ impl Cortex {
             }
             t.insert(name.to_string(), data);
         }
-        Cortex { cfg, t }
-    }
-
-    fn ln(&self, x: &[f32], n: usize, e: usize, w: &[f32], b: &[f32], out: &mut [f32]) {
-        for i in 0..n {
-            let base = i * e;
-            let mu: f32 = x[base..base+e].iter().sum::<f32>() / e as f32;
-            let var: f32 = x[base..base+e].iter().map(|v| (v-mu)*(v-mu)).sum::<f32>() / e as f32;
-            let inv = 1.0 / (var + 1e-5).sqrt();
-            for j in 0..e { out[base+j] = (x[base+j]-mu)*inv*w[j] + b[j]; }
-        }
-    }
-    fn linear(&self, x: &[f32], n: usize, i_dim: usize, o_dim: usize, w: &[f32], b: &[f32], out: &mut [f32]) {
-        for ti in 0..n {
-            let xb = ti*i_dim; let ob = ti*o_dim;
-            for o in 0..o_dim {
-                let mut acc = b[o]; let wb = o*i_dim;
-                for i in 0..i_dim { acc += x[xb+i]*w[wb+i]; }
-                out[ob+o] = acc;
+        // resolve every tensor to a directly-held slice ONCE (kills format!()/HashMap in forward)
+        let mut take = |name: String| t.remove(&name).unwrap_or_else(|| panic!("manifest missing tensor {name}"));
+        let blocks = (0..cfg.l).map(|li| {
+            let p = format!("blocks.{li}.");
+            Block {
+                ln1_w: take(format!("{p}ln1.weight")), ln1_b: take(format!("{p}ln1.bias")),
+                in_w: take(format!("{p}attn.in_proj_weight")), in_b: take(format!("{p}attn.in_proj_bias")),
+                out_w: take(format!("{p}attn.out_proj.weight")), out_b: take(format!("{p}attn.out_proj.bias")),
+                ln2_w: take(format!("{p}ln2.weight")), ln2_b: take(format!("{p}ln2.bias")),
+                mlp0_w: take(format!("{p}mlp.0.weight")), mlp0_b: take(format!("{p}mlp.0.bias")),
+                mlp2_w: take(format!("{p}mlp.2.weight")), mlp2_b: take(format!("{p}mlp.2.bias")),
             }
+        }).collect();
+        let (tok, pos) = (take("tok.weight".into()), take("pos.weight".into()));
+        let (lnf_w, lnf_b) = (take("lnf.weight".into()), take("lnf.bias".into()));
+        Cortex { cfg, tok, pos, lnf_w, lnf_b, blocks }
+    }
+
+    /// LayerNorm of a single e-vector into `out`.
+    fn ln(x: &[f32], w: &[f32], b: &[f32], out: &mut [f32]) {
+        let e = x.len();
+        let mu: f32 = x.iter().sum::<f32>() / e as f32;
+        let var: f32 = x.iter().map(|v| (v-mu)*(v-mu)).sum::<f32>() / e as f32;
+        let inv = 1.0 / (var + 1e-5).sqrt();
+        for j in 0..e { out[j] = (x[j]-mu)*inv*w[j] + b[j]; }
+    }
+    /// out[o] = b[o] + sum_i x[i]*w[o*i_dim + i]  (single token).
+    fn linear(x: &[f32], i_dim: usize, o_dim: usize, w: &[f32], b: &[f32], out: &mut [f32]) {
+        for o in 0..o_dim {
+            let wb = o*i_dim; let mut acc = b[o];
+            for i in 0..i_dim { acc += x[i]*w[wb+i]; }
+            out[o] = acc;
         }
     }
 
-    /// logits for the LAST position only
-    pub fn forward_last(&self, ids: &[usize]) -> Vec<f32> {
+    /// Encode `ids` incrementally on top of `cache` (positions continue from `cache.len`),
+    /// appending each token's per-layer K/V. Returns logits for the LAST token in `ids`.
+    /// Same arithmetic as a full-window forward over [prior cache ++ ids], last position.
+    pub fn forward(&self, ids: &[usize], cache: &mut Kv) -> Vec<f32> {
         let (e, h, l, vocab) = (self.cfg.e, self.cfg.h, self.cfg.l, self.cfg.vocab);
-        let hd = e / h; let tt = ids.len();
-        let tok = &self.t["tok.weight"]; let pos = &self.t["pos.weight"];
-        let mut x = vec![0f32; tt*e];
-        for i in 0..tt { for j in 0..e { x[i*e+j] = tok[ids[i]*e+j] + pos[i*e+j]; } }
-        let mut h1 = vec![0f32; tt*e]; let mut qkv = vec![0f32; tt*3*e];
-        let mut o = vec![0f32; tt*e]; let mut ao = vec![0f32; tt*e];
-        let mut h2 = vec![0f32; tt*e]; let mut m0 = vec![0f32; tt*4*e]; let mut m2 = vec![0f32; tt*e];
-        for li in 0..l {
-            let p = format!("blocks.{}.", li);
-            self.ln(&x, tt, e, &self.t[&format!("{}ln1.weight",p)], &self.t[&format!("{}ln1.bias",p)], &mut h1);
-            self.linear(&h1, tt, e, 3*e, &self.t[&format!("{}attn.in_proj_weight",p)], &self.t[&format!("{}attn.in_proj_bias",p)], &mut qkv);
-            for v in o.iter_mut() { *v = 0.0; }
-            let sca = 1.0 / (hd as f32).sqrt();
-            for head in 0..h {
-                let (qo, ko, vo) = (head*hd, e + head*hd, 2*e + head*hd);
-                for ti in 0..tt {
-                    let mut sc = vec![0f32; ti+1]; let mut mx = f32::NEG_INFINITY;
-                    for j in 0..=ti {
-                        let mut d = 0f32; let qb = ti*3*e+qo; let kb = j*3*e+ko;
-                        for c in 0..hd { d += qkv[qb+c]*qkv[kb+c]; }
+        let hd = e / h; let sca = 1.0 / (hd as f32).sqrt();
+        let mut h1 = vec![0f32; e]; let mut qkv = vec![0f32; 3*e];
+        let mut attn = vec![0f32; e]; let mut o = vec![0f32; e];
+        let mut h2 = vec![0f32; e]; let mut m0 = vec![0f32; 4*e]; let mut m2 = vec![0f32; e];
+        let mut x = vec![0f32; e];
+        let mut logits = vec![0f32; vocab];
+        let last = ids.len() - 1;
+        for (n, &id) in ids.iter().enumerate() {
+            let posi = cache.len;                       // absolute position of this token
+            for j in 0..e { x[j] = self.tok[id*e + j] + self.pos[posi*e + j]; }
+            for li in 0..l {
+                let bl = &self.blocks[li];
+                Self::ln(&x, &bl.ln1_w, &bl.ln1_b, &mut h1);
+                Self::linear(&h1, e, 3*e, &bl.in_w, &bl.in_b, &mut qkv);
+                cache.k[li].extend_from_slice(&qkv[e..2*e]);     // append this token's K (full e)
+                cache.v[li].extend_from_slice(&qkv[2*e..3*e]);   // and V
+                let np = posi + 1;                                // positions to attend over (incl. self)
+                let (kc, vc) = (&cache.k[li], &cache.v[li]);
+                for head in 0..h {
+                    let qo = head*hd;
+                    let mut sc = vec![0f32; np]; let mut mx = f32::NEG_INFINITY;
+                    for j in 0..np {
+                        let kb = j*e + head*hd; let mut d = 0f32;
+                        for c in 0..hd { d += qkv[qo+c]*kc[kb+c]; }
                         d *= sca; sc[j] = d; if d > mx { mx = d; }
                     }
                     let mut sum = 0f32;
-                    for j in 0..=ti { sc[j] = (sc[j]-mx).exp(); sum += sc[j]; }
-                    let ob = ti*e + head*hd;
-                    for j in 0..=ti { let w = sc[j]/sum; let vb = j*3*e+vo; for c in 0..hd { o[ob+c] += w*qkv[vb+c]; } }
+                    for j in 0..np { sc[j] = (sc[j]-mx).exp(); sum += sc[j]; }
+                    let ob = head*hd;
+                    for c in 0..hd { attn[ob+c] = 0.0; }
+                    for j in 0..np { let w = sc[j]/sum; let vb = j*e + head*hd; for c in 0..hd { attn[ob+c] += w*vc[vb+c]; } }
                 }
+                Self::linear(&attn, e, e, &bl.out_w, &bl.out_b, &mut o);
+                for j in 0..e { x[j] += o[j]; }
+                Self::ln(&x, &bl.ln2_w, &bl.ln2_b, &mut h2);
+                Self::linear(&h2, e, 4*e, &bl.mlp0_w, &bl.mlp0_b, &mut m0);
+                for v in m0.iter_mut() { *v = gelu(*v); }
+                Self::linear(&m0, 4*e, e, &bl.mlp2_w, &bl.mlp2_b, &mut m2);
+                for j in 0..e { x[j] += m2[j]; }
             }
-            self.linear(&o, tt, e, e, &self.t[&format!("{}attn.out_proj.weight",p)], &self.t[&format!("{}attn.out_proj.bias",p)], &mut ao);
-            for i in 0..tt*e { x[i] += ao[i]; }
-            self.ln(&x, tt, e, &self.t[&format!("{}ln2.weight",p)], &self.t[&format!("{}ln2.bias",p)], &mut h2);
-            self.linear(&h2, tt, e, 4*e, &self.t[&format!("{}mlp.0.weight",p)], &self.t[&format!("{}mlp.0.bias",p)], &mut m0);
-            for v in m0.iter_mut() { *v = gelu(*v); }
-            self.linear(&m0, tt, 4*e, e, &self.t[&format!("{}mlp.2.weight",p)], &self.t[&format!("{}mlp.2.bias",p)], &mut m2);
-            for i in 0..tt*e { x[i] += m2[i]; }
+            cache.len += 1;
+            if n == last {
+                let mut xf = vec![0f32; e];
+                Self::ln(&x, &self.lnf_w, &self.lnf_b, &mut xf);
+                for v in 0..vocab { let wb = v*e; let mut acc = 0f32; for c in 0..e { acc += xf[c]*self.tok[wb+c]; } logits[v] = acc; }
+            }
         }
-        let mut last = vec![0f32; e]; let mut xf = vec![0f32; e];
-        for j in 0..e { last[j] = x[(tt-1)*e+j]; }
-        self.ln(&last, 1, e, &self.t["lnf.weight"], &self.t["lnf.bias"], &mut xf);
-        let mut logits = vec![0f32; vocab];
-        for v in 0..vocab { let mut acc = 0f32; let wb = v*e; for c in 0..e { acc += xf[c]*tok[wb+c]; } logits[v] = acc; }
         logits
     }
 }
