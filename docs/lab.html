@@ -260,6 +260,7 @@
     </div>
     <div class="sect">
       <div class="lab">Harness behaviour</div>
+      <div class="row"><label>Reasoned routing <span class="hint">— the model decides each turn (perceive→reason→act) instead of regex</span></label><span class="sw"><input type="checkbox" id="cfgThink"><span class="tr"></span></span></div>
       <div class="row"><label>Passive capture <span class="hint">— auto-store facts you state</span></label><span class="sw"><input type="checkbox" id="cfgCapture"><span class="tr"></span></span></div>
       <div class="row"><label>Feelings <span class="hint">— moods + accumulating opinions</span></label><span class="sw"><input type="checkbox" id="cfgAffect"><span class="tr"></span></span></div>
       <div class="row"><label>Ordered narration <span class="hint">— span recall for “walk me through”</span></label><span class="sw"><input type="checkbox" id="cfgOrdered"><span class="tr"></span></span></div>
@@ -320,7 +321,7 @@ const td = new TextDecoder(), te = new TextEncoder();
 
 // ============================ settings ============================
 const CFG_DEF = { model:"Llama-3.2-3B-Instruct-q4f16_1-MLC", temp:0.4, maxTokens:512, recallK:8,
-  mode:"agent", capture:true, affect:true, ordered:true, internals:true, theme:"dark" };   // 100% local — no network config
+  mode:"agent", think:true, capture:true, affect:true, ordered:true, internals:true, theme:"dark" };   // 100% local — no network config
 let CFG = Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem("nblab.cfg")||"{}"));
 const saveCfg = () => localStorage.setItem("nblab.cfg", JSON.stringify(CFG));
 function applyCfg(){
@@ -330,7 +331,7 @@ function applyCfg(){
   $("cfgTemp").value = CFG.temp; $("cfgTempV").textContent = (+CFG.temp).toFixed(2);
   $("cfgMax").value = CFG.maxTokens; $("cfgMaxV").textContent = CFG.maxTokens;
   $("cfgK").value = CFG.recallK; $("cfgKV").textContent = CFG.recallK;
-  $("cfgCapture").checked = CFG.capture; $("cfgAffect").checked = CFG.affect;
+  $("cfgThink").checked = CFG.think!==false; $("cfgCapture").checked = CFG.capture; $("cfgAffect").checked = CFG.affect;
   $("cfgOrdered").checked = CFG.ordered; $("cfgInternals").checked = CFG.internals;
   [...$("themeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.t===CFG.theme));
   [...$("modeSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.m===CFG.mode));
@@ -1095,6 +1096,109 @@ async function agentTurn(userText, seedHits, seedOrdered){
   if(active){ active.messages.push({cls:"a",text:answer,who:"assistant"}); saveChats(); }
 }
 
+// ============================ reasoned routing — "the model decides, neuron-db grounds" ============================
+// The breakthrough this replaces: a regex router classifies the SURFACE FORM of the message (unwinnable — infinite
+// phrasings). Instead we (1) measure the KNOWLEDGE GAP in the WASM — phrasing-independent — and (2) let the model
+// REASON over that gap + the available tools to pick ONE action. neuron-db does the part of thinking a weak model
+// can't be trusted with (knowing what it doesn't know); the model does the part neuron-db can't (understanding +
+// choosing). The loop perceive→reason→act→observe IS the thinking, and it's shown live in the synapse panel.
+
+// PERCEIVE — coverage = of the message's content cues, how many does memory actually contain? (0 = total gap.)
+// This reads neuron-db's own recall+scoring (the WASM grounds); it never looks at sentence shape, so it generalises
+// across every phrasing. (Provisional in JS; the next step lifts this into a pure-Rust mem("assess",…) op.)
+function assess(query){
+  const qk = keywords(queryKeywords(query));
+  const { hits } = smartRecall(query);
+  if(!qk.length) return { coverage:1, covered:0, total:0, hits, cues:[] };   // no content cues → pure chit-chat, nothing to "know"
+  const hay = " "+hits.join("  ").toLowerCase()+" ";
+  const missing = qk.filter(w=>!hay.includes(w));
+  const covered = qk.length - missing.length;
+  return { coverage: covered/qk.length, covered, total:qk.length, hits, cues:qk, missing };
+}
+function parseAction(raw){ const o=firstJsonObj(stripThink(raw)); return (o && o.action) ? o : null; }
+const CONTROLLER_SYS =
+  "You are the CONTROLLER of an assistant whose only long-term memory is neuron-db. Memory was ALREADY queried for "+
+  "this message; you are told the COVERAGE (what fraction of the message's key terms are actually in memory) and the "+
+  "RECALLED FACTS. Decide ONE action and output it as a SINGLE JSON object on one line — nothing before or after it:\n"+
+  '{"action":"answer","say":"..."}            — you can answer from the RECALLED FACTS, or it is small talk. Put the full reply in "say".\n'+
+  '{"action":"web_search","query":"..."}       — a real-world / current fact you do NOT have (low coverage). Fetches a public source and saves it.\n'+
+  '{"action":"deep_research","topic":"..."}     — the user wants depth: many linked sources crawled into a big context.\n'+
+  '{"action":"store","fact":"..."}              — the user TOLD you a durable fact (about themselves or the world). Save it, verbatim and self-contained.\n'+
+  '{"action":"set_rule","rule":"..."}           — the user set a standing instruction / tone / mood for how you should reply.\n'+
+  '{"action":"recall_more","query":"..."}       — memory may hold it under different words; try one more recall with better terms first.\n\n'+
+  "HARD RULES: If COVERAGE is low and the user is ASKING for a real-world fact, you MUST web_search — never guess a "+
+  "number, name, date or population from your own training. If the user is TELLING you something, store it. NEVER store "+
+  "a question or a command (e.g. 'search it up' is a web_search, not a store). Prefer answer when coverage is high. "+
+  "Keep 'say' grounded ONLY in the RECALLED FACTS; if they don't contain it, don't invent it — search instead.";
+
+// THINK — the controller loop. One model call picks the action; neuron-db executes and grounds it; repeat if needed.
+async function controller(text){
+  // small talk has nothing to "know" — converse directly, don't spend a routing call (and never search "hey")
+  if(isSmallTalk(text)){ await modelAnswer(text, [], null, false, CFG.affect?opinionQuestion(text):null, true); return; }
+  let cur=text; const tried=new Set();
+  for(let step=0; step<4 && !stopRequested; step++){
+    const a = assess(cur);
+    ev("note","🧠 perceive · coverage "+Math.round(a.coverage*100)+"%",
+       a.total ? (a.covered+"/"+a.total+" cues in memory"+(a.missing&&a.missing.length?" · missing: "+a.missing.slice(0,4).join(", "):"")) : "no content cues (small talk)",
+       a.hits.length ? (a.hits.length+" recalled") : "nothing recalled");
+    const usr = "USER MESSAGE: "+text+"\n\nMEMORY COVERAGE: "+Math.round(a.coverage*100)+"%  ("+a.covered+"/"+a.total+
+                " of the message's key terms are in memory)\nRECALLED FACTS:\n"+
+                (a.hits.length ? a.hits.slice(0,8).map((h,i)=>(i+1)+". "+safeLine(h)).join("\n") : "(none — memory has nothing for this)")+
+                "\n\nOutput ONE action JSON now.";
+    let raw="";
+    try{ const r=await engine.chat.completions.create({messages:[{role:"system",content:CONTROLLER_SYS},{role:"user",content:usr}], temperature:0.1, max_tokens:220, stream:false}); raw=r.choices?.[0]?.message?.content||""; }
+    catch(e){ break; }                                              // model error → fall through to answer-from-recall
+    if(stopRequested) break;
+    const act = parseAction(raw);
+    if(!act){ break; }                                             // unparseable → fall through
+    const label = act.query||act.topic||act.fact||act.rule||(act.say?act.say.slice(0,48):"");
+    ev("fire","🧭 decide · "+act.action, `<span class="pill">${String(label).slice(0,52)}</span>`);
+
+    if(act.action==="answer"){
+      if(typeof act.say==="string" && act.say.trim().length>1){
+        const say=enforce(act.say.trim()); bubble("a", say, "assistant");
+        if(active){ active.messages.push({cls:"a", text:say, who:"assistant"}); saveChats(); }
+      } else {
+        await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && isSmallTalk(text));
+      }
+      return;
+    }
+    if(act.action==="store" && act.fact){
+      if(observeIn(SCOPE, act.fact)){ setStats(); ev("store","stored", act.fact); }
+      bubble("a", enforce("Got it — saved to memory: \""+act.fact+"\". Ask me about it any time."), "assistant"); return;
+    }
+    if(act.action==="set_rule" && act.rule){
+      addInstr(act.rule); ev("note","note · standing instruction", act.rule);
+      bubble("a", enforce("Done — that's a standing instruction now; I'll re-apply it every turn."), "assistant"); return;
+    }
+    if(act.action==="web_search" && act.query){
+      const status=bubble("s","🌐 fetching the web for \""+String(act.query).slice(0,80)+"\"…");
+      const { provider, facts } = await webSearch(act.query); status.remove();
+      let saved=0; facts.slice(0,8).forEach(f=>{ if(observeIn(SCOPE,f)) saved++; }); setStats();
+      ev("tool","🔧 web · "+provider, `<span class="pill">${String(act.query).slice(0,46)}</span>`, saved?("saved "+saved):null);
+      if(!facts.length){ bubble("a", enforce("🌐 I searched but the public CORS sources (Wikipedia, DuckDuckGo, open-meteo) didn't have that — try naming it more specifically and I'll fetch it."), "assistant"); return; }
+      await modelAnswer(text, facts, null, false, null, false);    // OBSERVE: answer grounded in the freshly-fetched facts
+      return;
+    }
+    if(act.action==="deep_research" && act.topic){
+      const status=bubble("s","🌐 deep research — crawling Wikipedia for \""+String(act.topic).slice(0,60)+"\" (plan → search → read → follow links → synthesize). Hit Stop any time.");
+      const { savedTotal, report, stopped } = await deepResearch(act.topic); status.remove();
+      ev("tool","🔧 deep research · Wikipedia", `<span class="pill">${String(act.topic).slice(0,44)}</span>`, report.length+" pages · "+savedTotal+" facts");
+      if(report.length){
+        const facts=report.flatMap(r=>r.extract.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>15).slice(0,4).map(s=>r.title+": "+s));
+        await modelAnswer("Write a clear, synthesized research brief on \""+act.topic+"\" using the gathered sources below.", facts.slice(0,24), null, false, null, false);
+      } else bubble("a", enforce("🌐 I couldn't find a Wikipedia article to start the crawl from for that — try a more specific topic."), "assistant");
+      if(stopped) bubble("s","⏹ research stopped — kept the "+savedTotal+" facts gathered so far in neuron-db.");
+      return;
+    }
+    if(act.action==="recall_more" && act.query && !tried.has(act.query)){ tried.add(act.query); cur = text+" "+act.query; continue; }   // re-perceive with broader cues
+    break;                                                          // unknown action → fall through to a safe answer
+  }
+  // FALLBACK — model errored / chose nothing actionable: answer from whatever recall we have (never confabulate)
+  const a=assess(text);
+  await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && isSmallTalk(text));
+}
+
 // ============================ a turn ============================
 let busy=false, stopRequested=false, lastLookup="";   // lastLookup = the prior question a bare "search it up" refers to
 // Send doubles as Stop while a turn runs — generation and the research crawl both watch stopRequested.
@@ -1154,6 +1258,11 @@ async function turn(){
       const tail = strength>=2 ? " That view is hardening (intensity ×"+strength+") — it now actively colors how I react to anything related." : " (intensity ×"+strength+" — repeat it and the opinion deepens; other views fade as this one grows.)";
       bubble("a", enforce("Noted as a feeling, not a fact — my stance on "+topic+" is now \""+vs.feeling+"\"."+tail), engine?"assistant":"memory"); return;
     }
+
+    // 0b) REASONED ROUTING — the model decides the action from neuron-db's gap signal (perceive→reason→act).
+    // This is the breakthrough path: NO regex classifies the message. Everything below (0c deep / 0d web /
+    // 1 typed / passive capture / recall+answer) is the deterministic NO-MODEL fallback.
+    if(engine && CFG.think!==false){ await controller(text); return; }
 
     // 0c) DEEP RESEARCH — a recursive, multi-agent Wikipedia crawl (search → read → follow links → accumulate),
     // every page stored into neuron-db. The model (if loaded) plans the facets and writes the final synthesis.
@@ -1405,6 +1514,7 @@ $("helpModal").addEventListener("click",e=>{ if(e.target.id==="helpModal") close
 $("cfgTemp").addEventListener("input",e=>{ CFG.temp=+e.target.value; $("cfgTempV").textContent=CFG.temp.toFixed(2); saveCfg(); });
 $("cfgMax").addEventListener("input",e=>{ CFG.maxTokens=+e.target.value; $("cfgMaxV").textContent=CFG.maxTokens; saveCfg(); });
 $("cfgK").addEventListener("input",e=>{ CFG.recallK=+e.target.value; $("cfgKV").textContent=CFG.recallK; saveCfg(); });
+$("cfgThink").addEventListener("change",e=>{ CFG.think=e.target.checked; saveCfg(); });
 $("cfgCapture").addEventListener("change",e=>{ CFG.capture=e.target.checked; saveCfg(); });
 $("cfgAffect").addEventListener("change",e=>{ CFG.affect=e.target.checked; saveCfg(); });
 $("cfgOrdered").addEventListener("change",e=>{ CFG.ordered=e.target.checked; saveCfg(); });
