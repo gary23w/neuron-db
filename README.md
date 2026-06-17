@@ -14,8 +14,14 @@ neuron --db app.db get  me 'what plan am i on?'      # -> pro
 
 ▶ **[Watch the synapse fire in 3D](https://gary23w.github.io/neuron-db/demos/synapse-3d.html)** — the real Rust core, in your browser.
 
-▶ **Try it in your browser — no server, no key.** A fully client-side lab runs a WebLLM model with
-neuron-db compiled to WASM as its memory, so the whole loop (recall + a real model) runs locally.
+▶ **[Try the live browser lab](https://gary23w.github.io/neuron-db/lab.html) — no server, no key.** A WebLLM model
+runs entirely in your tab with neuron-db (compiled to WASM) as its long-term memory. It is *reasoned-routed*: each
+turn neuron-db measures a **knowledge-gap signal** — how much of your question it already holds — and the model
+decides **one action** from it (answer from memory · **fetch the web** · **deep-research** a topic · store a fact ·
+set a rule). So it searches when it doesn't know instead of confabulating: **the model thinks, neuron-db grounds.**
+Working memory (the live conversation) plus a persistent per-chat **focus** keep a multi-turn task on subject across
+scroll. Web access goes straight from the WASM through a `host_http` import to public **CORS** APIs (Wikipedia,
+DuckDuckGo, open-meteo) — **no proxy, no worker, nothing leaves your browser**. How the loop works: **[docs/guide/STATUS.md](docs/guide/STATUS.md)**.
 
 ## LLM memory: link infinite neurons, at flat cost
 

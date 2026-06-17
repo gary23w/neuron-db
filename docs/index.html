@@ -302,6 +302,19 @@
   .docs-toggle-side{display:none}
   @media(max-width:980px){.docs-toggle-side{display:inline-flex}}
 
+  /* ---- small phones (≤520px): collapse remaining multi-column rows to single column ---- */
+  html,body{overflow-x:hidden;max-width:100%}
+  @media(max-width:520px){
+    .cols-2{grid-template-columns:1fr}
+    .stats-grid{grid-template-columns:1fr 1fr;gap:14px}
+    .stats-grid .stat:last-child:nth-child(odd){grid-column:1 / -1}   /* a lone trailing stat spans the row */
+    .drow{grid-template-columns:1fr auto;row-gap:4px;column-gap:12px;font-size:12.5px}
+    .drow .dl{grid-column:1 / -1}                                     /* label on its own line, bar+value below */
+    .drow .dv{font-size:12.5px}
+    .qs-nav{gap:6px}
+    section{padding:46px 0}
+  }
+
   /* ---- table scroll wrappers (mobile-safe data tables) ---- */
   .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:var(--radius);margin-bottom:0}
   .tbl-wrap + .tbl-wrap{margin-top:16px}
@@ -397,7 +410,7 @@
       <a class="btn" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">Star on GitHub</a>
       <button class="btn ghost" id="openDocs2" type="button">Read the docs</button>
     </div>
-    <p class="dim" style="font-size:13px;margin:10px 0 0">↑ a local Llama + neuron-db (as WASM) running <b>entirely in your browser</b> — no server, no API key.</p>
+    <p class="dim" style="font-size:13px;margin:10px 0 0">↑ a local model <b>thinks</b>, neuron-db (as WASM) <b>remembers and grounds it</b> — it reasons over a knowledge-gap signal and searches the live web when it doesn't know. <b>Entirely in your browser</b> — no server, no API key.</p>
     <div class="hero-terminal">
       <div class="terminal">
         <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">~/app · neuron</span></div>
@@ -1221,7 +1234,7 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
 (function(){
   "use strict";
   var DEMOS=[
-    {f:'lab.html',                   t:'Browser lab',      d:'A local Llama + neuron-db, fully client-side', tag:'WebLLM + WASM'},
+    {f:'lab.html',                   t:'Browser lab',      d:'A local model reasons; neuron-db grounds it & searches the web', tag:'WebLLM + WASM'},
     {f:'demos/synapse-3d.html',      t:'3D synapse',       d:'Watch neurons fire & link in 3D',   tag:'real WASM'},
     {f:'demos/semantic-3d.html',     t:'Semantic space',   d:'Meaning in N dimensions (PCA)',     tag:'real WASM'},
     {f:'demos/live-memory.html',     t:'Live memory',      d:'Chat with it; it remembers',        tag:'real WASM'},

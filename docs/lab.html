@@ -16,7 +16,7 @@
     --bg:#f4f6fb; --bg2:#eef1f8; --panel:#fff; --panel2:#f7f9fd; --ink:#0c1322; --mid:#516079; --dim:#8a97ad;
     --line:#dce2ee; --line2:#c6cfe0; --accent:#0d9488; --accent2:#3b5bdb;
   }
-  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  *{box-sizing:border-box} html,body{margin:0;height:100%;overflow-x:hidden}
   html{background:#05060a} body.light{background:#e7ebf4}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
        -webkit-font-smoothing:antialiased;height:100dvh;overflow:hidden}
@@ -1164,24 +1164,45 @@ function topicCues(n=4){
   for(let i=msgs.length-1;i>=0 && us.length<n;i--){ if(msgs[i].cls==="u") us.push(msgs[i].text); }
   return keywords(us.join(" "));
 }
+// FOCUS — a persistent, decaying topic-cue profile for the whole chat (survives the recentConvo window scroll).
+// Each user turn reinforces its content cues and the rest decay, so the enduring subject floats to the top. This is
+// what keeps a long task on-subject after the conversation scrolls past the short-term window.
+function bumpFocus(text){
+  if(!active) return; const f = active.focus || (active.focus={});
+  for(const k in f){ f[k]*=0.9; if(f[k]<0.2) delete f[k]; }         // gentle decay — an established topic survives a few off-topic turns
+  for(const w of keywords(text)) f[w]=Math.min((f[w]||0)+1, 6);     // reinforce this turn's cues (capped so nothing runs away)
+  active.focus = Object.fromEntries(Object.entries(f).sort((a,b)=>b[1]-a[1]).slice(0,16));   // keep the strongest 16
+}
+function focusCues(n=8){
+  const f=(active&&active.focus)||{};
+  const top=Object.entries(f).sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
+  return top.length ? top.slice(0,n) : topicCues(n);               // fall back to the recent-window cues
+}
+function focusLine(){
+  const c=focusCues(6);
+  return c.length ? "CURRENT FOCUS (the running subject of this whole conversation — keep working on THIS unless the user clearly changes topic): "+c.join(", ") : "";
+}
 async function controller(text){
   // small talk has nothing to "know" — converse directly, don't spend a routing call (and never search "hey")
   if(isSmallTalk(text)){ await modelAnswer(text, [], null, false, CFG.affect?opinionQuestion(text):null, true, recentConvo()); return; }
+  bumpFocus(text);                                                  // accumulate the conversation's enduring subject
   let cur=text; const tried=new Set();
   for(let step=0; step<4 && !stopRequested; step++){
     const a = assess(cur);
     // topic-augmented recall: a follow-up like "detail each section" shares no content words with the WW2 facts,
-    // so pull extra facts using the conversation's running topic cues — this is what keeps continuity.
-    let ctxHits = a.hits; const tc = topicCues();
-    if(a.coverage < 0.6 && tc.length){
-      const more = smartRecall(cur+" "+tc.slice(0,6).join(" ")).hits.map(safeLine).filter(Boolean);
+    // so pull extra facts using the FOCUS cues (the whole conversation's subject) — this is what keeps continuity.
+    let ctxHits = a.hits; const fc = focusCues();
+    if(a.coverage < 0.6 && fc.length){
+      const more = smartRecall(cur+" "+fc.slice(0,6).join(" ")).hits.map(safeLine).filter(Boolean);
       ctxHits = [...new Set([...a.hits.map(safeLine).filter(Boolean), ...more])].slice(0,8);
     }
-    const recent = recentConvo();
+    const recent = recentConvo(), focus = focusLine();
+    const wm = [focus, recent].filter(Boolean).join("\n\n");       // working memory = focus + recent dialogue
     ev("note","🧠 perceive · coverage "+Math.round(a.coverage*100)+"%",
        a.total ? (a.covered+"/"+a.total+" cues in memory"+(a.missing&&a.missing.length?" · missing: "+a.missing.slice(0,4).join(", "):"")) : "no content cues (small talk)",
        ctxHits.length ? (ctxHits.length+" in context") : "nothing recalled");
-    const usr = (recent ? "RECENT CONVERSATION (what we are doing right now — resolve \"it\"/\"the paper\"/\"each section\"/\"continue\" against this, and STAY on this topic):\n"+recent+"\n\n" : "")+
+    const usr = (focus ? focus+"\n\n" : "")+
+                (recent ? "RECENT CONVERSATION (what we are doing right now — resolve \"it\"/\"the paper\"/\"each section\"/\"continue\" against this, and STAY on this topic):\n"+recent+"\n\n" : "")+
                 "USER MESSAGE: "+text+"\n\nMEMORY COVERAGE for this message: "+Math.round(a.coverage*100)+"%  ("+a.covered+"/"+a.total+" key terms in memory)\n"+
                 "RELATED FACTS IN MEMORY (long-term):\n"+(ctxHits.length ? ctxHits.slice(0,8).map((h,i)=>(i+1)+". "+safeLine(h)).join("\n") : "(none)")+
                 "\n\nOutput ONE action JSON now.";
@@ -1195,7 +1216,7 @@ async function controller(text){
     ev("fire","🧭 decide · "+act.action, `<span class="pill">${String(label).slice(0,52)}</span>`);
 
     if(act.action==="answer"){     // generate the full reply with working memory + recalled facts (not the short routing call)
-      await modelAnswer(text, ctxHits, null, false, CFG.affect?opinionQuestion(text):null, false, recent);
+      await modelAnswer(text, ctxHits, null, false, CFG.affect?opinionQuestion(text):null, false, wm);
       return;
     }
     if(act.action==="store" && act.fact){
@@ -1212,7 +1233,7 @@ async function controller(text){
       let saved=0; facts.slice(0,8).forEach(f=>{ if(observeIn(SCOPE,f)) saved++; }); setStats();
       ev("tool","🔧 web · "+provider, `<span class="pill">${String(act.query).slice(0,46)}</span>`, saved?("saved "+saved):null);
       if(!facts.length){ bubble("a", enforce("🌐 I searched but the public CORS sources (Wikipedia, DuckDuckGo, open-meteo) didn't have that — try naming it more specifically and I'll fetch it."), "assistant"); return; }
-      await modelAnswer(text, facts, null, false, null, false, recent);    // OBSERVE: answer grounded in the freshly-fetched facts
+      await modelAnswer(text, facts, null, false, null, false, wm);    // OBSERVE: answer grounded in the freshly-fetched facts
       return;
     }
     if(act.action==="deep_research" && act.topic){
@@ -1221,7 +1242,7 @@ async function controller(text){
       ev("tool","🔧 deep research · Wikipedia", `<span class="pill">${String(act.topic).slice(0,44)}</span>`, report.length+" pages · "+savedTotal+" facts");
       if(report.length){
         const facts=report.flatMap(r=>r.extract.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>15).slice(0,4).map(s=>r.title+": "+s));
-        await modelAnswer("Write a clear, synthesized research brief on \""+act.topic+"\" using the gathered sources below.", facts.slice(0,24), null, false, null, false, recent);
+        await modelAnswer("Write a clear, synthesized research brief on \""+act.topic+"\" using the gathered sources below.", facts.slice(0,24), null, false, null, false, wm);
       } else bubble("a", enforce("🌐 I couldn't find a Wikipedia article to start the crawl from for that — try a more specific topic."), "assistant");
       if(stopped) bubble("s","⏹ research stopped — kept the "+savedTotal+" facts gathered so far in neuron-db.");
       return;
@@ -1230,8 +1251,8 @@ async function controller(text){
     break;                                                          // unknown action → fall through to a safe answer
   }
   // FALLBACK — model errored / chose nothing actionable: answer from recall + working memory (never confabulate)
-  const a=assess(text), recent=recentConvo();
-  await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && !recent && isSmallTalk(text), recent);
+  const a=assess(text), wm=[focusLine(), recentConvo()].filter(Boolean).join("\n\n");
+  await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && !wm && isSmallTalk(text), wm);
 }
 
 // ============================ a turn ============================
@@ -1421,7 +1442,7 @@ async function turn(){
 // ============================ chat sessions (per-chat neuron-db scope) ============================
 let chats=[], active=null;
 const newId = () => "c"+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36);
-function blankChat(title){ return { id:newId(), title:title||"New chat", scope:"user:lab:"+newId(), messages:[], memlog:[], docMeta:[], stats:{stored:0,bytes:0,recalls:0} }; }
+function blankChat(title){ return { id:newId(), title:title||"New chat", scope:"user:lab:"+newId(), messages:[], memlog:[], docMeta:[], focus:{}, stats:{stored:0,bytes:0,recalls:0} }; }
 function saveChats(){
   if(active) active.stats={stored:storedCount,bytes:memBytes,recalls};
   localStorage.setItem("nblab.chats", JSON.stringify(chats));
