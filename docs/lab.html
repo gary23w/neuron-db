@@ -444,26 +444,96 @@ async function webSearch(query){
   }
   return {provider:"none", facts:[]};
 }
-// "check the web for X" / "google X" / "search X" / "look up X" / "browse X"
-function webCommand(text){
+// "check the web for X" / "google X" / "search X" / "look up X" / "research X" / "X on wikipedia" / context "search it up"
+const STRIP_LEAD = s => s.replace(/^(?:for|about|on|re|regarding|the latest|latest|some|more|me)\s+/i,"").replace(/^(?:the|a|an)\s+/i,"").trim().replace(/^["']|["']$/g,"").replace(/[?.!]+$/,"").trim();
+// strip stacked politeness/framing prefixes in any order ("could you please …", "would you mind …", "I was wondering if you could …").
+// "would you mind" is listed BEFORE the generic "would you" so it consumes "mind" too. The trailing + repeats it.
+const POLITE = /^\s*(?:(?:please|kindly|hey|so|okay?|now|alright|pretty please)[,.\s]+|would you mind(?:\s+if you)?\s+|(?:can|could|would|will)\s+you\s+(?:please\s+|kindly\s+)?|i(?:'d| would)?\s+(?:like|want)(?:\s+you)?\s+to\s+|i was wondering if you could\s+|i(?:'d| would)\s+appreciate it if you could\s+|i want you to\s+)+/i;
+// a short nudge whose whole point is "(go) search/look this up" — it has NO new topic, it refers to the PRIOR question
+function isSearchNudge(text){
+  if(text.length>96) return false;
+  // "you have the tools, use them" / "go ahead" — a prod to act, with no search verb of its own
+  if(/\b(use (?:the |your )?tools?|use them|do it|do that|go ahead|go for it|have a go|knock yourself out)\b/i.test(text)
+     && /^\s*(?:(?:yes|yeah|ok|okay|sure|now)[,.! ]*)*(?:you\b|just\b|please\b|go\b|cmon|come on)/i.test(text)) return true;
+  const verb=/\b(search(?:ing|ed|es)?|google(?:d|s|ing)?|look(?:ing|ed)?\s*(?:it|that|this|them)?\s*up|look\s*(?:it|that|this|them)\s*up|wikipedia|wiki|research(?:ing|ed)?|browse|browsing|find\s*(?:it|that|this|them)?\s*out|fetch|double[\- ]?check|re-?check|verify|confirm)\b/i;
+  if(!verb.test(text)) return false;
+  // it must not introduce a fresh explicit topic (those are caught earlier by the verb+topic patterns);
+  // accept when it points back via a pronoun / "now" / nothing, or is a 2nd-person nudge ("you can search…", "try…")
+  return /\b(it|that|this|them|those|now|again|already|up|online|please|then|too)\b/i.test(text)
+      || /\b(search|google|research|wikipedia|browse|fetch)\s*[.?!]*$/i.test(text)
+      || /^\s*(?:(?:yes|yeah|yep|ok|okay|sure|right|fine|cmon|come on)[,.! ]*)*(?:you\b|try\b|maybe\b|can you\b|could you\b|would you\b|will you\b|please\b|go\b|just\b|why not\b|how about\b|go ahead\b)/i.test(text);
+}
+function webCommand(text, lastQ){
   let m;
-  if((m=text.match(/^\s*(?:please\s+)?(?:check (?:the )?web(?: for)?|search(?: the web)?(?: for)?|google|duck ?duck ?go|ddg|bing|look up(?: online)?|web ?search|find (?:online|on the web)|browse(?: for)?)\b[:\-]?\s*(.+)$/i)))
-    return m[1].trim().replace(/[?.!]+$/,"");
-  // "... on/from wikipedia" or "wikipedia: X" → fetch the real article (don't let the model confabulate)
-  if((m=text.match(/^\s*(?:get|find|look ?up|tell me|give me|show me|pull up|fetch|read)?\s*(?:me\s+)?(?:some\s+|more\s+)?(?:info(?:rmation)?|details?|stuff|everything|the (?:wiki|page|article))?\s*(?:about|on|for|re)?\s*(.+?)\s+(?:on|from|via|off|in)\s+(?:wiki(?:pedia)?)\b/i)))
-    return m[1].replace(/^(the|a|an)\s+/i,"").trim().replace(/[?.!]+$/,"");
-  if((m=text.match(/^\s*wiki(?:pedia)?\s*[:\-]\s*(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
-  // a bare weather question with a place → route to the live weather fetch (don't let the model invent it)
+  // strip a leading discourse/correction marker ("no, …", "actually …") for verb/topic matching — but an
+  // explicit topic AFTER the marker still wins over the context-nudge path (EXPLICIT-NOUN-OVERRIDES-NUDGE).
+  const t0=text.replace(/^\s*(?:no|nope|yeah|yes|actually|wait|i mean|i meant|sorry|hmm+|ok|okay|so|well|um+|uh+)[,. ]+/i,"").replace(POLITE,"");
+  // 1) explicit search/lookup VERB + topic
+  if((m=t0.match(/^\s*(?:please\s+|hey\s+|now\s+|so\s+|just\s+)?(?:can you\s+|could you\s+|would you\s+|will you\s+|go\s+(?:and\s+)?)?(?:check (?:the )?web(?: for)?|search(?: the web| online)?(?: for)?|google|duck ?duck ?go|ddg|bing|look\s*up(?: online)?|web ?search|find (?:online|on the web|out about|out)|browse(?: for)?|research|look into|read up on)\b[:\-]?\s*(.+)$/i))){
+    const t=STRIP_LEAD(m[1]).replace(/\s+(?:instead|now|please|too|as well)\s*$/i,"").trim();
+    // a "topic" that is only a pronoun/particle ("it", "it up", "that") is really a context nudge → fall through to (5)
+    if(t.length>1 && !/^(?:it|that|this|them|those|stuff|things?)(?:\s+up)?$/i.test(t) && !/^(?:up|online|again|now|please|then)$/i.test(t)) return t;
+  }
+  // 2) "get/find/give/show [me] [more] [wikipedia/web] info(rmation)/details/facts about/on X"
+  if((m=t0.match(/^\s*(?:please\s+)?(?:get|find|give|show|tell|pull|fetch|grab|bring)\s+(?:me\s+)?(?:some\s+|more\s+|additional\s+|extra\s+)?(?:(?:wiki(?:pedia)?|web|online)\s+)?(?:info(?:rmation)?|details?|facts?|data|stuff|everything|background|context)\b[^.?!]*?\b(?:about|on|for|regarding|re|of|around)\s+(.+)$/i)))
+    return STRIP_LEAD(m[1]);
+  // 3) "X on/from/in/off wikipedia" / "wikipedia: X"
+  if((m=t0.match(/^\s*(?:get|find|look ?up|tell me|give me|show me|pull up|fetch|read)?\s*(?:me\s+)?(?:some\s+|more\s+)?(?:info(?:rmation)?|details?|stuff|everything|the (?:wiki|page|article))?\s*(?:about|on|for|re)?\s*(.+?)\s+(?:on|from|via|off|in)\s+(?:wiki(?:pedia)?)\b/i)))
+    return STRIP_LEAD(m[1]);
+  if((m=t0.match(/^\s*wiki(?:pedia)?\s*[:\-]\s*(.+)$/i))) return STRIP_LEAD(m[1]);
+  // 4) bare weather question with a place
   if(/\b(weather|did it rain|is it rain|temperature|forecast|how (hot|cold)|is it (snow|sunny|cloud))/i.test(text) && /\bin\s+[a-z]/i.test(text)) return text.replace(/[?.!]+$/,"").trim();
+  // 5) context-carry: a bare "search it up" / "try wikipedia" / "you can look that up" → fetch the PRIOR question
+  if(lastQ && isSearchNudge(text)) return lastQ;
   return null;
 }
-// "deep research X" / "research X deeply" / "dig into X" / "build context on X" → recursive Wikipedia crawl
+// world-knowledge questions a small local model must NOT answer from its training prior — fetch, don't confabulate.
+const FACTUAL_KW = /\b(population|capital|currency|gdp|economy|area|elevation|altitude|founded|established|invented|discovered|located|location|borders?|mayor|premier|governor|president|prime minister|monarch|time ?zone|net worth|height|width|length|distance|how (many|much|tall|high|big|old|far|deep|long|wide)|who (is|was|are|won|wins?|founded|invented|wrote|created|discovered|leads?|runs?|owns?|built|plays?|directed|designed)|when (was|were|did|is)|where (is|are|was)|what time (?:is it|is)|what(?:'s| is| are)?\s+(?:the\s+)?(?:population|capital|gdp|area|currency|height|elevation|time ?zone|mayor|premier|distance|weather|temperature)|going on (?:in|at|with)|happening (?:in|at|with)|latest news|news (?:in|about|on|from))\b/i;
+function factualLookup(text){
+  if(/\bmy\b/i.test(text)) return null;                 // about the user's own stored data → memory, not the web
+  if(isSmallTalk(text)) return null;
+  // a bare "<attribute> of <place>" phrase ("pop of Tokyo", "capital of Peru") is a lookup even without a '?',
+  // UNLESS it's an assertion of a value ("the population of X is 14 million") — those have a copula/number.
+  if(/^\s*(?:the\s+)?(?:population|pop|capital|gdp|currency|area|mayor|premier|governor|elevation|altitude|height|net worth|time ?zone|distance) of\b/i.test(text)
+     && !/\b(is|are|was|were|equals?)\b|[:=]|\d{3,}/i.test(text)) return text.replace(/[?.!]+$/,"").trim();
+  // must be PHRASED AS A QUESTION/LOOKUP — a declarative assertion (even with a number) is the user TELLING us,
+  // so it stays a store, never a fetch. (NUMBER-MEANS-STORE falls out of this: assertions aren't questions.)
+  const isQuestion = /\?\s*$/.test(text)
+    || /^\s*(?:who|what|whats|when|where|how|which|whose|is|are|does|do|did)\b/i.test(text)
+    || /^\s*(?:tell me|give me|list|i want to know|i wonder|wondering|i'?d like to know|do you know)\b/i.test(text)
+    || /^\s*(?:no|nope|yes|yeah|actually|wait|i mean|i meant|sorry)[,. ]/i.test(text);   // a correction of the prior lookup
+  if(!isQuestion) return null;
+  if(FACTUAL_KW.test(text)) return text.replace(/^\s*(?:so|well|ok|okay|hey|actually|wait|um+|uh+|hmm+|no|nope|yes|yeah|i mean|i meant|sorry)[,. ]+/i,"").replace(/[?.!]+$/,"").trim();
+  return null;
+}
+// the topic a later bare nudge ("search it up") should fall back to — this turn's question, if it had one
+function carryTopic(text){
+  if(isSmallTalk(text) || /\bmy\b/i.test(text)) return "";
+  if(/\?\s*$/.test(text) || /^\s*(?:who|what|whats|when|where|how|which|whose|tell me|give me|list|do you know|i wonder|wondering)\b/i.test(text) || FACTUAL_KW.test(text))
+    return text.replace(/^\s*(?:so|well|ok|okay|hey|actually|wait|no|nope|yes|yeah|i mean|i meant|sorry|hmm+)[,. ]+/i,"").replace(/[?.!]+$/,"").trim();
+  return "";
+}
+// "deep research X" / "research X thoroughly + follow links" / "dig into X" / "build context on X" → recursive crawl.
+// The route is VERB+MODIFIER driven: bare "research X" is a single fetch (web); it only escalates to a deep crawl
+// with an explicit depth cue (deep/dive, thoroughly/recursively, follow-the-links, build-context).
 function deepCommand(text){
   let m;
-  if((m=text.match(/^\s*(?:please\s+)?(?:do (?:a )?|run (?:a )?|start (?:a )?|perform (?:a )?)?deep[\- ]?(?:dive|research|search)\s+(?:on|into|about|for|of)?\s*(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
-  if((m=text.match(/^\s*(?:please\s+)?research\s+(.+?)\s+(?:deeply|in[\- ]depth|thoroughly|recursively|and (?:follow|crawl) (?:the )?(?:deeper )?links?|and dig (?:deeper|in))\s*[.?!]*$/i))) return m[1].trim();
-  if((m=text.match(/^\s*(?:please\s+)?(?:dig (?:deep(?:ly|er)? )?into|crawl(?: deeper into| into)?|deep[\- ]?dive(?: into)?)\s+(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
-  if((m=text.match(/^\s*(?:please\s+)?build (?:a |me a |up )?(?:bigger |larger |deeper |more )?context (?:on|about|for|around)\s+(.+)$/i))) return m[1].trim().replace(/[?.!]+$/,"");
+  const t=text.replace(POLITE,"");
+  // explicit deep verbs (deep dive/research/search · dig deep into · crawl · build context on)
+  if((m=t.match(/^\s*(?:do (?:a )?|run (?:a )?|start (?:a )?|perform (?:a )?|give me (?:a )?)?deep[\- ]?(?:dive|research|search)\s+(?:on|into|about|for|of|in)?\s*(.+)$/i))) return STRIP_LEAD(m[1]);
+  if((m=t.match(/^\s*(?:dig(?:ging)? (?:deep(?:ly|er)? )?into|crawl(?: deeper into| into| through)?|deep[\- ]?dive(?: into| on)?)\s+(.+)$/i))) return STRIP_LEAD(m[1]);
+  if((m=t.match(/^\s*build (?:a |me a |us a |up )?(?:bigger |larger |deeper |more |some )?context (?:on|about|for|around|of)\s+(.+)$/i))) return STRIP_LEAD(m[1]);
+  // "research/look up/study X" + a depth cue ANYWHERE in the message → deep
+  if(/^\s*(?:research|look up|read up on|study|investigate)\b/i.test(t) &&
+     /\b(thorough(?:ly)?|in[\- ]depth|deeply|recursively|exhaustively|comprehensive(?:ly)?|follow (?:the )?(?:deeper |wikipedia )?links?|crawl (?:the )?links?|build (?:me )?(?:some |a )?context|and dig (?:deeper|in))\b/i.test(t) &&
+     (m=t.match(/^\s*(?:research|look up|read up on|study|investigate)\s+(.+)$/i))){
+    let topic=m[1]
+      .replace(/\b(thorough(?:ly)?|in[\- ]depth|deeply|recursively|exhaustively|comprehensive(?:ly)?)\b/ig,"")
+      .replace(/[,;]?\s*(?:and\s+)?(?:please\s+)?(?:follow|crawl)\b[\s\S]*$/i,"")          // drop "...and follow the links"
+      .replace(/[,;]?\s*(?:and\s+)?build (?:me )?(?:some |a )?context\b[\s\S]*$/i,"")        // drop "...and build context"
+      .replace(/\s{2,}/g," ").replace(/[\s,;]+$/,"").replace(/[?.!]+$/,"").trim();
+    return topic || STRIP_LEAD(m[1]);
+  }
   return null;
 }
 // ---- recursive deep research — a multi-agent crawl entirely inside the WASM (no worker/proxy):
@@ -560,9 +630,15 @@ const CHATTER = /^\s*(tell|show|explain|walk|describe|can you|could you|please|g
 const WH_LEAD = /^\s*(how|what|why|who|when|where|which|whose)\b/i;
 const WH_QUESTION = /^\s*(how|what|why|who|when|where|which|whose)\s+(is|are|was|were|am|do|does|did|can|could|should|would|will|has|have|had|may|might|must|shall|to|about)\b/i;
 const AUX_QUESTION = /^\s*(is|are|am|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|may|might|must)\b/i;
+// imperatives / 2nd-person directives aimed at the assistant — NEVER a durable fact (storing them poisons recall:
+// the model then "remembers" the command text itself and loops on it, e.g. "I only have 'try searching now'").
+const COMMAND = /^\s*(?:(?:yes|yeah|yep|no|nope|ok|okay|sure|please|now|cmon|come on|go ahead|go on|never ?mind|nvm)[,.! ]*)*(?:you\b|try\b|search\b|searching\b|research\b|look up\b|look it\b|look that\b|google\b|browse\b|browsing\b|crawl\b|get me\b|get more\b|give me\b|show me\b|pull up\b|bring up\b|read up\b|tell me\b|do it\b|do that\b|remember\b|forget\b|remove\b|delete\b|clear\b|reset\b|never ?mind\b|nvm\b|i want you\b|i need you\b|can you\b|could you\b|would you\b|will you\b)/i;
+// "please remember that X", "just so you know X", "fyi X" → strip the framing so the bare fact X gets stored
+// (otherwise COMMAND/CHATTER would reject the whole line and the fact is lost)
+const stripPreamble = s => s.replace(/^\s*(?:please\s+)?(?:just\s+)?(?:so you know|so that you know|just so you know|for (?:the record|future reference|reference)|fyi|f\.y\.i\.?|note(?:\s+that)?|keep in mind(?:\s+that)?|bear in mind(?:\s+that)?|don'?t forget(?:\s+that)?|remember(?:\s+that)?|i want you to know(?:\s+that)?|i'?d like you to know(?:\s+that)?|heads up)\b[:,]?\s+/i,"").trim();
 function shouldStore(s){
   if(s.length<12 || /\?\s*$/.test(s)) return false;
-  if(CHATTER.test(s)) return false;
+  if(CHATTER.test(s) || COMMAND.test(s)) return false;
   if(WH_LEAD.test(s)) return !WH_QUESTION.test(s);
   if(AUX_QUESTION.test(s)) return false;
   return true;
@@ -598,6 +674,11 @@ function smartRecall(q){
 // ---- typed-command detection ----
 function handleCommands(text){
   let m;
+  // tone/style instruction — "answer me in a cheerful playful tone", even phrased as a polite question
+  if((m=text.match(/^\s*(?:from now on,?\s+)?(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|will\s+you\s+)*(?:always\s+|consistently\s+|just\s+)?(?:answer|respond|reply|talk|speak|write|address me|put it|say it|word it|phrase it)\b[^?]*?\bin\s+(?:a|an)\s+([a-z][a-z' -]{2,40}?)\s+(?:tone|voice|style|manner|register|way)\b/i))){
+    const tone=m[1].replace(/\b(more|really|very|super|kinda|sort of)\b/ig,"").trim();
+    if(tone){ addInstr("Always answer in a "+tone+" tone."); return {kind:"instruction", text:"answer in a "+tone+" tone"}; }
+  }
   if((m=text.match(/^\s*(?:add|set|create|make)\s+(?:an?\s+)?(?:global\s+)?(variable|var|rule|instruction|standing rule)\s*[:\-]?\s*(.+)$/i))){
     const kind=m[1].toLowerCase(), body=m[2].trim(), isVarKw=(kind==="variable"||kind==="var");
     const kv = isVarKw ? body.match(/^["']?([\w' -]+?)["']?\s*(?:=|:|\bis\b|\bto\b)\s*(.+)$/i)
@@ -644,7 +725,14 @@ function clearMoodCommand(text){
 const FMT_KW = /(caps|capital|upper\s?case|lower\s?case|emoji|markdown|bullet|prose|formal|short|long)/i;
 function removalCommand(text){
   let m;
+  text=text.replace(/^\s*(?:actually|no|nope|wait|ok|okay|so|well|hey|um+|uh+|hmm+)[,. ]+/i,"");   // strip a discourse lead
   if(/^\s*(?:clear|forget|remove|drop|reset|delete|cancel)\s+(?:all\s+)?(?:my\s+|the\s+)?(?:standing\s+)?(?:rules?|instructions?)\b\s*[.?!]*$/i.test(text)) return {all:true};
+  // blanket "forget everything / wipe your memory / start over" → clear all standing rules
+  if(/^\s*(?:(?:please\s+)?(?:forget|clear|wipe|erase|reset|drop)\s+(?:everything|it all|all of (?:it|that|them)|your memory|the lot)|start (?:over|fresh|again|from scratch)|wipe (?:the )?slate clean)\b/i.test(text)) return {all:true};
+  // "forget/remove the rule ABOUT X" (the subject comes AFTER the noun) → delete instructions mentioning X
+  if((m=text.match(/^\s*(?:please\s+)?(?:remove|forget|drop|delete|cancel|undo|ditch)\s+(?:the\s+|that\s+|this\s+|my\s+|your\s+)?(?:standing\s+)?(?:rule|instruction|note|directive|setting|behaviou?r)\s+(?:about|regarding|on|for|to|that says|that|where|saying|of|with)\s+["']?(.+?)["']?\s*[.?!]*$/i))){
+    const w=m[1].replace(/^(?:the|a|an)\s+/i,"").trim(); if(w && w.length>=2) return {needles:[w.toLowerCase()]};
+  }
   // general removal: "remove/forget/drop the <X> instruction/rule/note" → delete instructions containing X
   if((m=text.match(/^\s*(?:please\s+)?(?:remove|forget|drop|delete|cancel|undo|kill|ditch)\s+(?:the\s+|that\s+|this\s+|my\s+|your\s+)?["']?(.+?)["']?\s+(?:instruction|rule|note|directive|behaviou?r|setting|thing|bit|part)s?\b/i))){
     const w=m[1].replace(/\b(standing|custom|silly|stupid|whole|entire|that|the|a|an)\b/ig,"").trim();
@@ -833,6 +921,11 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
   if(!chitchat) sys+="\n\nMEMORIES (recalled by neuron-db"+(ordered?", IN ORDER — the numbered steps below are already in the correct sequence; retell them in that exact order 1→N, do NOT reorder, merge, skip or re-derive":" for this turn")+"):\n"+
     (memHits.length?memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
   if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
+  // NO memory + NO fetch → the #1 failure mode is the model inventing a number OR a fake "I searched the
+  // official website" narrative. Forbid both explicitly and point the user at the live web tools.
+  if(!chitchat && !memHits.length && !direct){
+    sys+="\n\nThere are NO memories for this question and NO web result was fetched this turn. Do NOT guess, estimate, approximate, or state any fact, number, population, name, or date. Do NOT claim or describe that you searched, visited a website, consulted a census, or did any research — you did none. Reply in ONE short sentence that you don't have it in memory, and that the user can say \"search the web\" / \"look it up\" / \"research it\" and you'll fetch it live and remember it. Nothing else.";
+  }
   // reasoning models: keep the chain-of-thought grounded in the recalled facts, not the training prior
   if(engineReason && !chitchat){
     sys+="\n\nThe MEMORIES above are already retrieved and verified — narrate them, do NOT re-derive them. Think briefly, then answer. Treat MEMORIES as your ONLY source; if a detail isn't there, say you don't have it — never recall facts from your own training.";
@@ -1003,7 +1096,7 @@ async function agentTurn(userText, seedHits, seedOrdered){
 }
 
 // ============================ a turn ============================
-let busy=false, stopRequested=false;
+let busy=false, stopRequested=false, lastLookup="";   // lastLookup = the prior question a bare "search it up" refers to
 // Send doubles as Stop while a turn runs — generation and the research crawl both watch stopRequested.
 function setBusy(on){
   busy=on; const b=$("send");
@@ -1084,27 +1177,34 @@ async function turn(){
     }
 
     // 0d) LIVE WEB — the WASM fetches a CORS public API DIRECTLY (no worker), SAVES the results into
-    // neuron-db (so they're recallable), then the model narrates those saved facts (grounded, not invented)
-    const wq=webCommand(text);
+    // neuron-db (so they're recallable), then the model narrates those saved facts (grounded, not invented).
+    // webCommand catches explicit "search/look up/research X" + the context nudge "search it up" (→ lastLookup);
+    // factualLookup auto-routes bare world questions (population/capital/news) so the model fetches not confabulates.
+    const wq=webCommand(text, lastLookup) || factualLookup(text);
     if(wq){
-      const status=bubble("s","🌐 the WASM is fetching the web for \""+wq+"\"…");
+      lastLookup="";   // this lookup is being resolved now
+      const status=bubble("s","🌐 the WASM is fetching the web for \""+wq.slice(0,80)+"\"…");
       const {provider, facts}=await webSearch(wq);
       status.remove();
       let saved=0; facts.slice(0,8).forEach(f=>{ if(observeIn(SCOPE,f)) saved++; }); setStats();
       ev("tool","🔧 web · "+provider, `<span class="pill">${wq.slice(0,46)}</span>`, saved?("saved "+saved):null);
-      if(!facts.length)
-        bubble("a", enforce("🌐 I couldn't fetch that directly — the browser only reaches public CORS APIs (Wikipedia, open-meteo, DuckDuckGo); a broad news search needs a key. Tell me and I'll remember it."), engine?"assistant":"memory");
+      if(!facts.length){
+        lastLookup=wq;   // fetch found nothing — keep the topic so a follow-up nudge / clarification can retry
+        bubble("a", enforce("🌐 I searched but couldn't find that through the browser's public CORS sources (Wikipedia, DuckDuckGo, open-meteo). Try naming it more specifically (e.g. add the province/country) and I'll fetch it."), engine?"assistant":"memory");
+      }
       else if(engine) await modelAnswer(text, facts, null, false, null, false);   // narrate the freshly-fetched + saved facts
       else bubble("a", enforce("🌐 From the web ("+provider+" · saved "+saved+" facts to memory — ask me to recall them):\n"+facts.slice(0,6).map((f,i)=>(i+1)+". "+f).join("\n")), "memory");
       return;
     }
+    // not a fetch this turn — if it was a question, remember its topic so a later "search it up" knows what to fetch
+    { const ct=carryTopic(text); if(ct) lastLookup=ct; }
 
     // 1) typed neurons: variables + standing instructions
     const cmd=handleCommands(text);
     if(cmd.kind==="instruction") ev("note","note · standing instruction", cmd.text);
     else if(cmd.kind==="var"||cmd.kind==="varfact") ev("note","note · variable", cmd.key+" = "+getVar(cmd.key.toLowerCase()));
-    // 1b) passive capture (gated)
-    if(CFG.capture) for(const s of statements(text)){ if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
+    // 1b) passive capture (gated) — strip any "remember that / fyi / just so you know" framing first
+    if(CFG.capture) for(const raw of statements(text)){ const s=stripPreamble(raw); if(shouldStore(s) && observeIn(SCOPE,s)) ev("store","stored",s); }
 
     const direct=directAnswer(text), opinion = CFG.affect ? opinionQuestion(text) : null;
 
