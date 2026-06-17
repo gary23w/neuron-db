@@ -912,33 +912,40 @@ function splitThink(s){
   if (c >= 0) return { think: clean(s.slice(0, c).replace(/^[\s\S]*?<think>/i, "")), body: clean(s.slice(c + 8)), open: false };
   return { think: clean(s.replace(/^[\s\S]*?<think>/i, "")), body: "", open: true };   // no close yet → all reasoning
 }
-async function modelAnswer(text, hits, direct, ordered, topic, chitchat){
+async function modelAnswer(text, hits, direct, ordered, topic, chitchat, recent){
   const ins=getInstrs().map(safeLine).filter(Boolean);
   const memHits=hits.map(safeLine).filter(Boolean);
   let sys = chitchat ? SYS_CHAT : SYS;
   const aff = CFG.affect ? humanize(topic||"") : "";
   if(aff) sys+="\n\nAFFECT (this is genuinely how you feel — let it color tone and word choice, but NEVER override a fact):\n"+aff;
   if(ins.length) sys+="\n\nSTANDING INSTRUCTIONS (follow EVERY one, this turn and always):\n"+ins.map(i=>"- "+i).join("\n");
+  // WORKING MEMORY — the live conversation. Resolve "it"/"the paper"/"each section"/"continue" against THIS and
+  // stay on the established topic/task. (This is what was missing when "write the paper" drifted to social media.)
+  if(recent) sys+="\n\nRECENT CONVERSATION (your short-term working memory — what we are doing right now; resolve references against it and stay on the SAME topic/task):\n"+recent;
   if(!chitchat) sys+="\n\nMEMORIES (recalled by neuron-db"+(ordered?", IN ORDER — the numbered steps below are already in the correct sequence; retell them in that exact order 1→N, do NOT reorder, merge, skip or re-derive":" for this turn")+"):\n"+
-    (memHits.length?memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):"(none — say you don't have that in memory yet; do not invent)");
+    (memHits.length?memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n"):(recent?"(none retrieved — work from the RECENT CONVERSATION above)":"(none — say you don't have that in memory yet; do not invent)"));
   if(direct) sys+="\n\nThe user is asking for their "+direct.key+". It is in memory: \""+direct.val+"\". Answer with exactly that.";
-  // NO memory + NO fetch → the #1 failure mode is the model inventing a number OR a fake "I searched the
-  // official website" narrative. Forbid both explicitly and point the user at the live web tools.
-  if(!chitchat && !memHits.length && !direct){
+  // continuing/writing task: allow the model to compose & elaborate prose, but keep facts grounded
+  if(recent && !chitchat) sys+="\n\nThis is a continuing task. Use the MEMORIES and RECENT CONVERSATION together: stay on the established subject, build on the prior draft, and you MAY write, structure and elaborate freely — but do NOT introduce new factual claims (numbers, names, dates, events) that aren't in MEMORIES or the conversation.";
+  // NO memory + NO fetch + NO conversation → the #1 failure mode is inventing a number OR a fake "I searched the
+  // official website" narrative. Forbid both — but only when there's genuinely nothing to work from.
+  if(!chitchat && !memHits.length && !direct && !recent){
     sys+="\n\nThere are NO memories for this question and NO web result was fetched this turn. Do NOT guess, estimate, approximate, or state any fact, number, population, name, or date. Do NOT claim or describe that you searched, visited a website, consulted a census, or did any research — you did none. Reply in ONE short sentence that you don't have it in memory, and that the user can say \"search the web\" / \"look it up\" / \"research it\" and you'll fetch it live and remember it. Nothing else.";
   }
   // reasoning models: keep the chain-of-thought grounded in the recalled facts, not the training prior
   if(engineReason && !chitchat){
-    sys+="\n\nThe MEMORIES above are already retrieved and verified — narrate them, do NOT re-derive them. Think briefly, then answer. Treat MEMORIES as your ONLY source; if a detail isn't there, say you don't have it — never recall facts from your own training.";
+    sys+= recent
+      ? "\n\nThe MEMORIES are verified facts and the RECENT CONVERSATION is what we're doing. Think briefly, then write. Build on them — you may compose and elaborate prose for the task, but do NOT introduce factual claims (numbers, names, dates) that aren't in MEMORIES or the conversation, and never pull facts from your own training."
+      : "\n\nThe MEMORIES above are already retrieved and verified — narrate them, do NOT re-derive them. Think briefly, then answer. Treat MEMORIES as your ONLY source; if a detail isn't there, say you don't have it — never recall facts from your own training.";
     if(memHits.some(h=>/\bno (patch|fix|update|upgrade|workaround|solution)\b|\b(unpatched|not (yet )?patched|no fix(?:\s+is)?\s+available)\b/i.test(h)))
       sys+="\n\nIMPORTANT: if the MEMORIES say something does NOT exist (e.g. no patch/fix), say that plainly and give ONLY the stated mitigation. Do NOT suggest updating/upgrading/patching, and don't assume the user's premise is correct.";
   }
-  // R1 distills reason right after the USER turn and weight system weakly — put the facts in the user turn too
+  // R1 distills reason right after the USER turn and weights system weakly — put the working set in the user turn too
   let userContent = text;
-  if(engineReason && !chitchat && memHits.length)
-    userContent = "FACTS FROM MY MEMORY (the ONLY facts I may use; no outside knowledge):\n"
-      + memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n")
-      + "\n\nQuestion: "+text+"\n\nReason ONLY about the FACTS above. If a detail is not in the FACTS, do not state it.";
+  if(engineReason && !chitchat && (memHits.length || recent))
+    userContent = (recent ? "RECENT CONVERSATION (what we are doing — stay on this task/topic):\n"+recent+"\n\n" : "")
+      + (memHits.length ? "FACTS FROM MEMORY (do not contradict; do not invent beyond these):\n"+memHits.map((h,i)=>(ordered?(i+1)+". ":"- ")+h).join("\n")+"\n\n" : "")
+      + "TASK: "+text+(recent ? "\n\nStay on the established topic; build on the conversation and FACTS. You may write prose, but state no new factual claims beyond the FACTS." : "\n\nReason ONLY about the FACTS above. If a detail is not in the FACTS, do not state it.");
   // token budget: reasoning needs room to think AND answer, clamped to the 4096-token context window
   let cap = +CFG.maxTokens;
   if(engineReason){ const room = 4096 - approxTokens(sys) - approxTokens(userContent) - 256; cap = Math.max(512, Math.min(3000, room)); }
@@ -1117,33 +1124,66 @@ function assess(query){
 }
 function parseAction(raw){ const o=firstJsonObj(stripThink(raw)); return (o && o.action) ? o : null; }
 const CONTROLLER_SYS =
-  "You are the CONTROLLER of an assistant whose only long-term memory is neuron-db. Memory was ALREADY queried for "+
-  "this message; you are told the COVERAGE (what fraction of the message's key terms are actually in memory) and the "+
-  "RECALLED FACTS. Decide ONE action and output it as a SINGLE JSON object on one line — nothing before or after it:\n"+
-  '{"action":"answer","say":"..."}            — you can answer from the RECALLED FACTS, or it is small talk. Put the full reply in "say".\n'+
-  '{"action":"web_search","query":"..."}       — a real-world / current fact you do NOT have (low coverage). Fetches a public source and saves it.\n'+
-  '{"action":"deep_research","topic":"..."}     — the user wants depth: many linked sources crawled into a big context.\n'+
-  '{"action":"store","fact":"..."}              — the user TOLD you a durable fact (about themselves or the world). Save it, verbatim and self-contained.\n'+
-  '{"action":"set_rule","rule":"..."}           — the user set a standing instruction / tone / mood for how you should reply.\n'+
-  '{"action":"recall_more","query":"..."}       — memory may hold it under different words; try one more recall with better terms first.\n\n'+
-  "HARD RULES: If COVERAGE is low and the user is ASKING for a real-world fact, you MUST web_search — never guess a "+
-  "number, name, date or population from your own training. If the user is TELLING you something, store it. NEVER store "+
-  "a question or a command (e.g. 'search it up' is a web_search, not a store). Prefer answer when coverage is high. "+
-  "Keep 'say' grounded ONLY in the RECALLED FACTS; if they don't contain it, don't invent it — search instead.";
+  "You are the CONTROLLER of an assistant. Its LONG-TERM memory is neuron-db (already queried — you get COVERAGE and "+
+  "RELATED FACTS); its SHORT-TERM memory is the RECENT CONVERSATION. Decide ONE action and output it as a SINGLE JSON "+
+  "object on one line — nothing before or after it:\n"+
+  '{"action":"answer"}                          — you can answer/continue from the RELATED FACTS and/or the RECENT CONVERSATION (or it is small talk). The full reply is generated separately; just choose this.\n'+
+  '{"action":"web_search","query":"..."}        — a real-world / current fact you do NOT have (low coverage, not in the conversation). Fetches a public source and saves it.\n'+
+  '{"action":"deep_research","topic":"..."}      — the user wants depth: many linked sources crawled into a big context.\n'+
+  '{"action":"store","fact":"..."}               — the user TOLD you a durable fact (about themselves or the world). Save it, verbatim and self-contained.\n'+
+  '{"action":"set_rule","rule":"..."}            — the user set a standing instruction / tone / mood for how you should reply.\n'+
+  '{"action":"recall_more","query":"..."}        — memory may hold it under different words; try one more recall with better terms first.\n\n'+
+  "HARD RULES:\n"+
+  "• If the user is CONTINUING the task in the RECENT CONVERSATION (e.g. 'write it', 'the paper', 'detail each section', "+
+  "'continue', 'expand', 'rewrite', 'more'), choose ANSWER — keep working on the SAME subject using the RELATED FACTS + "+
+  "the conversation. Do NOT start a new, unrelated topic, and do NOT web_search again for something you already fetched.\n"+
+  "• If COVERAGE is low and the user is ASKING for a NEW real-world fact not in memory or the conversation, you MUST "+
+  "web_search — never guess a number, name, date or population from your own training.\n"+
+  "• If the user is TELLING you a durable fact, store it. NEVER store a question or a command ('search it up' is a "+
+  "web_search, not a store).\n"+
+  "• Prefer answer when COVERAGE is high or the conversation already holds what's needed.";
 
 // THINK — the controller loop. One model call picks the action; neuron-db executes and grounds it; repeat if needed.
+// WORKING MEMORY — the live conversation. neuron-db is LONG-TERM memory (durable facts); the recent dialogue is
+// SHORT-TERM memory (what we're doing right now). A mind needs both; grounding only on neuron-db lost the thread
+// ("write the paper" → wrote about social media). recentConvo feeds the dialogue back in; topicCues lets a
+// follow-up ("each section") recall the CURRENT topic's facts even when its own words don't match memory.
+function recentConvo(maxTurns=6, maxChars=1800){
+  const msgs=((active&&active.messages)||[]).slice(0,-1);   // exclude the just-pushed current user message
+  const out=[]; let chars=0;
+  for(let i=msgs.length-1; i>=0 && out.length<maxTurns; i--){
+    const m=msgs[i]; if(!(m.cls==="u"||m.cls==="a")) continue;
+    const t=String(m.text||"").replace(/\s+/g," ").trim(); if(!t) continue;
+    const line=(m.cls==="u"?"User: ":"You: ")+(t.length>360?t.slice(0,360)+"…":t);
+    if(chars+line.length>maxChars) break; out.unshift(line); chars+=line.length;
+  }
+  return out.join("\n");
+}
+function topicCues(n=4){
+  const msgs=((active&&active.messages)||[]).slice(0,-1); const us=[];
+  for(let i=msgs.length-1;i>=0 && us.length<n;i--){ if(msgs[i].cls==="u") us.push(msgs[i].text); }
+  return keywords(us.join(" "));
+}
 async function controller(text){
   // small talk has nothing to "know" — converse directly, don't spend a routing call (and never search "hey")
-  if(isSmallTalk(text)){ await modelAnswer(text, [], null, false, CFG.affect?opinionQuestion(text):null, true); return; }
+  if(isSmallTalk(text)){ await modelAnswer(text, [], null, false, CFG.affect?opinionQuestion(text):null, true, recentConvo()); return; }
   let cur=text; const tried=new Set();
   for(let step=0; step<4 && !stopRequested; step++){
     const a = assess(cur);
+    // topic-augmented recall: a follow-up like "detail each section" shares no content words with the WW2 facts,
+    // so pull extra facts using the conversation's running topic cues — this is what keeps continuity.
+    let ctxHits = a.hits; const tc = topicCues();
+    if(a.coverage < 0.6 && tc.length){
+      const more = smartRecall(cur+" "+tc.slice(0,6).join(" ")).hits.map(safeLine).filter(Boolean);
+      ctxHits = [...new Set([...a.hits.map(safeLine).filter(Boolean), ...more])].slice(0,8);
+    }
+    const recent = recentConvo();
     ev("note","🧠 perceive · coverage "+Math.round(a.coverage*100)+"%",
        a.total ? (a.covered+"/"+a.total+" cues in memory"+(a.missing&&a.missing.length?" · missing: "+a.missing.slice(0,4).join(", "):"")) : "no content cues (small talk)",
-       a.hits.length ? (a.hits.length+" recalled") : "nothing recalled");
-    const usr = "USER MESSAGE: "+text+"\n\nMEMORY COVERAGE: "+Math.round(a.coverage*100)+"%  ("+a.covered+"/"+a.total+
-                " of the message's key terms are in memory)\nRECALLED FACTS:\n"+
-                (a.hits.length ? a.hits.slice(0,8).map((h,i)=>(i+1)+". "+safeLine(h)).join("\n") : "(none — memory has nothing for this)")+
+       ctxHits.length ? (ctxHits.length+" in context") : "nothing recalled");
+    const usr = (recent ? "RECENT CONVERSATION (what we are doing right now — resolve \"it\"/\"the paper\"/\"each section\"/\"continue\" against this, and STAY on this topic):\n"+recent+"\n\n" : "")+
+                "USER MESSAGE: "+text+"\n\nMEMORY COVERAGE for this message: "+Math.round(a.coverage*100)+"%  ("+a.covered+"/"+a.total+" key terms in memory)\n"+
+                "RELATED FACTS IN MEMORY (long-term):\n"+(ctxHits.length ? ctxHits.slice(0,8).map((h,i)=>(i+1)+". "+safeLine(h)).join("\n") : "(none)")+
                 "\n\nOutput ONE action JSON now.";
     let raw="";
     try{ const r=await engine.chat.completions.create({messages:[{role:"system",content:CONTROLLER_SYS},{role:"user",content:usr}], temperature:0.1, max_tokens:220, stream:false}); raw=r.choices?.[0]?.message?.content||""; }
@@ -1151,16 +1191,11 @@ async function controller(text){
     if(stopRequested) break;
     const act = parseAction(raw);
     if(!act){ break; }                                             // unparseable → fall through
-    const label = act.query||act.topic||act.fact||act.rule||(act.say?act.say.slice(0,48):"");
+    const label = act.query||act.topic||act.fact||act.rule||"";
     ev("fire","🧭 decide · "+act.action, `<span class="pill">${String(label).slice(0,52)}</span>`);
 
-    if(act.action==="answer"){
-      if(typeof act.say==="string" && act.say.trim().length>1){
-        const say=enforce(act.say.trim()); bubble("a", say, "assistant");
-        if(active){ active.messages.push({cls:"a", text:say, who:"assistant"}); saveChats(); }
-      } else {
-        await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && isSmallTalk(text));
-      }
+    if(act.action==="answer"){     // generate the full reply with working memory + recalled facts (not the short routing call)
+      await modelAnswer(text, ctxHits, null, false, CFG.affect?opinionQuestion(text):null, false, recent);
       return;
     }
     if(act.action==="store" && act.fact){
@@ -1177,7 +1212,7 @@ async function controller(text){
       let saved=0; facts.slice(0,8).forEach(f=>{ if(observeIn(SCOPE,f)) saved++; }); setStats();
       ev("tool","🔧 web · "+provider, `<span class="pill">${String(act.query).slice(0,46)}</span>`, saved?("saved "+saved):null);
       if(!facts.length){ bubble("a", enforce("🌐 I searched but the public CORS sources (Wikipedia, DuckDuckGo, open-meteo) didn't have that — try naming it more specifically and I'll fetch it."), "assistant"); return; }
-      await modelAnswer(text, facts, null, false, null, false);    // OBSERVE: answer grounded in the freshly-fetched facts
+      await modelAnswer(text, facts, null, false, null, false, recent);    // OBSERVE: answer grounded in the freshly-fetched facts
       return;
     }
     if(act.action==="deep_research" && act.topic){
@@ -1186,7 +1221,7 @@ async function controller(text){
       ev("tool","🔧 deep research · Wikipedia", `<span class="pill">${String(act.topic).slice(0,44)}</span>`, report.length+" pages · "+savedTotal+" facts");
       if(report.length){
         const facts=report.flatMap(r=>r.extract.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>15).slice(0,4).map(s=>r.title+": "+s));
-        await modelAnswer("Write a clear, synthesized research brief on \""+act.topic+"\" using the gathered sources below.", facts.slice(0,24), null, false, null, false);
+        await modelAnswer("Write a clear, synthesized research brief on \""+act.topic+"\" using the gathered sources below.", facts.slice(0,24), null, false, null, false, recent);
       } else bubble("a", enforce("🌐 I couldn't find a Wikipedia article to start the crawl from for that — try a more specific topic."), "assistant");
       if(stopped) bubble("s","⏹ research stopped — kept the "+savedTotal+" facts gathered so far in neuron-db.");
       return;
@@ -1194,9 +1229,9 @@ async function controller(text){
     if(act.action==="recall_more" && act.query && !tried.has(act.query)){ tried.add(act.query); cur = text+" "+act.query; continue; }   // re-perceive with broader cues
     break;                                                          // unknown action → fall through to a safe answer
   }
-  // FALLBACK — model errored / chose nothing actionable: answer from whatever recall we have (never confabulate)
-  const a=assess(text);
-  await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && isSmallTalk(text));
+  // FALLBACK — model errored / chose nothing actionable: answer from recall + working memory (never confabulate)
+  const a=assess(text), recent=recentConvo();
+  await modelAnswer(text, a.hits, null, false, CFG.affect?opinionQuestion(text):null, !a.hits.length && !recent && isSmallTalk(text), recent);
 }
 
 // ============================ a turn ============================
@@ -1363,7 +1398,7 @@ async function turn(){
       bubble("a", enforce("Got it — I'll remember your "+cmd.key+" is \""+getVar(cmd.key.toLowerCase())+"\". Ask \"what is my "+cmd.key+"?\" any time."), engine?"assistant":"memory");
     } else if(engine){
       const chitchat = !hits.length && !direct && !opinion && isSmallTalk(text);
-      await modelAnswer(text, hits, direct, ordered, opinion, chitchat);
+      await modelAnswer(text, hits, direct, ordered, opinion, chitchat, chitchat?"":recentConvo());
     } else {
       const note=loading?" The model is still downloading.":" Load a model in Settings for a conversational reply.";
       if(direct) bubble("a", enforce("From memory — your "+direct.key+" is: "+direct.val),"memory");
