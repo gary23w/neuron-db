@@ -291,9 +291,10 @@
         <h3>The hippocampus &amp; the neocortex, both client-side.</h3>
       </div>
       <div class="help-body">
-        <p><b>neuron-db</b> is the memory — the real Rust core compiled to a ~1.5&nbsp;MB WebAssembly module, running locally.
-           Every message is stored and recalled by it; watch the neurons fire in the memory pane. The optional
-           <b>local Llama</b> (WebLLM/WebGPU) is the voice on top — it never sees your history, only what the memory recalls.</p>
+        <p><b>neuron-db</b> is the memory — the real Rust core compiled to WebAssembly, running locally.
+           Every message is stored and recalled by it; watch the neurons fire in the memory pane. For the voice on top, pick
+           <b>gary-neuron</b> — a 6.9M reasoner baked into the WASM that runs in-browser with no download and no GPU — or a
+           <b>local Llama</b> (WebLLM/WebGPU). Either way it never sees your history, only what the memory recalls.</p>
         <p>The memory does the <b>retrieving</b> so the tiny model only has to <b>narrate</b>: it routes each question to the
            right document, recalls by meaning <i>and</i> association, and for a “walk me through…” question hands back an
            <b>ordered span</b> so even a 1B model recounts a chain in sequence. Paste something bigger than the context window
@@ -373,7 +374,7 @@ function host_http(ptr, len){
 }
 async function loadWasm(){
   // http-enabled build: same mem() surface + a host_http import the WASM calls to make web requests
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=http2"), { env: { host_http } });
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=gary1"), { env: { host_http } });
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
@@ -806,7 +807,7 @@ function bubble(cls,text,who){
 }
 
 // ============================ WebLLM (optional neocortex) ============================
-let engine=null, loading=false, engineTiny=false, engineReason=false;   // tiny + reasoning models → Direct mode
+let engine=null, loading=false, engineTiny=false, engineReason=false, garyReady=false;   // tiny+reasoning → Direct; garyReady = built-in cortex selected
 const SYS = "You are a vivid assistant with genuine opinions, speaking from your long-term memory (neuron-db). "+
   "You do NOT see the user's history — only the AFFECT, STANDING INSTRUCTIONS and MEMORIES blocks below, recalled "+
   "for this turn. Hard rules: the MEMORIES are REAL facts recalled from memory — answer using ONLY them, retell them "+
@@ -849,15 +850,17 @@ const CUSTOM=[
   {id:"NemoMix-Unleashed-12B-q4f16_1-MLC", label:"NemoMix Unleashed · 12B", tag:"big", gb:7,
    model:"https://huggingface.co/huggingkot/NemoMix-Unleashed-12B-q4f16_1-MLC", model_lib:NEMO_LIB},
 ];
-const MODELS=CURATED.concat(CUSTOM);
-const TAGTXT={fast:"⚡ fast",tools:"🔧 tools",reason:"🧠 reasoning",balanced:"balanced",big:"big"};
+// gary-neuron: the 6.9M cortex baked into the WASM — runs in-browser, no download, no WebGPU.
+const BUILTIN=[{id:"gary-neuron", label:"gary-neuron · 6.9M", tag:"local", gb:0}];
+const MODELS=BUILTIN.concat(CURATED).concat(CUSTOM);
+const TAGTXT={local:"🧠 built-in",fast:"⚡ fast",tools:"🔧 tools",reason:"🧠 reasoning",balanced:"balanced",big:"big"};
 function populateModels(){
   const avail=new Set((webllm.prebuiltAppConfig?.model_list||[]).map(m=>m.model_id));
   const sel=$("model"); if(!sel) return; sel.innerHTML="";
-  const show=CURATED.filter(m=>!avail.size||avail.has(m.id)).concat(CUSTOM);   // custom (non-prebuilt) models bypass the filter
+  const show=BUILTIN.concat(CURATED.filter(m=>!avail.size||avail.has(m.id))).concat(CUSTOM);   // built-in + custom bypass the WebLLM filter
   for(const m of show){
     const o=document.createElement("option"); o.value=m.id;
-    o.textContent=`${m.label}  (${TAGTXT[m.tag]||m.tag}, ~${m.gb} GB)`; sel.appendChild(o); }
+    o.textContent = m.tag==="local" ? `${m.label}  (🧠 built-in · no download)` : `${m.label}  (${TAGTXT[m.tag]||m.tag}, ~${m.gb} GB)`; sel.appendChild(o); }
   if(!sel.options.length){ const o=document.createElement("option"); o.value=CFG.model; o.textContent=CFG.model; sel.appendChild(o); }
   sel.value = [...sel.options].some(o=>o.value===CFG.model) ? CFG.model : sel.options[0].value;
   CFG.model=sel.value; saveCfg();
@@ -878,6 +881,14 @@ async function markCachedModels(){
 async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
+  if(CFG.model==="gary-neuron"){   // the built-in cortex: instant, in-browser, no WebGPU and no download
+    garyReady=true; engine=null; engineTiny=true; engineReason=false;
+    $("status").className="status"; $("status").textContent="gary-neuron ready — a 6.9M cortex running in your browser via WASM. No download, no GPU, nothing leaves this tab.";
+    setPill("ready","● gary-neuron · built-in"); $("pbar").style.display="none";
+    bubble("s","gary-neuron loaded — a 6.9M grounded reasoner baked into the WASM (no GPU, no download). It answers from what neuron-db recalls.");
+    $("loadBtn").disabled=false; $("model").disabled=false; loading=false; return;
+  }
+  garyReady=false;
   engineTiny = (MODELS.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
   // the curated tag is the source of truth; the anchored regex only covers a non-curated id (avoids flagging e.g. "MyReasonableModel")
   engineReason = ((MODELS.find(m=>m.id===CFG.model)||{}).tag==="reason") || /(^|[-_])(R1|Distill|QwQ|Qwen3)([-_]|$)/i.test(CFG.model);
@@ -1003,6 +1014,24 @@ async function modelAnswer(text, hits, direct, ordered, topic, chitchat, recent)
   }
   if(thinkEl){ const pre=thinkEl.querySelector("pre"); pre.classList.remove("live"); if(!pre.textContent.trim()) thinkEl.remove(); }
   if(active){ active.messages.push({cls:"a", text:enforce(acc), who:"assistant"}); saveChats(); }
+}
+
+// gary-neuron — the built-in 6.9M cortex answers from the recalled working set, entirely in-browser
+// via the WASM (EX.gary), no WebLLM/engine. KV-cached, so it's fast enough to run synchronously.
+async function garyAnswer(text, hits, direct, ordered){
+  const facts=(hits||[]).map(safeLine).filter(Boolean).slice(0,6);
+  if(direct && direct.val && !facts.some(f=>f.includes(direct.val))) facts.unshift(direct.key+" is "+direct.val);
+  const out=bubble("a","","assistant"), ansEl=out.lastChild; ansEl.textContent="🧠 …";
+  await new Promise(r=>setTimeout(r));   // paint the placeholder before the (synchronous) cortex call
+  const t0=performance.now(); let ans="";
+  try{ const [p,l]=wstr([text, ...facts].join("\n")); ans=readBuf(EX.gary(p,l)); }
+  catch(e){ ans="(cortex error: "+(e.message||e)+")"; }
+  const ms=Math.round(performance.now()-t0);
+  if(!ans) ans = facts.length ? "Here's what I have on that:\n"+facts.map(h=>"• "+h).join("\n") : "I don't have that in memory yet.";
+  ansEl.textContent=enforce(ans);
+  ev("fire","gary-neuron · cortex", facts.length+" fact"+(facts.length===1?"":"s")+" → "+ms+"ms", ans.slice(0,48));
+  $("log").scrollTop=$("log").scrollHeight;
+  if(active){ active.messages.push({cls:"a", text:enforce(ans), who:"assistant"}); saveChats(); }
 }
 
 // ============================ agentic tool loop (MCP parity, in the browser) ============================
@@ -1438,6 +1467,8 @@ async function turn(){
       bubble("a", enforce("Saved exactly. Ask \"what is my "+cmd.key+"?\" any time and I'll read it back verbatim."),"memory");
     } else if(cmd.kind==="varfact"){
       bubble("a", enforce("Got it — I'll remember your "+cmd.key+" is \""+getVar(cmd.key.toLowerCase())+"\". Ask \"what is my "+cmd.key+"?\" any time."), engine?"assistant":"memory");
+    } else if(garyReady){
+      await garyAnswer(text, hits, direct, ordered);
     } else if(engine){
       const chitchat = !hits.length && !direct && !opinion && isSmallTalk(text);
       await modelAnswer(text, hits, direct, ordered, opinion, chitchat, chitchat?"":recentConvo());

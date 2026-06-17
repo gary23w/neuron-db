@@ -145,6 +145,22 @@ pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
     n
 }
 
+/// gary-neuron as the lab's in-browser model: the host has ALREADY recalled the working set, so
+/// pass it through verbatim (no internal re-recall) and let the cortex reason over ALL of it —
+/// first line = the query, each remaining non-empty line = one recalled fact. Answer -> BUF.
+#[no_mangle]
+pub extern "C" fn gary(in_ptr: *const u8, in_len: usize) -> usize {
+    let bytes = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines = text.split('\n');
+    let query = lines.next().unwrap_or("").to_string();
+    let facts: Vec<String> = lines.filter(|l| !l.trim().is_empty()).map(|s| s.to_string()).collect();
+    let ans = cortex().think(&facts, &query, 24);
+    let b = ans.as_bytes(); let n = b.len().min(256);
+    unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
+    n
+}
+
 // ---- in-browser NeuronDB-equivalent: scopes + typed neurons (var, instruction) + recall, so the
 // browser lab has the SAME public surface the MCP server exposes (recall / recall_value /
 // recall_associative / remember / note(var|instruction) / recall_var / forget / stats) — all
