@@ -47,7 +47,7 @@ impl NeuronDB {
     /// the in-memory cache); only on-disk durability is deferred.
     pub fn open_with_flush(path: &str, max_facts: usize, flush_every: usize) -> Self {
         let conn = Connection::open(path).expect("open sqlite");
-        let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute(SCHEMA, []).expect("schema");
         NeuronDB {
             inner: Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }), max_facts, cap: 256,
@@ -105,8 +105,9 @@ impl NeuronDB {
         inner.cache.insert(nid.to_string(), entry);
     }
     fn persist(conn: &Connection, nid: &str, e: &Entry) {
-        conn.execute("INSERT INTO neurons(id,facts,created,updated,turns) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts,updated=excluded.updated,turns=excluded.turns",
-            params![nid, e.n.dump(), e.created, now_ms(), e.turns]).expect("save");
+        // prepare_cached: the INSERT is parsed once and reused across writes instead of re-parsed each call
+        let mut stmt = conn.prepare_cached("INSERT INTO neurons(id,facts,created,updated,turns) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts,updated=excluded.updated,turns=excluded.turns").expect("prepare");
+        stmt.execute(params![nid, e.n.dump(), e.created, now_ms(), e.turns]).expect("save");
     }
     /// Persist now and clear the dirty/write-behind state (used by the immediate-durability paths).
     fn persist_now(conn: &Connection, nid: &str, e: &mut Entry) { Self::persist(conn, nid, e); e.dirty = false; e.writes = 0; }

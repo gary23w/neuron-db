@@ -57,7 +57,7 @@ fn pretokenize(text: &str) -> Vec<String> {
             let end = if end <= i { j } else { end };
             out.push(ch[i..end].iter().collect()); i = end; continue;
         }
-        out.push(c.to_string()); i += 1;                    // safety
+        out.push(c.to_string()); i += 1;                    // fallthrough: a char the rules above didn't consume
     }
     out
 }
