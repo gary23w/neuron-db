@@ -1,0 +1,8 @@
+# WASM builds get SIMD128 so the cortex's vectorized dot() (src/cortex.rs) emits f32x4 — the
+# matmuls are ~90% of inference. All modern browsers support wasm SIMD (the lab needs WebGPU,
+# i.e. desktop Chrome/Edge/Safari 16.4+, anyway). Native autovectorizes the same code without flags.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+
+[target.wasm32-wasip1]
+rustflags = ["-C", "target-feature=+simd128"]

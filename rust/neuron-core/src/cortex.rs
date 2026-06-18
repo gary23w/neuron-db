@@ -97,13 +97,28 @@ impl Cortex {
         let inv = 1.0 / (var + 1e-5).sqrt();
         for j in 0..e { out[j] = (x[j]-mu)*inv*w[j] + b[j]; }
     }
+    /// Dot product of two equal-length slices, eight independent lane accumulators so LLVM emits
+    /// SIMD (f32x4/f32x8 native, +simd128 wasm — see .cargo/config.toml). This REORDERS the float
+    /// sum vs a strict left-to-right accumulate: numerically equivalent (pairwise) but not
+    /// bit-identical, so greedy decode is re-verified (cortex_battery) whenever this changes.
+    #[inline]
+    fn dot(x: &[f32], w: &[f32]) -> f32 {
+        let mut acc = [0f32; 8];
+        let mut xi = x.chunks_exact(8);
+        let mut wi = w.chunks_exact(8);
+        for (xc, wc) in xi.by_ref().zip(wi.by_ref()) {
+            let xc: &[f32; 8] = xc.try_into().unwrap();
+            let wc: &[f32; 8] = wc.try_into().unwrap();
+            for l in 0..8 { acc[l] += xc[l] * wc[l]; }
+        }
+        let mut s = ((acc[0]+acc[1]) + (acc[2]+acc[3])) + ((acc[4]+acc[5]) + (acc[6]+acc[7]));
+        for (a, b) in xi.remainder().iter().zip(wi.remainder()) { s += a * b; }
+        s
+    }
     /// out[o] = b[o] + sum_i x[i]*w[o*i_dim + i]  (single token).
     fn linear(x: &[f32], i_dim: usize, o_dim: usize, w: &[f32], b: &[f32], out: &mut [f32]) {
-        for o in 0..o_dim {
-            let wb = o*i_dim; let mut acc = b[o];
-            for i in 0..i_dim { acc += x[i]*w[wb+i]; }
-            out[o] = acc;
-        }
+        let x = &x[..i_dim];
+        for o in 0..o_dim { out[o] = b[o] + Self::dot(x, &w[o*i_dim..o*i_dim + i_dim]); }
     }
 
     /// Encode `ids` incrementally on top of `cache` (positions continue from `cache.len`),
@@ -117,6 +132,7 @@ impl Cortex {
         let mut h2 = vec![0f32; e]; let mut m0 = vec![0f32; 4*e]; let mut m2 = vec![0f32; e];
         let mut x = vec![0f32; e];
         let mut logits = vec![0f32; vocab];
+        let mut sc = vec![0f32; self.cfg.blk.max(8)];   // attention scores, hoisted out of the per-head/token loop
         let last = ids.len() - 1;
         for (n, &id) in ids.iter().enumerate() {
             let posi = cache.len;                       // absolute position of this token
@@ -130,12 +146,12 @@ impl Cortex {
                 let np = posi + 1;                                // positions to attend over (incl. self)
                 let (kc, vc) = (&cache.k[li], &cache.v[li]);
                 for head in 0..h {
-                    let qo = head*hd;
-                    let mut sc = vec![0f32; np]; let mut mx = f32::NEG_INFINITY;
+                    let qo = head*hd; let q = &qkv[qo..qo+hd];
+                    let mut mx = f32::NEG_INFINITY;
                     for j in 0..np {
-                        let kb = j*e + head*hd; let mut d = 0f32;
-                        for c in 0..hd { d += qkv[qo+c]*kc[kb+c]; }
-                        d *= sca; sc[j] = d; if d > mx { mx = d; }
+                        let kb = j*e + head*hd;
+                        let d = Self::dot(q, &kc[kb..kb+hd]) * sca;
+                        sc[j] = d; if d > mx { mx = d; }
                     }
                     let mut sum = 0f32;
                     for j in 0..np { sc[j] = (sc[j]-mx).exp(); sum += sc[j]; }
@@ -155,7 +171,7 @@ impl Cortex {
             if n == last {
                 let mut xf = vec![0f32; e];
                 Self::ln(&x, &self.lnf_w, &self.lnf_b, &mut xf);
-                for v in 0..vocab { let wb = v*e; let mut acc = 0f32; for c in 0..e { acc += xf[c]*self.tok[wb+c]; } logits[v] = acc; }
+                for v in 0..vocab { logits[v] = Self::dot(&xf, &self.tok[v*e..v*e + e]); }
             }
         }
         logits
