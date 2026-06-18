@@ -614,6 +614,7 @@ pub mod plastic;
 pub mod router;
 pub mod turn;
 #[cfg(feature = "sqlite")] pub mod db;
+#[cfg(feature = "sqlite")] pub mod op;     // the one op vocabulary + apply() every transport routes through
 #[cfg(feature = "secure")] pub mod secure;
 #[cfg(feature = "server")] pub mod server;
 #[cfg(feature = "mcp")] pub mod mcp;
