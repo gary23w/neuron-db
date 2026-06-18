@@ -80,6 +80,7 @@ fn main() {
                 else { println!("{}", t.reply); }
             } }
         "chat" => { need_scope("chat"); chat(&db, max, &scope); }
+        "shell" => { shell(&db, max, &scope); }
         "stats" => { need_scope("stats"); let d = NeuronDB::open(&db, max);
             if let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: scope.clone() }) {
                 if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
@@ -126,6 +127,95 @@ fn chat(db: &str, max: usize, scope: &str) {
             println!("{}", t.reply);
         }
         let _ = std::io::stdout().flush();
+    }
+}
+
+fn shell_help() {
+    eprintln!("commands (the current scope is shown in the prompt):\n  \
+recall|r <query>          top facts for a query\n  \
+get <query>               single best value\n  \
+assoc <query>             spreading-activation recall (what's connected)\n  \
+chain <start> -> <rel>…   multi-hop walk, e.g. chain Aurora -> owner -> manager\n  \
+observe|+ <text>          store a fact\n  \
+turn <message>            conversational store/answer\n  \
+var <key> | var <k>=<v>   read / set a variable\n  \
+stats                     fact count for the scope\n  \
+forget [match]            drop facts (all, or those containing match)\n  \
+list                      list scopes\n  \
+scope [name]              show / switch the current scope\n  \
+help | quit               this / exit (Ctrl-D also exits)");
+}
+
+/// Interactive shell over the store: open the DB ONCE, then run any command in a loop with a
+/// switchable current scope — the full `apply` surface from one prompt. Immediate-durable
+/// (flush_every = 1). Works interactively or with piped commands; EOF / quit exits.
+fn shell(db: &str, max: usize, start_scope: &str) {
+    use std::io::Write;
+    let d = NeuronDB::open_with_flush(db, max, 1);
+    let mut scope = if start_scope.is_empty() { "default".to_string() } else { start_scope.to_string() };
+    let interactive = std::io::stdin().is_terminal();
+    if interactive { eprintln!("neuron shell · db {} · type 'help' or Ctrl-D to exit", db); }
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    loop {
+        if interactive { eprint!("{}> ", scope); let _ = std::io::stderr().flush(); }
+        line.clear();
+        match stdin.read_line(&mut line) { Ok(0) => { if interactive { eprintln!(); } break; }, Ok(_) => {}, Err(_) => break }
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let (cmd, arg) = match line.split_once(char::is_whitespace) { Some((c, a)) => (c, a.trim()), None => (line, "") };
+        match cmd {
+            "quit" | "exit" | ":q" => break,
+            "help" | "?" => shell_help(),
+            "scope" => { if arg.is_empty() { println!("scope: {}", scope); } else { scope = arg.to_string(); if interactive { eprintln!("switched to {}", scope); } } }
+            "recall" | "r" => {
+                if arg.is_empty() { eprintln!("recall <query>"); continue; }
+                let hits = apply(&d, NeuronOp::Recall { scope: scope.clone(), query: arg.to_string(), k: 5, semantic: false, across: false }).hits();
+                if hits.is_empty() { println!("(no memories)"); } else { for h in hits { println!("- {}", h.fact); } }
+            }
+            "get" => {
+                if arg.is_empty() { eprintln!("get <query>"); continue; }
+                match apply(&d, NeuronOp::RecallOne { scope: scope.clone(), query: arg.to_string() }).hit() {
+                    Some(h) => println!("{}", h.value), None => println!("(no answer)"),
+                }
+            }
+            "assoc" => {
+                if arg.is_empty() { eprintln!("assoc <query>"); continue; }
+                let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: arg.to_string(), k: 8, hops: 2 }).assoc();
+                if hits.is_empty() { println!("(nothing connected)"); } else { for h in hits { println!("{} {}", if h.seed { "*" } else { "-" }, h.fact); } }
+            }
+            "chain" => {
+                let parts: Vec<&str> = arg.split("->").map(str::trim).filter(|s| !s.is_empty()).collect();
+                if parts.len() < 2 { eprintln!("chain <start> -> <relation> [-> <relation> …]"); continue; }
+                let path: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+                if let OpResult::Chain { value, trail } = apply(&d, NeuronOp::RecallChain { scope: scope.clone(), start: parts[0].to_string(), path }) {
+                    match value { Some(v) => println!("{}  (via {})", v, trail.join(" -> ")), None => println!("chain broke after: {}", trail.join(" -> ")) }
+                }
+            }
+            "observe" | "+" => {
+                if arg.is_empty() { eprintln!("observe <text>"); continue; }
+                println!("stored {} fact(s)", apply(&d, NeuronOp::Observe { scope: scope.clone(), text: arg.to_string() }).wrote());
+            }
+            "turn" => {
+                if arg.is_empty() { eprintln!("turn <message>"); continue; }
+                if let OpResult::Turned(t) = apply(&d, NeuronOp::Turn { scope: scope.clone(), message: arg.to_string() }) { println!("{}", t.reply); }
+            }
+            "var" => {
+                if let Some((k, v)) = arg.split_once('=') {
+                    let n = apply(&d, NeuronOp::VarSet { scope: scope.clone(), key: k.trim().to_string(), value: v.trim().to_string() }).wrote();
+                    println!("{}", if n > 0 { "set" } else { "(not stored)" });
+                } else if !arg.is_empty() {
+                    match apply(&d, NeuronOp::VarGet { scope: scope.clone(), key: arg.to_string() }).value() { Some(v) => println!("{}", v), None => println!("(unset)") }
+                } else { eprintln!("var <key>  |  var <key>=<value>"); }
+            }
+            "stats" => { if let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: scope.clone() }) { println!("{} facts (max {}), {} turns", s.facts, s.max_facts, s.turns); } }
+            "forget" => {
+                let m = if arg.is_empty() { None } else { Some(arg.to_string()) };
+                if let OpResult::Forgot { forgot, remaining } = apply(&d, NeuronOp::Forget { scope: scope.clone(), matching: m }) { println!("forgot {}, {} remaining", forgot, remaining); }
+            }
+            "list" | "scopes" => { if let OpResult::Scopes(ids) = apply(&d, NeuronOp::List) { for id in ids { println!("{}", id); } } }
+            other => { eprintln!("unknown command '{}'; type 'help'", other); }
+        }
     }
 }
 
@@ -230,6 +320,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
+  shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
   stats   <scope>                fact count + timestamps\n\
   forget  <scope> [match...]     drop facts\n\
   list                           list scope ids\n\
