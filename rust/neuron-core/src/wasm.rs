@@ -9,13 +9,16 @@
 // (which would have us mark every export `unsafe`, changing the exported signature) is allowed here.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 use crate::Neuron;
+#[cfg(feature = "cortex")]
 use crate::model::GaryModel;
 use std::collections::HashMap;
+#[cfg(feature = "cortex")]
 use std::sync::OnceLock;
 
 /// The cortex + tokenizer, built ONCE and reused across calls. Rebuilding it per call
 /// (dequantizing ~6.9M int8 weights + reloading the BPE every run()/selftest()) was the
 /// dominant cost of the in-browser inference path.
+#[cfg(feature = "cortex")]
 fn cortex() -> &'static GaryModel {
     static M: OnceLock<GaryModel> = OnceLock::new();
     M.get_or_init(GaryModel::embedded)
@@ -101,6 +104,7 @@ pub extern "C" fn syn_chain(ptr: *const u8, len: usize) -> usize {
 
 /// Full self-test inside the wasm sandbox: store recall + emergence cortex generation.
 /// Returns a bitmask: 1 = store recall correct, 2 = cortex copied the value from context.
+#[cfg(feature = "cortex")]
 #[no_mangle]
 pub extern "C" fn selftest() -> i32 {
     let mut s = Neuron::new(500);
@@ -130,6 +134,7 @@ pub extern "C" fn alloc(n: usize) -> *mut u8 {
 /// Request protocol (UTF-8 at in_ptr..in_ptr+in_len): first line = query, each remaining
 /// line = a fact. Builds a store from the facts, recalls + lets the cortex answer the query,
 /// writes the answer into BUF, returns its length (read via answer_ptr/answer_len).
+#[cfg(feature = "cortex")]
 #[no_mangle]
 pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
     let bytes = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };
@@ -148,6 +153,7 @@ pub extern "C" fn run(in_ptr: *const u8, in_len: usize) -> usize {
 /// gary-neuron as the lab's in-browser model: the host has ALREADY recalled the working set, so
 /// pass it through verbatim (no internal re-recall) and let the cortex reason over ALL of it —
 /// first line = the query, each remaining non-empty line = one recalled fact. Answer -> BUF.
+#[cfg(feature = "cortex")]
 #[no_mangle]
 pub extern "C" fn gary(in_ptr: *const u8, in_len: usize) -> usize {
     let bytes = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };

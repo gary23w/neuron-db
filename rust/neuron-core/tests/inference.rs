@@ -1,3 +1,4 @@
+#![cfg(feature = "cortex")] // the dispatcher tests need the baked cortex; skip them in a store-only build
 use neuron_core::model::{GaryModel, Dispatch};
 
 // gary-neuron is the middle DISPATCHER: each turn routes to ANSWER / ESCALATE / FETCH / STORE.

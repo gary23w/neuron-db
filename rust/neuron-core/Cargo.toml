@@ -15,12 +15,14 @@ name = "bench"
 path = "src/bench.rs"
 
 [features]
-default = []
+default = ["cortex"]
+cortex = []                    # bakes the gary-neuron cortex into the wasm (run/gary/selftest); turn OFF for a store-only backend build
 sqlite = ["dep:rusqlite"]
 secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:getrandom"]
 server = ["sqlite"]
 mcp = ["sqlite", "semantic"]   # the MCP server ships with semantic-ranked recall by default
 semantic = []
+compress = []                  # opt-in: lossless token-Huffman codec over the dump() blob (std-only, wasm-safe)
 http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
 
 [dependencies]
@@ -53,6 +55,7 @@ lto = true
 [[bin]]
 name = "think"
 path = "src/think.rs"
+required-features = ["cortex"]
 
 [[example]]
 name = "quickstart"
@@ -96,6 +99,17 @@ required-features = ["semantic"]
 # vector before crosstalk breaks recall (the real, lossy 'pack more into dimensions' idea).
 [[example]]
 name = "hdc_superposition"
+
+# compression probe: sizes the squeezable text room per node (raw vs interned vs entropy floor)
+# + the marginal warm-vocab cost + index-postings (delta+varint) — the lossless density ceiling.
+[[example]]
+name = "compression_probe"
+
+# (b)+(c) end-to-end: compress the real dump() blob with the lossless token-Huffman codec, prove
+# recall survives the round-trip, measure on-disk shrink + throughput. Real prose or synthetic.
+[[example]]
+name = "compression_bench"
+required-features = ["compress"]
 
 [[example]]
 name = "scenario_bench"

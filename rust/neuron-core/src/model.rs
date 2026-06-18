@@ -19,6 +19,9 @@ pub enum Dispatch { Answer(String), Escalate, Fetch(String), Store(String) }
 
 impl GaryModel {
     /// Load the emergence model baked into the binary at compile time. No files, no network.
+    /// Gated behind the `cortex` feature (on by default); a `--no-default-features` build is the
+    /// store-only backend — recall/chain/assoc without the baked weights.
+    #[cfg(feature = "cortex")]
     pub fn embedded() -> GaryModel {
         let bin = include_bytes!("../model/cortex.bin");
         let man = include_str!("../model/manifest.tsv");
