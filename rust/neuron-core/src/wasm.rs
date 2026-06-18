@@ -131,6 +131,15 @@ pub extern "C" fn alloc(n: usize) -> *mut u8 {
     let mut v = Vec::with_capacity(n); let p = v.as_mut_ptr(); std::mem::forget(v); p
 }
 
+/// Free a buffer previously handed out by `alloc` (host calls this once it has written + the
+/// guest has consumed the input). Without it every `alloc` leaks — the Vec was `mem::forget`'d.
+/// `n` is the original allocation size; the buffer was capacity `n`, length 0. The result `BUF`
+/// is a separate static and is NOT freed here.
+#[no_mangle]
+pub extern "C" fn dealloc(ptr: *mut u8, n: usize) {
+    if !ptr.is_null() && n > 0 { unsafe { drop(Vec::from_raw_parts(ptr, 0, n)); } }
+}
+
 /// Request protocol (UTF-8 at in_ptr..in_ptr+in_len): first line = query, each remaining
 /// line = a fact. Builds a store from the facts, recalls + lets the cortex answer the query,
 /// writes the answer into BUF, returns its length (read via answer_ptr/answer_len).

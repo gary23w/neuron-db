@@ -14,18 +14,7 @@ use crate::db::NeuronDB;
 const PROTO_DEFAULT: &str = "2025-06-18";
 
 // ---- minimal JSON helpers (flat-search; mirrors server.rs) ----
-fn json_escape(s: &str) -> String {
-    let mut o = String::new();
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""), '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"), '\r' => o.push_str("\\r"), '\t' => o.push_str("\\t"),
-            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o
-}
+use crate::json_escape;
 fn json_field(body: &str, key: &str) -> Option<String> {
     let pat = format!("\"{}\"", key);
     let i = body.find(&pat)?;

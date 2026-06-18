@@ -64,6 +64,22 @@ fn canon(w: &str) -> String {
     if s.len() >= 3 { if let Some(c) = aliases().get(s) { return (*c).to_string(); } }
     wl
 }
+/// Escape a string for embedding in a JSON string literal (control chars -> \uXXXX). The one
+/// canonical escaper shared by every text wire surface (CLI --json, the MCP server, the HTTP
+/// server) so they can't drift; std-only, no serde.
+pub fn json_escape(s: &str) -> String {
+    let mut o = String::new();
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""), '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"), '\r' => o.push_str("\\r"), '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
 /// Whether two words name the same relation: same morphological root (owner/owned), same
 /// stem (dependency/depends), or the same canonical synonym (reports/manager, lives/city).
 pub fn rel_matches(a: &str, b: &str) -> bool {
