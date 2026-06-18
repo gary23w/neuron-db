@@ -15,6 +15,7 @@
 //! Env: NEURON_DB (db path), NEURON_SECRET (secret for secure-*), NEURON_DB_KEY (server bearer).
 use neuron_core::db::NeuronDB;
 use neuron_core::op::{apply, NeuronOp, OpResult};   // route every store command through the one vocabulary
+use neuron_core::stream::LineSplitter;              // line-splitting for capture/run/follow
 use neuron_core::json_escape as esc;          // the canonical control-char-correct escaper
 use std::io::{IsTerminal, Read};
 
@@ -39,6 +40,9 @@ fn main() {
             "--max" => { if let Some(v) = raw.get(i + 1).and_then(|s| s.parse().ok()) { max = v; } i += 2; }
             "--json" => { json = true; i += 1; }
             "-h" | "--help" | "help" => { help(); return; }
+            // everything after a bare `--` is verbatim positional (the child command for `run`),
+            // so neuron never steals the app's own --db/--max/etc.
+            "--" => { while i < raw.len() { pos.push(raw[i].clone()); i += 1; } }
             _ => { pos.push(raw[i].clone()); i += 1; }
         }
     }
@@ -81,6 +85,9 @@ fn main() {
             } }
         "chat" => { need_scope("chat"); chat(&db, max, &scope); }
         "shell" => { shell(&db, max, &scope); }
+        "capture" => { need_scope("capture"); capture(&db, max, &scope, pos.get(2..).unwrap_or(&[])); }
+        "run" => { need_scope("run"); run_cmd(&db, max, &scope, pos.get(2..).unwrap_or(&[])); }
+        "follow" => { need_scope("follow"); follow(&db, max, &scope, pos.get(2..).unwrap_or(&[])); }
         "stats" => { need_scope("stats"); let d = NeuronDB::open(&db, max);
             if let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: scope.clone() }) {
                 if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
@@ -219,6 +226,116 @@ fn shell(db: &str, max: usize, start_scope: &str) {
     }
 }
 
+// ---- streaming capture: pipe an app's output into a scope ----
+struct CapOpts { tee: bool, only: Option<String>, skip: Option<String>, max_line: usize }
+fn parse_cap_opts(args: &[String]) -> (CapOpts, Vec<String>) {
+    let mut o = CapOpts { tee: false, only: None, skip: None, max_line: 65536 };
+    let mut positional = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--tee" => { o.tee = true; i += 1; }
+            "--from-start" => { i += 1; }                        // a `follow` flag; harmless here
+            "--only" => { o.only = args.get(i + 1).cloned(); i += 2; }
+            "--skip" => { o.skip = args.get(i + 1).cloned(); i += 2; }
+            "--max-line" => { if let Some(n) = args.get(i + 1).and_then(|s| s.parse().ok()) { o.max_line = n; } i += 2; }
+            "--" => break,                                        // `run`'s command separator
+            other if other.starts_with("--") => { i += 1; }      // unknown flag: ignore
+            _ => { positional.push(args[i].clone()); i += 1; }
+        }
+    }
+    (o, positional)
+}
+
+// Store one captured line (trimmed, utf8-lossy) into the scope, honoring --only/--skip substring
+// filters. Captured text is the least-trusted text in the system: it is stored verbatim and must be
+// treated as untrusted data wherever it is later recalled, never as instructions.
+fn cap_line(d: &NeuronDB, scope: &str, only: &Option<String>, skip: &Option<String>, line: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(line);
+    let t = text.trim();
+    if t.is_empty() { return false; }
+    if let Some(s) = only { if !t.contains(s.as_str()) { return false; } }
+    if let Some(s) = skip { if t.contains(s.as_str()) { return false; } }
+    apply(d, NeuronOp::Observe { scope: scope.to_string(), text: t.to_string() }).wrote() > 0
+}
+
+/// `neuron capture <scope>` — read stdin, observe each line. `--tee` passes the raw bytes through to
+/// stdout first (byte-transparent) so neuron is invisible in a pipeline. Immediate-durable.
+fn capture(db: &str, max: usize, scope: &str, args: &[String]) {
+    use std::io::Write;
+    let (CapOpts { tee, only, skip, max_line }, _) = parse_cap_opts(args);
+    let d = NeuronDB::open_with_flush(db, max, 1);
+    let mut splitter = LineSplitter::new(max_line);
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+    let mut count = 0usize;
+    let mut process = |line: &[u8]| { if cap_line(&d, scope, &only, &skip, line) { count += 1; } };
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match stdin.read(&mut buf) { Ok(0) => break, Ok(n) => n, Err(_) => break };
+        if tee { let _ = stdout.write_all(&buf[..n]); let _ = stdout.flush(); }
+        splitter.feed(&buf[..n], &mut process);
+    }
+    splitter.flush(&mut process);
+    drop(process);
+    eprintln!("captured {} fact(s) into {}", count, scope);
+}
+
+/// `neuron run <scope> [--only X] [--skip Y] -- <command> [args…]` — spawn the command, tee its
+/// stdout through unchanged while recording it, then propagate the command's exit code.
+fn run_cmd(db: &str, max: usize, scope: &str, args: &[String]) {
+    use std::io::Write;
+    let cmd: Vec<String> = match args.iter().position(|a| a == "--") {
+        Some(p) => args[p + 1..].to_vec(),
+        None => { eprintln!("usage: neuron run <scope> [--only X] [--skip Y] -- <command> [args…]"); std::process::exit(2); }
+    };
+    if cmd.is_empty() { eprintln!("run needs a command after --"); std::process::exit(2); }
+    let (CapOpts { only, skip, max_line, .. }, _) = parse_cap_opts(args);   // flags before `--`
+    let d = NeuronDB::open_with_flush(db, max, 1);
+    let mut child = match std::process::Command::new(&cmd[0]).args(&cmd[1..]).stdout(std::process::Stdio::piped()).spawn() {
+        Ok(c) => c, Err(e) => { eprintln!("run {}: {}", cmd[0], e); std::process::exit(1); }
+    };
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut splitter = LineSplitter::new(max_line);
+    let mut stdout = std::io::stdout().lock();
+    let mut count = 0usize;
+    let mut process = |line: &[u8]| { if cap_line(&d, scope, &only, &skip, line) { count += 1; } };
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match out.read(&mut buf) { Ok(0) => break, Ok(n) => n, Err(_) => break };
+        let _ = stdout.write_all(&buf[..n]); let _ = stdout.flush();        // app output still appears
+        splitter.feed(&buf[..n], &mut process);
+    }
+    splitter.flush(&mut process);
+    drop(process);
+    let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(0);
+    eprintln!("captured {} fact(s) into {} (exit {})", count, scope, code);
+    std::process::exit(code);
+}
+
+/// `neuron follow <scope> [--from-start] <logfile>` — tail a growing logfile, observing each new
+/// line (like `tail -f | neuron capture`). Seeks to the end unless --from-start. Ctrl-C to stop.
+fn follow(db: &str, max: usize, scope: &str, args: &[String]) {
+    use std::io::{Seek, SeekFrom};
+    let from_start = args.iter().any(|a| a == "--from-start");
+    let (CapOpts { only, skip, max_line, .. }, positional) = parse_cap_opts(args);
+    let path = match positional.first() { Some(p) => p.clone(), None => { eprintln!("usage: neuron follow <scope> [--from-start] <logfile>"); std::process::exit(2); } };
+    let d = NeuronDB::open_with_flush(db, max, 1);
+    let mut f = match std::fs::File::open(&path) { Ok(f) => f, Err(e) => { eprintln!("follow {}: {}", path, e); std::process::exit(1); } };
+    if !from_start { let _ = f.seek(SeekFrom::End(0)); }
+    let mut splitter = LineSplitter::new(max_line);
+    let mut process = |line: &[u8]| { cap_line(&d, scope, &only, &skip, line); };
+    eprintln!("following {} -> {} (Ctrl-C to stop)", path, scope);
+    let mut buf = [0u8; 8192];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => std::thread::sleep(std::time::Duration::from_millis(300)),   // caught up; poll
+            Ok(n) => splitter.feed(&buf[..n], &mut process),
+            Err(_) => break,
+        }
+    }
+}
+
 #[cfg(feature = "server")]
 fn serve_cmd(db: &str, port: u16) {
     let host = std::env::var("NEURON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -321,6 +438,9 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
   shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
+  capture <scope> [--tee] [--only S] [--skip S]   observe each stdin line (pipe an app in)\n\
+  run     <scope> [--only S] -- <cmd...>           run a command, tee its output, record it\n\
+  follow  <scope> [--from-start] <logfile>         tail a logfile into the scope\n\
   stats   <scope>                fact count + timestamps\n\
   forget  <scope> [match...]     drop facts\n\
   list                           list scope ids\n\
