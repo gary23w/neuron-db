@@ -236,13 +236,17 @@
   <div class="drawer" id="drawer">
     <h3>Lab settings <span style="flex:1"></span><button class="icon" id="setClose">✕</button></h3>
     <div class="sect">
-      <div class="lab">Local model (WebLLM · WebGPU)</div>
+      <div class="lab">Model — local (WebLLM · WebGPU) or cloud (OpenAI · your key)</div>
       <select id="model">
         <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC" selected>Llama 3.2 · 1B  (fast, ~0.9 GB · recommended)</option>
         <option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC">Qwen 2.5 · 0.5B  (tiny, ~0.9 GB)</option>
         <option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 · 3B  (better, ~2.3 GB)</option>
         <option value="Llama-3.1-8B-Instruct-q4f32_1-MLC">Llama 3.1 · 8B  (best, ~5 GB)</option>
       </select>
+      <div id="openaiRow" style="display:none;margin-top:7px">
+        <input type="password" id="openaiKey" placeholder="sk-…  OpenAI API key (stays in your browser)" style="width:100%;box-sizing:border-box;padding:6px 8px">
+        <div class="lab" style="margin-top:4px;opacity:.7">Cloud host: the key is sent only to api.openai.com from your browser — never to us, never committed. gary-neuron + neuron-db stay local; OpenAI just drives the tools.</div>
+      </div>
       <button class="dbtn primary" id="loadBtn" style="margin-top:9px">Load the model</button>
       <div class="pbar" id="pbar"><i></i></div>
       <div class="status" id="status">Memory works now with no model. Load one for a talking assistant (needs desktop Chrome/Edge). <b>Tip:</b> start with the smallest ⚡ model — the first load downloads it once (~0.9&nbsp;GB) and it's cached in your browser, so it's instant every time after. Bigger models are better but download once-and-cache too.</div>
@@ -850,18 +854,25 @@ const CUSTOM=[
   {id:"NemoMix-Unleashed-12B-q4f16_1-MLC", label:"NemoMix Unleashed · 12B", tag:"big", gb:7,
    model:"https://huggingface.co/huggingkot/NemoMix-Unleashed-12B-q4f16_1-MLC", model_lib:NEMO_LIB},
 ];
-const MODELS=CURATED.concat(CUSTOM);
-const TAGTXT={fast:"⚡ fast",tools:"🔧 tools",reason:"🧠 reasoning",balanced:"balanced",big:"big"};
+// cloud host: OpenAI drives the same tool loop; gary-neuron + neuron-db stay local. Key in-browser only.
+const OPENAI=[
+  {id:"openai:gpt-4o-mini", label:"OpenAI · gpt-4o-mini", tag:"cloud", gb:0},
+  {id:"openai:gpt-4o",      label:"OpenAI · gpt-4o",      tag:"cloud", gb:0},
+];
+const MODELS=CURATED.concat(CUSTOM).concat(OPENAI);
+const TAGTXT={fast:"⚡ fast",tools:"🔧 tools",reason:"🧠 reasoning",balanced:"balanced",big:"big",cloud:"☁ cloud"};
 function populateModels(){
   const avail=new Set((webllm.prebuiltAppConfig?.model_list||[]).map(m=>m.model_id));
   const sel=$("model"); if(!sel) return; sel.innerHTML="";
-  const show=CURATED.filter(m=>!avail.size||avail.has(m.id)).concat(CUSTOM);   // custom (non-prebuilt) models bypass the filter
+  const show=CURATED.filter(m=>!avail.size||avail.has(m.id)).concat(CUSTOM).concat(OPENAI);   // custom + cloud bypass the filter
   for(const m of show){
     const o=document.createElement("option"); o.value=m.id;
-    o.textContent=`${m.label}  (${TAGTXT[m.tag]||m.tag}, ~${m.gb} GB)`; sel.appendChild(o); }
+    o.textContent = m.tag==="cloud" ? `${m.label}  (☁ cloud · needs key)` : `${m.label}  (${TAGTXT[m.tag]||m.tag}, ~${m.gb} GB)`;
+    sel.appendChild(o); }
   if(!sel.options.length){ const o=document.createElement("option"); o.value=CFG.model; o.textContent=CFG.model; sel.appendChild(o); }
   sel.value = [...sel.options].some(o=>o.value===CFG.model) ? CFG.model : sel.options[0].value;
   CFG.model=sel.value; saveCfg();
+  if(typeof syncOpenAIRow==="function") syncOpenAIRow();
 }
 function setPill(state, txt){ const p=$("modelPill"); p.className="modelpill"+(state?" "+state:""); p.textContent=txt; }
 // surface models already downloaded into WebLLM's browser cache: tag them "✓ ready" and, if the
@@ -876,9 +887,40 @@ async function markCachedModels(){
   if(firstCached && !curCached){ sel.value=firstCached; CFG.model=firstCached; saveCfg(); }
   if(firstCached) setPill("", "✓ "+((MODELS.find(m=>m.id===sel.value)||{}).label||"model")+" cached — load it");
 }
+// OpenAI host shim — exposes the SAME interface as the WebLLM engine (chat.completions.create,
+// streaming + not), so the whole agent/tools loop drives it unchanged. Key used browser-direct.
+function makeOpenAI(key, model){
+  async function create(opts){
+    const body={ model, messages:opts.messages, temperature:opts.temperature??0.4,
+      max_tokens:opts.max_tokens??512, stream:!!opts.stream };
+    const r=await fetch("https://api.openai.com/v1/chat/completions",{ method:"POST",
+      headers:{ "Content-Type":"application/json", Authorization:"Bearer "+key }, body:JSON.stringify(body) });
+    if(!r.ok){ const t=await r.text().catch(()=>""); throw new Error("OpenAI "+r.status+" — "+t.slice(0,160)); }
+    if(body.stream){
+      const rd=r.body.getReader(), dec=new TextDecoder(); let buf="";
+      return { async *[Symbol.asyncIterator](){
+        for(;;){ const {value,done}=await rd.read(); if(done) break; buf+=dec.decode(value,{stream:true});
+          let i; while((i=buf.indexOf("\n"))>=0){ const ln=buf.slice(0,i).trim(); buf=buf.slice(i+1);
+            if(!ln.startsWith("data:")) continue; const d=ln.slice(5).trim(); if(d==="[DONE]") return;
+            try{ const c=JSON.parse(d).choices?.[0]?.delta?.content; if(c) yield {choices:[{delta:{content:c}}]}; }catch{} } } } };
+    }
+    const j=await r.json();
+    return { choices:[{ message:{ content:j.choices?.[0]?.message?.content||"" } }] };
+  }
+  return { chat:{ completions:{ create } } };
+}
 async function loadModel(){
   if(loading || engine) return; loading=true; $("loadBtn").disabled=true; $("model").disabled=true;
   CFG.model=$("model").value; saveCfg();
+  if(CFG.model.startsWith("openai:")){                       // cloud host: no download — just wire the shim
+    const key=($("openaiKey").value||localStorage.getItem("nblab.openai_key")||"").trim();
+    if(!key){ $("status").className="status warn"; $("status").textContent="Enter your OpenAI API key (field above) to use a cloud model."; $("loadBtn").disabled=false; $("model").disabled=false; loading=false; return; }
+    localStorage.setItem("nblab.openai_key", key);
+    engine = makeOpenAI(key, CFG.model.slice(7)); engineTiny=false; engineReason=false;
+    $("status").className="status"; $("status").textContent="OpenAI connected ("+CFG.model.slice(7)+") — it drives neuron-db's tools; memory stays local. Key never leaves your browser.";
+    setPill("ready","● OpenAI ready"); bubble("s","OpenAI connected · neuron-db is its memory · key stays in your browser");
+    loading=false; return;
+  }
   engineTiny = (MODELS.find(m=>m.id===CFG.model)||{}).gb < 2;   // 0.6B/1B/1.5B/1.7B → narrate, don't drive tools
   // the curated tag is the source of truth; the anchored regex only covers a non-curated id (avoids flagging e.g. "MyReasonableModel")
   engineReason = ((MODELS.find(m=>m.id===CFG.model)||{}).tag==="reason") || /(^|[-_])(R1|Distill|QwQ|Qwen3)([-_]|$)/i.test(CFG.model);
@@ -1603,6 +1645,8 @@ function wipeChat(){
 $("send").addEventListener("click",()=>{ if(busy) requestStop(); else turn(); });
 $("in").addEventListener("keydown",e=>{ if(e.key==="Enter"){ if(busy) requestStop(); else turn(); } });
 $("loadBtn").addEventListener("click",loadModel);
+function syncOpenAIRow(){ const isO=($("model").value||"").startsWith("openai:"); const row=$("openaiRow"); if(row) row.style.display=isO?"block":"none"; const k=$("openaiKey"); if(isO && k && !k.value) k.value=localStorage.getItem("nblab.openai_key")||""; }
+$("model").addEventListener("change",()=>{ CFG.model=$("model").value; saveCfg(); syncOpenAIRow(); });
 $("newChat").addEventListener("click",newChat);
 $("railToggle").addEventListener("click",()=>document.body.classList.toggle("railopen"));
 $("memBtn").addEventListener("click",()=>document.body.classList.toggle("memopen"));
