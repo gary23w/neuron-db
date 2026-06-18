@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Vermillion Room · a neuron-db detective game</title>
+<meta name="description" content="A noir cold-case game with neuron-db as its whole backend. Pull suspect files (recall), follow the red string (spreading-activation), and crack the case with multi-hop deduction (chain) — all in a 332 KB WebAssembly module running in your browser.">
+<style>
+  :root{
+    --bg:#0b0a0c; --panel:#131218; --panel2:#1a1820; --line:#262430; --line2:#34313f;
+    --ink:#ece5d6; --mid:#a59c89; --dim:#7b7363; --faint:#5d5648;
+    --amber:#e3a64a; --amber2:#f2c073; --red:#cf4b3e; --green:#7fae6b; --blue:#7c9cff;
+    --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    --serif:"Iowan Old Style","Palatino Linotype",Georgia,"Times New Roman",serif;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{
+    background:
+      radial-gradient(1100px 520px at 78% -8%, rgba(227,166,74,.10), transparent 60%),
+      radial-gradient(900px 600px at -10% 110%, rgba(207,75,62,.06), transparent 55%),
+      var(--bg);
+    color:var(--ink); font:15px/1.6 var(--sans);
+    -webkit-font-smoothing:antialiased; padding:0 0 56px;
+  }
+  a{color:var(--amber2);text-decoration:none} a:hover{text-decoration:underline}
+  .mono{font-family:var(--mono)}
+  .wrap{max-width:860px;margin:0 auto;padding:0 18px}
+
+  /* ---- header ---- */
+  header{border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.018),transparent)}
+  .head{display:flex;align-items:center;gap:14px;padding:16px 0;flex-wrap:wrap}
+  .lamp{width:34px;height:34px;flex:none;border-radius:50%;
+    background:radial-gradient(circle at 50% 35%, #ffe6ad, #e3a64a 45%, #8a5e1e 75%, #3a2a12);
+    box-shadow:0 0 22px rgba(227,166,74,.5), inset 0 -3px 6px rgba(0,0,0,.35)}
+  .head h1{font:600 16px/1.2 var(--sans);margin:0;letter-spacing:.01em}
+  .head h1 b{color:var(--amber2);font-weight:700}
+  .head .sub{font:12px var(--mono);color:var(--dim);margin-top:3px}
+  .badges{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .badge{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;
+    padding:5px 11px;color:var(--mid);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .badge b{color:var(--amber)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);display:inline-block;transition:.3s}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .dot.err{background:var(--red);box-shadow:0 0 8px var(--red)}
+
+  /* ---- briefing ---- */
+  .brief{margin:22px 0 8px;padding:18px 20px;border:1px solid var(--line);border-left:3px solid var(--amber);
+    border-radius:12px;background:var(--panel);position:relative}
+  .brief .stamp{position:absolute;top:14px;right:16px;font:700 11px var(--mono);letter-spacing:.22em;
+    color:var(--red);border:2px solid var(--red);border-radius:6px;padding:4px 9px;transform:rotate(-7deg);opacity:.85}
+  .brief h2{font:600 14px var(--sans);margin:0 0 8px;color:var(--amber2);letter-spacing:.02em}
+  .brief p{margin:0 0 9px;color:var(--ink)} .brief p:last-child{margin:0}
+  .brief .lede{font-family:var(--serif);font-size:18px;line-height:1.5;color:#f3ecdc}
+  .brief .note{font:12.5px var(--mono);color:var(--dim);margin-top:4px}
+
+  /* ---- how it works ---- */
+  .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:14px 0}
+  .lg{border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:var(--panel2)}
+  .lg b{display:block;font:600 13px var(--sans);color:var(--amber2);margin-bottom:2px}
+  .lg .op{font:11px var(--mono);color:var(--blue)}
+  .lg span{font-size:12.5px;color:var(--mid)}
+
+  /* ---- the board ---- */
+  .boardwrap{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden;margin-top:6px}
+  .bh{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);
+    font:11px var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim)}
+  .bh .clear{cursor:pointer;color:var(--faint)} .bh .clear:hover{color:var(--amber)}
+  .board{max-height:60vh;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+  .entry{animation:rise .22s ease both}
+  @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .cmd{font:12px var(--mono);color:var(--amber);display:flex;align-items:center;gap:8px}
+  .cmd .v{color:var(--dim)}
+  .card{margin-top:7px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);overflow:hidden}
+  .card .ct{font:10.5px var(--mono);text-transform:uppercase;letter-spacing:.13em;color:var(--dim);
+    padding:8px 13px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.015)}
+  .file{padding:6px 13px 11px}
+  .file .ln{padding:7px 0;border-bottom:1px dashed var(--line);color:var(--ink);display:flex;gap:9px}
+  .file .ln:last-child{border-bottom:0}
+  .file .ln::before{content:"▪";color:var(--amber);flex:none}
+  .file .empty{padding:10px 0;color:var(--dim);font-style:italic}
+
+  /* red string */
+  .web{padding:11px 13px}
+  .web .seed{font:600 14px var(--sans);color:var(--amber2);margin-bottom:9px;display:flex;align-items:center;gap:8px}
+  .web .seed::before{content:"◉";color:var(--red)}
+  .web .link{position:relative;padding:6px 0 6px 22px;color:var(--ink)}
+  .web .link::before{content:"";position:absolute;left:6px;top:-4px;bottom:14px;width:2px;
+    background:repeating-linear-gradient(180deg,var(--red) 0 5px,transparent 5px 9px)}
+  .web .link::after{content:"";position:absolute;left:1px;top:14px;width:11px;height:2px;background:var(--red)}
+
+  /* deduction trail */
+  .trail{padding:13px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .node{font:600 13px var(--sans);color:#10100f;background:var(--amber2);border-radius:7px;padding:6px 12px;
+    animation:pop .3s ease both}
+  .node.start{background:var(--ink)}
+  .node.broke{background:var(--panel2);color:var(--dim);border:1px dashed var(--line2)}
+  @keyframes pop{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:none}}
+  .arrow{color:var(--red);font-size:18px;line-height:1}
+  .rel{font:11px var(--mono);color:var(--dim)}
+  .verdictline{padding:0 13px 13px;font:12.5px var(--mono);color:var(--mid)}
+  .verdictline b{color:var(--amber)}
+
+  /* accusation */
+  .accuse{padding:14px}
+  .accuse .head2{font:700 18px var(--serif);letter-spacing:.04em;margin-bottom:10px}
+  .accuse.closed .head2{color:var(--green)} .accuse.miss .head2{color:var(--amber)}
+  .accuse .ev{padding:7px 0;border-top:1px solid var(--line);color:var(--ink);font-size:13.5px;display:flex;gap:10px}
+  .accuse .ev .k{font:10.5px var(--mono);color:var(--blue);flex:none;width:96px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}
+  .closedstamp{display:inline-block;margin-top:10px;font:700 13px var(--mono);letter-spacing:.2em;color:var(--red);
+    border:2px solid var(--red);border-radius:7px;padding:6px 13px;transform:rotate(-3deg)}
+
+  /* ---- command bar (flows under the board; the board scrolls internally) ---- */
+  .bar{margin-top:16px;padding:4px 0}
+  .verbs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:9px}
+  .verb{font:600 12.5px var(--sans);background:var(--panel2);border:1px solid var(--line2);color:var(--mid);
+    border-radius:9px;padding:9px 13px;min-height:42px;cursor:pointer;transition:.14s;display:flex;align-items:center;gap:7px}
+  .verb .op{font:10px var(--mono);color:var(--faint)}
+  .verb:hover{border-color:var(--amber);color:var(--ink)}
+  .verb.on{background:var(--amber);color:#13110c;border-color:var(--amber)} .verb.on .op{color:#5e4a1e}
+  .verb.danger.on{background:var(--red);border-color:var(--red);color:#fff} .verb.danger.on .op{color:#ffd9d4}
+  .inrow{display:flex;gap:8px}
+  .inrow input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line2);color:var(--ink);
+    border-radius:10px;padding:13px 14px;font:14px var(--sans);min-height:48px}
+  .inrow input:focus{outline:none;border-color:var(--amber)}
+  .inrow button{flex:none;background:var(--amber);color:#13110c;border:0;border-radius:10px;
+    padding:0 18px;font:700 14px var(--sans);cursor:pointer;min-height:48px}
+  .inrow button:hover{background:var(--amber2)}
+  .ph{font:12px var(--mono);color:var(--dim);margin:8px 2px 0;min-height:16px}
+
+  /* chips + cast */
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
+  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;
+    padding:7px 13px;min-height:36px;display:flex;align-items:center;color:var(--mid);cursor:pointer;transition:.14s}
+  .chip:hover{color:var(--amber);border-color:var(--amber)}
+  .cast{margin:18px 0 4px;border-top:1px solid var(--line);padding-top:14px}
+  .cast h3{font:11px var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin:0 0 9px}
+  .people{display:flex;gap:8px;flex-wrap:wrap}
+  .person{cursor:pointer;border:1px solid var(--line2);border-radius:9px;padding:8px 12px;background:var(--panel2);transition:.14s}
+  .person:hover{border-color:var(--amber)}
+  .person b{display:block;font:600 13px var(--sans);color:var(--ink)} .person b.victim{color:var(--red)}
+  .person span{font:11px var(--mono);color:var(--dim)}
+
+  footer{margin-top:26px;border-top:1px solid var(--line);padding-top:14px;color:var(--dim);font-size:12.5px}
+  footer b{color:var(--mid)}
+  .banner{display:none;margin:14px 0;padding:11px 14px;border:1px solid var(--red);border-radius:10px;
+    background:rgba(207,75,62,.08);color:#f2b6af;font:13px var(--sans)}
+  @media(max-width:560px){ .head h1{font-size:15px} .brief .lede{font-size:16px} .accuse .ev .k{width:74px} }
+</style>
+</head>
+<body>
+<header><div class="wrap head">
+  <div class="lamp" aria-hidden="true"></div>
+  <div>
+    <h1>The Vermillion Room <b>· Cold Case #4471</b></h1>
+    <div class="sub">an off-topic demo — <b style="color:var(--mid)">neuron-db is the entire backend</b></div>
+  </div>
+  <div class="badges">
+    <span class="badge"><span class="dot" id="dot"></span><span id="status">booting core…</span></span>
+    <span class="badge">backend · <b>neuron-db</b></span>
+    <span class="badge"><b id="wsz">332 KB</b> .wasm · in-browser</span>
+  </div>
+</div></header>
+
+<main class="wrap">
+  <div id="banner" class="banner"></div>
+
+  <section class="brief">
+    <div class="stamp">UNSOLVED</div>
+    <h2>THE FILE</h2>
+    <p class="lede">Lena Marsh — owner of the Vermillion Room, a jazz club on Halsted — was found dead in the back room. Three years cold. The file is yours now.</p>
+    <p>Everyone had a reason to be there that night. The truth isn't in any one statement — it's in how the statements <em>connect</em>. Pull the files, follow the string, and walk the chain until the motive shows itself. Then name your suspect.</p>
+    <p class="note">Every fact below lives in a neuron-db scope. Nothing is hard-coded — the game asks the database, and the database answers.</p>
+  </section>
+
+  <div class="legend">
+    <div class="lg"><b>Pull a file</b><span class="op">recall()</span><br><span>Everything on record about a person or object.</span></div>
+    <div class="lg"><b>Follow the string</b><span class="op">assoc() · spreading activation</span><br><span>Who and what is wired to a name — even with no shared words.</span></div>
+    <div class="lg"><b>Deduce</b><span class="op">chain() · multi-hop</span><br><span>Walk a path of relations. It advances only on real links.</span></div>
+  </div>
+
+  <div class="boardwrap">
+    <div class="bh"><span>case board</span><span class="clear" id="clear">clear</span></div>
+    <div class="board" id="board"></div>
+  </div>
+
+  <div class="bar">
+    <div class="verbs" id="verbs">
+      <button class="verb on" data-mode="pull">Pull file <span class="op">recall</span></button>
+      <button class="verb" data-mode="connect">Connect <span class="op">assoc</span></button>
+      <button class="verb" data-mode="deduce">Deduce <span class="op">chain</span></button>
+      <button class="verb danger" data-mode="accuse">Accuse <span class="op">verdict</span></button>
+    </div>
+    <div class="inrow">
+      <input id="q" autocomplete="off" placeholder="a name or an object…">
+      <button id="go">Run</button>
+    </div>
+    <div class="ph" id="ph"></div>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <div class="cast">
+    <h3>persons of interest — tap to pull a file</h3>
+    <div class="people" id="people"></div>
+  </div>
+
+  <footer>
+    <b>How it runs:</b> the case file is seeded into a neuron-db scope inside a 332 KB store-only WebAssembly module —
+    the same Rust core as the rest of this site, built with the cortex left out. <b>Pull</b> is <span class="mono">recall</span>,
+    <b>connect</b> is spreading-activation <span class="mono">assoc</span>, <b>deduce</b> is multi-hop <span class="mono">chain</span>.
+    No server, no API key, no model — just associative memory doing detective work.
+    &nbsp;·&nbsp; <a href="../index.html">← neuron-db</a> &nbsp;·&nbsp; <a href="live-memory.html">live memory demo</a>
+  </footer>
+</main>
+
+<script>
+var td=new TextDecoder(), te=new TextEncoder();
+var EX=null, SCOPE="case4471", mode="pull";
+
+/* the case file — every line is one fact, seeded into neuron-db. Relations the chain can walk
+   ("partner", "creditor", "buyer", "lover", "alibi", "enforcer") appear literally and resolve to a name. */
+var CASE=[
+  "Lena Marsh owned the Vermillion Room, a jazz club on Halsted Street.",
+  "Lena Marsh was found dead in the back room on the night of October 3rd.",
+  "Lena Marsh's business partner was Marcus Vane.",
+  "Lena Marsh's lover was Vivian Sloane, the club's headline singer.",
+  "Marcus Vane co-owned the Vermillion Room with Lena Marsh.",
+  "Marcus Vane was deep in gambling debt at the Athena card room.",
+  "Marcus Vane's creditor was Eliza Crowe, a private loan shark.",
+  "Marcus Vane would inherit the whole club if Lena Marsh died.",
+  "Marcus Vane's buyer was Cornelius Pike, a rival club owner.",
+  "Eliza Crowe was calling in Marcus Vane's debt that week.",
+  "Eliza Crowe's enforcer was a man named Sal Roon.",
+  "Cornelius Pike wanted to buy the Vermillion Room for years.",
+  "Cornelius Pike's offer was rejected by Lena Marsh twice.",
+  "Roman Dett was the bartender at the Vermillion Room.",
+  "Roman Dett kept the only key to the back room.",
+  "Roman Dett's alibi was Vivian Sloane.",
+  "Vivian Sloane's alibi was Roman Dett.",
+  "Vivian Sloane sang at the Vermillion Room every Friday night.",
+  "Eddie the busboy saw Marcus Vane near the back room at eleven.",
+  "The murder weapon was a brass bar rail missing from the club.",
+  "A ledger vanished from Lena Marsh's office the same night.",
+  "The ledger recorded Marcus Vane's debt to Eliza Crowe."
+];
+
+var PEOPLE=[
+  {n:"Lena Marsh", r:"the victim · club owner", victim:true},
+  {n:"Marcus Vane", r:"business partner"},
+  {n:"Eliza Crowe", r:"loan shark"},
+  {n:"Cornelius Pike", r:"rival owner"},
+  {n:"Roman Dett", r:"bartender"},
+  {n:"Vivian Sloane", r:"headline singer"},
+  {n:"Sal Roon", r:"enforcer"},
+  {n:"Eddie", r:"busboy · witness"}
+];
+
+var PLACEHOLDERS={
+  pull:"a name or an object — e.g. Marcus Vane, ledger, brass rail",
+  connect:"a name or object to thread — e.g. Marcus Vane, ledger, back room",
+  deduce:"a chain — e.g. Lena Marsh → partner → creditor",
+  accuse:"name your killer — e.g. Marcus Vane"
+};
+var HINTS={
+  pull:"relations on record: partner · creditor · buyer · lover · alibi · enforcer",
+  connect:"spreading activation surfaces facts wired to your seed, even with no shared words",
+  deduce:"separate the start and each relation with → or , — the chain stops if a link isn't real",
+  accuse:"the verdict is assembled live from the database — no shortcuts"
+};
+var CHIPS={
+  pull:["Marcus Vane","ledger","brass rail","back room key","Vivian Sloane"],
+  connect:["Marcus Vane","ledger","back room"],
+  deduce:["Lena Marsh → partner → creditor","Lena Marsh → partner → buyer","Lena Marsh → partner → creditor → enforcer","Roman Dett → alibi"],
+  accuse:["Marcus Vane","Cornelius Pike","Roman Dett"]
+};
+
+/* ---- wasm plumbing (the proven mem() wrapper) ---- */
+function wstr(s){ var b=te.encode(s); var p=EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
+function readBuf(n){ return td.decode(new Uint8Array(EX.memory.buffer, EX.answer_ptr(), n)); }
+function mem(){ var a=Array.prototype.slice.call(arguments); var pl=wstr(a.join("\t")); return readBuf(EX.mem(pl[0],pl[1])); }
+function lines(s){ return s ? s.split("\n").filter(function(x){return x.trim();}) : []; }
+
+function recall(q,k){ return lines(mem("recall",SCOPE,q,String(k||4))); }
+function assoc(q,k){ return lines(mem("assoc",SCOPE,q,"2",String(k||6))); }
+function chain(start,rels){ var r=mem.apply(null,["chain",SCOPE,start].concat(rels)); var i=r.indexOf("\t");
+  return { value:i<0?"":r.slice(0,i), trail:(i<0?r:r.slice(i+1)).split("→").map(function(s){return s.trim();}).filter(Boolean) }; }
+
+/* ---- DOM helpers ---- */
+function el(t,c,h){ var d=document.createElement(t); if(c)d.className=c; if(h!=null)d.innerHTML=h; return d; }
+function esc(s){ return String(s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+var board=document.getElementById("board");
+function push(node){ board.appendChild(node); board.scrollTop=board.scrollHeight; }
+function cmdLine(verb,arg){ var e=el("div","entry"); e.appendChild(el("div","cmd",'<span class="v">&gt;</span> '+esc(verb)+' <b>'+esc(arg)+'</b>')); push(e); return e; }
+
+/* ---- actions ---- */
+function doPull(q){
+  var e=cmdLine("pull file:",q);
+  var hits=recall(q,5);
+  var card=el("div","card"); card.appendChild(el("div","ct","file — "+esc(q)));
+  var f=el("div","file");
+  if(!hits.length){ f.appendChild(el("div","empty","nothing on record under that name.")); }
+  else hits.forEach(function(h){ f.appendChild(el("div","ln",esc(h))); });
+  card.appendChild(f); e.appendChild(card); board.scrollTop=board.scrollHeight;
+}
+function doConnect(q){
+  var e=cmdLine("connect:",q);
+  var hits=assoc(q,7);
+  var card=el("div","card"); card.appendChild(el("div","ct","red string — wired to "+esc(q)));
+  var w=el("div","web"); w.appendChild(el("div","seed",esc(q)));
+  if(!hits.length){ w.appendChild(el("div","empty","no threads lead out from there.")); }
+  else hits.forEach(function(h,i){ var l=el("div","link",esc(h)); l.style.animationDelay=(i*40)+"ms"; l.classList.add("entry"); w.appendChild(l); });
+  card.appendChild(w); e.appendChild(card); board.scrollTop=board.scrollHeight;
+}
+function parseChain(s){ var parts=s.split(/→|->|,|>/).map(function(x){return x.trim();}).filter(Boolean); return {start:parts[0]||"", rels:parts.slice(1)}; }
+function doDeduce(s){
+  var e=cmdLine("deduce:",s.replace(/->/g,"→"));
+  var p=parseChain(s);
+  var card=el("div","card"); card.appendChild(el("div","ct","deduction — multi-hop chain"));
+  if(!p.start || !p.rels.length){
+    var bad=el("div","verdictline",'give a start and at least one relation, e.g. <b>Lena Marsh → partner → creditor</b>');
+    card.appendChild(bad); e.appendChild(card); return;
+  }
+  var res=chain(p.start, p.rels);
+  var t=el("div","trail");
+  res.trail.forEach(function(name,i){
+    if(i>0){ var rel=p.rels[i-1]; t.appendChild(el("span","arrow","→")); t.appendChild(el("span","rel",esc(rel||""))); t.appendChild(el("span","arrow","→")); }
+    var n=el("span","node"+(i===0?" start":""),esc(name)); n.style.animationDelay=(i*120)+"ms"; t.appendChild(n);
+  });
+  var solved=res.value && res.trail.length===p.rels.length+1;
+  if(!solved){ t.appendChild(el("span","arrow","→")); t.appendChild(el("span","node broke","trail goes cold")); }
+  card.appendChild(t);
+  card.appendChild(el("div","verdictline", solved
+    ? 'the chain holds: <b>'+esc(p.start)+'</b> leads to <b>'+esc(res.value)+'</b>.'
+    : 'no real link for that next step — the chain abstains instead of guessing.'));
+  e.appendChild(card); board.scrollTop=board.scrollHeight;
+}
+
+/* the verdict is assembled live: the same database queries, every time */
+function doAccuse(name){
+  var e=cmdLine("accuse:",name);
+  var key=name.toLowerCase();
+  var money=chain("Lena Marsh",["partner","creditor"]);     // Lena → Marcus → Eliza
+  var muscle=chain("Lena Marsh",["partner","creditor","enforcer"]); // → Sal Roon
+  var sale=chain("Lena Marsh",["partner","buyer"]);          // Marcus → Pike
+  var sighting=recall("Eddie",1)[0]||"";
+  var coverup=recall("ledger vanished",1)[0]||recall("ledger",1)[0]||"";
+  var inherit=recall("inherit",1)[0]||"";
+
+  var guilty = /marcus|vane/.test(key);
+  var card=el("div","card"); var box=el("div","accuse "+(guilty?"closed":"miss"));
+  box.appendChild(el("div","head2", guilty ? "The pieces fit." : "The evidence points elsewhere."));
+  function ev(k,v){ if(!v) return; var r=el("div","ev"); r.appendChild(el("span","k",k)); r.appendChild(el("span",null,v)); box.appendChild(r); }
+  ev("motive", "Follow the money: <b>"+esc(money.trail.join(" → "))+"</b>. Eliza Crowe was calling in the debt that week.");
+  ev("escape", "With Lena gone, "+esc((inherit||"Marcus Vane inherits the club"))+" — then "+esc(sale.trail.join(" → "))+", a sale to cover what he owed.");
+  ev("muscle", "The debt ran to muscle: <b>"+esc(muscle.trail.join(" → "))+"</b>.");
+  ev("opportunity", sighting || "—");
+  ev("cover-up", coverup || "—");
+  if(guilty){
+    box.appendChild(el("div","verdictline","Every thread the database pulls runs back through Marcus Vane — motive, opportunity, and the vanished ledger that tied him to the debt."));
+    box.appendChild(el("span","closedstamp","CASE CLOSED"));
+  } else {
+    box.appendChild(el("div","verdictline",""+esc(name)+" has a place in the story, but the chain of motive and the back-room sighting both converge on one person. Walk <b>Lena Marsh → partner → creditor</b> and follow it home."));
+  }
+  card.appendChild(box); e.appendChild(card); board.scrollTop=board.scrollHeight;
+}
+
+function run(text){
+  text=(text||"").trim(); if(!text || !EX) return;
+  if(mode==="pull") doPull(text);
+  else if(mode==="connect") doConnect(text);
+  else if(mode==="deduce") doDeduce(text);
+  else if(mode==="accuse") doAccuse(text);
+  document.getElementById("q").value="";
+}
+
+/* ---- UI wiring ---- */
+var input=document.getElementById("q"), ph=document.getElementById("ph"), chipBox=document.getElementById("chips");
+function setMode(m){
+  mode=m;
+  [].forEach.call(document.querySelectorAll(".verb"),function(b){ b.classList.toggle("on", b.dataset.mode===m); });
+  input.placeholder=PLACEHOLDERS[m]; ph.textContent=HINTS[m];
+  chipBox.innerHTML="";
+  CHIPS[m].forEach(function(c){ var x=el("div","chip",esc(c)); x.onclick=function(){ if(!EX)return; if(m==="accuse"){setMode("accuse");} run(c); }; chipBox.appendChild(x); });
+}
+[].forEach.call(document.querySelectorAll(".verb"),function(b){ b.onclick=function(){ setMode(b.dataset.mode); input.focus(); }; });
+document.getElementById("go").onclick=function(){ run(input.value); };
+input.addEventListener("keydown",function(ev){ if(ev.key==="Enter") run(input.value); });
+document.getElementById("clear").onclick=function(){ board.innerHTML=""; intro(); };
+
+var people=document.getElementById("people");
+PEOPLE.forEach(function(p){
+  var d=el("div","person"); d.innerHTML='<b class="'+(p.victim?"victim":"")+'">'+esc(p.n)+'</b><span>'+esc(p.r)+'</span>';
+  d.onclick=function(){ if(!EX)return; setMode("pull"); run(p.n); };
+  people.appendChild(d);
+});
+
+function intro(){ var e=el("div","entry"); e.appendChild(el("div","cmd",'<span class="v">//</span> case board ready — pull a file, follow the string, or accuse')); push(e); }
+
+/* ---- boot ---- */
+function fail(msg){ var b=document.getElementById("banner"); b.style.display="block"; b.innerHTML=msg;
+  document.getElementById("dot").className="dot err"; document.getElementById("status").textContent="core offline"; }
+function ready(){
+  document.getElementById("dot").className="dot on";
+  document.getElementById("status").textContent="core loaded · "+CASE.length+" facts";
+  document.getElementById("go").disabled=false; input.disabled=false; input.focus();
+  setMode("pull"); intro();
+}
+function boot(){
+  if(location.protocol==="file:"){ fail("⚠ This demo loads a WebAssembly module, which browsers block over <b>file://</b>. Serve the folder over http (e.g. <span class='mono'>python -m http.server</span>) and reload."); return; }
+  var url="cold_case.wasm";
+  var go=function(buf){ return WebAssembly.instantiate(buf,{}); };
+  var done=function(r){ EX=r.instance.exports; EX.mem_reset(); mem("obsmany",SCOPE,CASE.join("\n")); ready(); };
+  if(WebAssembly.instantiateStreaming){
+    WebAssembly.instantiateStreaming(fetch(url),{}).then(done).catch(function(){
+      fetch(url).then(function(r){return r.arrayBuffer();}).then(go).then(done).catch(function(e){ fail("⚠ couldn't load the core: "+esc(e.message||e)); });
+    });
+  } else {
+    fetch(url).then(function(r){return r.arrayBuffer();}).then(go).then(done).catch(function(e){ fail("⚠ couldn't load the core: "+esc(e.message||e)); });
+  }
+}
+boot();
+</script>
+</body>
+</html>
