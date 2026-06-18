@@ -437,3 +437,39 @@ reasoning tool-calling **~48%**; that is a harness finding, not an MCP cost.
 (~940 facts/s)**. Lexical recall stays **~0.1–0.24 ms**, returning a top-k block (the book never enters
 the model's context). A pure-paraphrase *miss* falls to the semantic scan at **~29 ms**, bounded by the
 4,000-fact fallback cap. Footprint **~5 MB**, dominated by the learned semantic space.
+
+## 12. gary-neuron v3 — the dispatcher cortex
+
+gary-neuron is a small transformer that sits between a host model and neuron-db and
+picks what happens each turn. It is not a chat model you select. It is the always-on
+middle layer, and every turn it emits exactly one route: `ANSWER`, `ESCALATE`,
+`FETCH <topic>`, or `STORE <fact>`. On the `ANSWER` route the literal value comes from
+neuron-db's deterministic recall, not from the network: the cortex decides the route,
+and the store supplies the bytes.
+
+It is a ~7M-parameter (6,973,952) int8 transformer — `E=256`, `H=8`, `L=8`,
+`vocab=2048`, 512-token context. It is baked into the WebAssembly/binary build with
+`include_bytes`, so it runs on CPU with no GPU and no download.
+
+**Held-out accuracy.**
+
+| task | result |
+|---|---|
+| routing triage (`ANSWER` vs `ESCALATE` vs `FETCH`) | 100% on each route |
+| grounded `ANSWER` accuracy | 88–98% across working sets from 1 to 18 facts |
+| two-hop chaining | 100% |
+| numeric compare | ~chance (the one acknowledged limit) |
+
+The numeric-compare weakness (e.g. "is X larger than Y?") is the model deciding the
+route, not the store retrieving a value; it does not affect lookup or chaining accuracy.
+
+**Performance.**
+
+| metric | result |
+|---|---|
+| browser/WASM dispatch | 172 ms → **54 ms** after a SIMD128 pass over the matmuls |
+| neuron-db recall (10k queries, 7,000 facts, 1,000 scopes) | p50 **3.9 µs** / p99 **36 µs** |
+
+The cortex is also fast natively. The two numbers measure different things: dispatch
+latency is the cortex deciding a route; recall latency is the store fetching the value
+once `ANSWER` is chosen.

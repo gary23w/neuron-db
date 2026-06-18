@@ -23,6 +23,25 @@ Working memory (the live conversation) plus a persistent per-chat **focus** keep
 scroll. Web access goes straight from the WASM through a `host_http` import to public **CORS** APIs (Wikipedia,
 DuckDuckGo, open-meteo) — **no proxy, no worker, nothing leaves your browser**. How the loop works: **[docs/guide/STATUS.md](docs/guide/STATUS.md)**.
 
+## The cortex: gary-neuron
+
+The browser lab runs a small model called gary-neuron as the middle layer between a host model
+and neuron-db. It is a ~7M-parameter int8 transformer baked into the WebAssembly build (no
+download, no GPU), and it works as a dispatcher: each turn it picks one route.
+
+| route | meaning |
+|---|---|
+| `ANSWER` | memory has it; serve the value from neuron-db's deterministic recall |
+| `ESCALATE` | memory can't; hand the turn to the larger host model |
+| `FETCH` | a live-world question; go to the web |
+| `STORE` | a declarative; remember it |
+
+On a held-out test it gets the ANSWER/ESCALATE/FETCH decision right 100% of the time, and
+answers grounded questions at 88–98% across working sets of 1 to 18 facts, with 100% two-hop
+chaining. A dispatch runs in about 54 ms in the browser after a SIMD128 pass over the matmuls,
+so the cheap path wins whenever memory can answer and the host model is only called when the
+turn actually needs it.
+
 ## LLM memory: link infinite neurons, at flat cost
 
 An LLM's context window is small; neuron-db is the memory that lives *outside* it. A

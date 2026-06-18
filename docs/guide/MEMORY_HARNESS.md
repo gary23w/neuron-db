@@ -8,42 +8,41 @@ knows — and that does not collide when the model writes many similar facts.
 The benchmarks (`BENCHMARKS.md`) set the constraint: neuron-db recalls distinct keys at
 100% and near-duplicate keys poorly. The harness is built around that fact.
 
-## 0. Where gary-neuron fits: the LLM's hippocampus
+## 0. Where gary-neuron fits: the dispatcher
 
-Three parts, three roles, borrowed straight from how a brain splits the job:
+Three parts, three roles, split roughly the way a brain divides the work:
 
 | part | brain analog | role |
 |---|---|---|
-| the LLM (GPT-class) | neocortex | reasoning and language; big, general, stateless per call |
-| **gary-neuron** (cortex + plastic hippocampus) | **hippocampus** | what to remember, what to recall, consolidation; small, trained, plastic |
+| the host model (GPT-class) | neocortex | reasoning and language; big, general, stateless per call |
+| **gary-neuron** (dispatcher cortex) | **hippocampus** | routes the turn: decides whether to answer from memory, escalate, fetch, or store; small, trained, runs locally |
 | neuron-db (PlasticNeuron + store) | engram store | durable substrate; cheap, scales to millions |
 
-The LLM never talks to the raw store. It talks through gary-neuron, which is a **memory
-co-processor** sitting between the LLM and the database:
+gary-neuron is a ~7M-parameter (6,973,952) int8 transformer (E=256, H=8, L=8, vocab 2048,
+512-token context). It is baked into the WebAssembly/binary build with `include_bytes`, runs
+on CPU with no GPU and no download.
 
-- **Write path** — the LLM produces an exchange; gary-neuron's encoder surprise-gates it
-  (it was trained to write the surprising token), and the salient facts land in neuron-db.
-  The LLM doesn't decide what's worth keeping; the hippocampus does.
-- **Read path** — the LLM asks a question (an MCP `memory.recall` call); neuron-db pulls a
-  small working set in microseconds; gary-neuron's cortex reads that bounded window — the
-  thing it was trained to emergence on — and returns the isolated value or the associative
-  completion, which is injected into the LLM's context as grounded evidence.
-- **Consolidation** — offline, gary-neuron replays buffered episodes into its own weights
-  (`/sleep`). It grows. The LLM is untouched and pays nothing for it.
+It is not a selectable chat model. It is the always-on middle layer between the host model and
+neuron-db, and each turn it emits exactly one route:
 
-So the connection is: **the LLM is the reasoner; gary-neuron is its memory organ.** The MCP
-tools below are the wire — `memory.recall`/`memory.write` are implemented as
-store-retrieve-then-gary-neuron-read and gary-neuron-encode-then-store. The LLM just calls
-the tools; gary-neuron is the engine behind them.
+- **`ANSWER`** — the question is covered by memory. The cortex picks the route; the literal value
+  comes from neuron-db's deterministic recall. The cortex decides, the store grounds the bytes.
+- **`ESCALATE`** — the turn needs the host model's reasoning or language. gary-neuron hands it up.
+- **`FETCH <topic>`** — the answer isn't in memory yet and should be pulled in (web/tool) before
+  proceeding.
+- **`STORE <fact>`** — the exchange contains something durable to write to neuron-db.
 
-Why a trained model here instead of the LLM doing its own memory? Cost and fit. gary-neuron
-is ~1.1M params — it runs in-process at the edge in milliseconds and burns no LLM tokens or
-API calls per memory op, it's deterministic, and it does associative completion the
-symbolic store can't. Honest limit: it was trained on a ~2k-token everyday vocabulary in a
-`U:/G:` fact format, so it shines on normalized facts over a bounded window, not on
-arbitrary technical prose. The practical split: the symbolic store handles out-of-vocab
-exact recall; gary-neuron handles in-vocab associative recall and consolidation. This is
-literally the gary-neuron-chat architecture with the human user replaced by an LLM.
+So the host model is the reasoner and gary-neuron is the router in front of memory. The MCP tools
+below are the wire; gary-neuron is the engine that decides which of them a turn needs.
+
+Why a trained model here instead of the host model routing its own memory? Cost and fit.
+gary-neuron runs in-process at the edge and burns no host-model tokens or API calls per turn, and
+its routing is deterministic. Held-out results: routing triage (ANSWER vs ESCALATE vs FETCH) is
+100% on each class; grounded ANSWER accuracy is 88–98% across working sets from 1 to 18 facts;
+two-hop chaining is 100%. The one acknowledged limit is numeric comparison, which is near chance.
+A browser/WASM dispatch is about 54 ms after a SIMD128 pass over the matmuls (down from ~172 ms),
+and the cortex is also fast natively. neuron-db recall underneath is p50 ~3.9 µs / p99 ~36 µs,
+measured over 10k queries on 7000 facts across 1000 scopes.
 
 ## 1. Where memory sits in the loop
 

@@ -1,4 +1,4 @@
-# The plastic database: a memory that thinks and grows
+# The plastic database: a memory that adapts as it is used
 
 ## What we are actually trying to achieve
 
@@ -12,23 +12,27 @@ A plastic memory's value shows up across a *sequence* of uses, over time:
 - **Association** — recalling A makes related B reachable, building structure you never
   explicitly wrote ("fire together, wire together").
 - **Forgetting** — unused facts decay so the memory stays sharp instead of bloating.
-- **Growth** — the memory consolidates experience into its own weights and gets better.
+- **Consolidation** — duplicate facts merge and decayed ones get pruned, so the store
+  stays lean as it grows.
 
 So the metrics change. Not recall@1 on a frozen set, but: does the right fact win *after
 use*? Does a cue surface its associates? Do stale facts fall away?
 `rust/neuron-core/tests/plastic.rs` measures exactly these.
 
-## Why this is built *in gary-neuron*, not around it
+## Why this is built *with gary-neuron*, not around it
 
-gary-neuron was trained to emergence for a reason: the cortex learned to read its context
-window and copy values out of it, and the plastic hippocampus learned to adapt *during
-use* without gradient descent. That is the thinking-and-growing engine. A symbolic
-re-derivation that ignores it would waste the training.
+gary-neuron is a ~7M-parameter (6,973,952) int8 transformer (E=256, H=8, L=8, vocab=2048,
+512-token context). It is baked into the WebAssembly/binary build via `include_bytes`, runs
+on CPU with no GPU and no download, and acts as the always-on dispatcher between a host
+model and neuron-db. It is not a selectable chat model. Each turn it emits exactly one
+route: `ANSWER`, `ESCALATE`, `FETCH <topic>`, or `STORE <fact>`. On the `ANSWER` route the
+literal value comes from neuron-db's deterministic recall, so the cortex decides the route
+and the store grounds the bytes.
 
-The catch is performance. The plastic hippocampus is a neural attention pass — O(N) over
-whatever is in context. Run it across a million-fact database per query and you get exactly
-the lag we want to avoid. The resolution is to **split plasticity across two tiers**, so
-the neural part only ever sees a bounded working set.
+That division is the reason the database can stay plastic without paying a per-query neural
+cost over the whole store. The cortex only ever reads a bounded working set the store hands
+it, so the routing pass is cheap. The plasticity that scales to millions of facts lives in
+the store tier below.
 
 ## Two tiers
 
@@ -40,21 +44,16 @@ the neural part only ever sees a bounded working set.
            returns a small working set (a handful of facts)
               │
               ▼
-           MODEL TIER  (gary-neuron: cortex + plastic hippocampus)  ── bounded ──
-           runs only over that working set (a 192–384-token window):
-             • cortex reads the context and answers / completes
-             • plastic hippocampus does surprise-gated, in-the-moment adaptation
+           DISPATCH TIER  (gary-neuron cortex)            ── bounded ──
+           runs only over that working set:
+             • emits one route: ANSWER / ESCALATE / FETCH / STORE
+             • ANSWER values come from the store's deterministic recall
            cost is O(working set), never O(database)
-              │
-              ▼
-           SLEEP  (consolidation)  ── off the hot path ──
-           folds new episodes into cortex weights; merges/prunes the store.
-           the model literally grows; the store stays lean.
 ```
 
-The store is the bloodstream; gary-neuron is the brain. The brain never has to think about
-the whole body at once — the store feeds it only what matters, already ranked by use and
-association.
+The store decides what is relevant and holds the bytes; gary-neuron decides what to do with
+the turn. The cortex never has to read the whole database. The store feeds it only what
+matters, already ranked by use and association, and recall supplies the literal answer.
 
 ## The store tier (shipped: `PlasticNeuron`)
 
@@ -69,57 +68,61 @@ Pure standard library, every update O(1) or O(neighbors), no background threads:
 | consolidate | off hot path | merge duplicate-stem facts, prune decayed ones |
 
 Measured overhead: plastic recall is **1.3× the static store** (88 µs vs 67 µs on a
-100-fact neuron) — the same order of magnitude. Adaptation, association, and forgetting all
-work (`rust/neuron-core/tests/plastic.rs`, 6/6). This is the substrate that makes the model tier cheap: it
-narrows millions of facts to a working set without any neural cost.
+100-fact neuron), the same order of magnitude. Adaptation, association, and forgetting all
+work (`rust/neuron-core/tests/plastic.rs`, 6/6). This is the substrate that makes the
+dispatch tier cheap: it narrows millions of facts to a working set without any neural cost.
 
-## The model tier (design: wiring in gary-neuron)
+## The dispatch tier (shipped: gary-neuron cortex)
 
-The trained model lives in `Garrett/gary-neuron-chat` (numpy) and `neuron-cloud` (the
-TypeScript port of the cortex forward pass). To keep neuron-db itself zero-dependency, the
-model tier is an **optional adapter**, not a core dependency:
+The cortex is bundled in this crate and runs natively via `GaryModel::embedded()`, and runs
+in the browser through the WebAssembly build. To keep neuron-db itself zero-dependency, the
+dispatch tier is an optional layer, not a core dependency. A turn flows:
 
 1. **Retrieve** — `PlasticNeuron.recall_related(cue, k)` returns the working set: the best
    fact plus its associates, ranked by strength × link weight.
-2. **Think** — format the working set as the `U:/G:` context the cortex was trained on, run
-   the forward pass (in this crate the cortex is bundled and run natively via
-   `GaryModel::embedded()`; the legacy-python numpy build and the external neuron-cloud
-   TypeScript port are alternative implementations). The cortex copies
-   the answer out of the window; the plastic hippocampus reinforces what mattered. This is
-   where "trained to emergence" pays off — it only ever sees the bounded window.
-3. **Write back** — surprise-gated facts the exchange produced go back into the store, and
-   the hippocampus's in-the-moment weights bias the next few turns.
-4. **Sleep** — periodically, replay buffered episodes mixed with base corpus to consolidate
-   them into the cortex weights (the gary-neuron-chat `/sleep` mechanism), then run
-   `PlasticNeuron.consolidate()` to merge and prune the store. The model grows; the store
-   stays lean. Both happen off the query path.
+2. **Route** — the cortex reads the working set and emits one of `ANSWER`, `ESCALATE`,
+   `FETCH <topic>`, or `STORE <fact>`. On `ANSWER`, the value is read straight from the
+   store's deterministic recall, not generated by the cortex. On `ESCALATE` the turn goes
+   to the host model; on `FETCH` it asks for a topic to retrieve; on `STORE` it writes a
+   fact back.
+3. **Write back** — a `STORE` route puts the new fact into the store, where the store-tier
+   plasticity (strength, decay, association) re-ranks it for later cues.
+4. **Consolidate** — `PlasticNeuron.consolidate()` merges duplicate-stem facts and prunes
+   decayed ones, off the query path. This keeps the store lean.
+
+Held-out results for the cortex: routing triage (`ANSWER` vs `ESCALATE` vs `FETCH`) is 100%
+on each route; grounded `ANSWER` accuracy is 88–98% across working sets from 1 to 18 facts;
+two-hop chaining is 100%. Numeric comparison is the one weak spot, near chance, and is the
+acknowledged limit.
 
 ## Performance contract
 
 | where | cost | scales with |
 |---|---|---|
-| store recall (ranking + decay) | ~90 µs | candidate facts (sub-linear via index) |
+| store recall (ranking + decay) | p50 ~3.9 µs / p99 ~36 µs | candidate facts (sub-linear via index) |
 | association spread | ~µs | neighbors of the hit |
-| model forward (cortex) | ~ms | working-set tokens (fixed window), **not** db size |
-| sleep / consolidate | seconds, async | total facts, off the hot path |
+| cortex dispatch | ~54 ms in WASM, fast natively | working-set tokens (fixed window), **not** db size |
+| consolidate | seconds, async | total facts, off the hot path |
 
-No query ever runs a neural net over the whole database. That is the entire point of the
-split, and it is why a plastic, thinking, growing memory can stay fast.
+Recall latency is measured over 10k queries on 7000 facts across 1000 scopes. A browser
+dispatch is ~54 ms after a SIMD128 pass over the matmuls, down from ~172 ms before. No query
+runs a neural net over the whole database. That is the point of the split, and it is why a
+plastic memory that re-ranks and consolidates can stay fast.
 
 ## Status
 
 - **Shipped:** `PlasticNeuron` — store-tier plasticity (strength, decay, association,
   spreading, consolidation), tested, ~1.3× overhead.
-- **Next:** the model-tier adapter — feed `recall_related` working sets to the gary-neuron
-  cortex (bundled in this crate via `GaryModel::embedded()`; numpy and neuron-cloud TS are
-  the legacy-python / external implementations) and wire `/sleep` consolidation back into
-  both the weights and the store.
+- **Shipped:** the gary-neuron dispatch cortex — bundled in this crate via
+  `GaryModel::embedded()` and run in the browser through the WebAssembly build. It routes
+  each turn (`ANSWER`/`ESCALATE`/`FETCH`/`STORE`) over the working set `recall_related`
+  hands it.
 
 ## Decay: where it lives and what it can (and can't) do
 
 Can your data silently vanish? No. Guarantees, tested in `rust/neuron-core/tests/plastic.rs`:
 
-- **Decay is a store-tier feature added in `PlasticNeuron`** — not inherited from the gary-neuron hippocampus. In the original model the episodic store was permanent; only the hippocampus was transient (fast weights, reset per conversation).
+- **Decay is a store-tier feature of `PlasticNeuron`.** The cortex does not decay anything. It only routes a turn over the working set the store gives it, and the stored facts themselves are permanent unless you prune.
 - **Decay only changes recall ranking.** A heavily decayed fact (effective strength ~0) is still returned by `recall` — it just loses ties to fresher facts. Decay never deletes.
 - **Only `consolidate(prune_below=...)` deletes**, explicit/opt-in, and it **protects `self` facts plus anything you `pin()`**.
 - **Plain `Neuron` / `NeuronDB` do not decay at all** — the default for a database that must never forget. `PlasticNeuron(half_life=None)` keeps plasticity with decay off.
@@ -128,14 +131,13 @@ So "factual decay" is opt-in, ranking-only, and reversible by pinning — not a 
 
 ## Do you need the "neocortex" (an LLM)?
 
-No. The three-tier brain picture is only for the *memory-for-an-LLM-agent* case. For a plain app or website database, **your app is the neocortex** — it decides what to store and ask; neuron-db is just the database (no LLM, no model, no dependencies — see `rust/neuron-core/examples/user_profiles.rs`). Use `NeuronDB` for durable storage, or `PlasticNeuron` for usage-weighted ranking and associations. The LLM and the gary-neuron hippocampus are optional layers added only when you want the store to *reason* or *consolidate*.
+No. The two-tier picture is only for the *memory-for-an-LLM-agent* case. For a plain app or website database, **your app is the neocortex** — it decides what to store and ask; neuron-db is just the database (no LLM, no model, no dependencies — see `rust/neuron-core/examples/user_profiles.rs`). Use `NeuronDB` for durable storage, or `PlasticNeuron` for usage-weighted ranking and associations. The host LLM and the gary-neuron dispatch cortex are optional layers added only when you want a router to decide each turn.
 
-## Does the hippocampus "get smarter"? — the honest answer
+## Does the store "get smarter"? — the honest answer
 
-Three different things; only one is learning:
+Two different things, and neither is online learning:
 
-- **`PlasticNeuron` re-weights.** Use strengthens, disuse decays, co-use associates — it changes *which* stored fact wins a cue, but never invents a fact you didn't store and never alters a stored value (both verified in `rust/neuron-core/tests/plastic.rs`). Adaptation, not learning; no generalization.
-- **The trained hippocampus adapts within a conversation** (fast weights) then resets — also not permanent learning.
-- **Only sleep consolidation into the cortex weights is true "getting smarter"** — offline gradient training (`/sleep`), not a runtime effect.
+- **`PlasticNeuron` re-weights.** Use strengthens, disuse decays, co-use associates. It changes *which* stored fact wins a cue, but never invents a fact you didn't store and never alters a stored value (both verified in `rust/neuron-core/tests/plastic.rs`). Adaptation, not learning; no generalization.
+- **The dispatch cortex is fixed.** Its weights are baked into the build and do not change at runtime. It learns nothing from a turn; it routes the turn over the working set the store hands it. Improving the cortex means retraining it offline and shipping a new build.
 
-The memory gets better-*tuned* to your usage at runtime, cheaply and safely; it gets genuinely *smarter* only when experience is consolidated into the model's weights offline.
+So the memory gets better-*tuned* to your usage at runtime, cheaply and safely, through store-tier re-weighting. The cortex only gets *smarter* between releases, when it is retrained and re-baked into the binary.

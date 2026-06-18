@@ -1,6 +1,6 @@
 # neuron-db — project status
 
-Where the project stands, what just shipped, and what's next on the menu. Updated **2026-06-16**.
+Where the project stands, what just shipped, and what's next on the menu. Updated **2026-06-18**.
 
 ## Where we are
 
@@ -68,16 +68,20 @@ See **[BENCHMARKS.md](BENCHMARKS.md)** for methodology and the full tables.
   A lab-side agentic-loop fix (default low reasoning_effort for tool-selection round-trips + a hop
   cap) sped up reasoning tool-calling **~48%**; this is a harness tuning, the MCP was never the
   bottleneck.
-- **In-browser lab — reasoned routing (new):** a fully client-side lab (`docs/lab.html`) — a WebLLM
-  model with neuron-db compiled to WASM as its long-term memory, **no server, no key**. The turn loop is
-  **perceive → reason → act**: neuron-db measures a **knowledge-gap signal** (coverage — how much of the
-  question it already holds) and the model picks **one action** from it (answer · web_search · deep_research
-  · store · set_rule) instead of a brittle regex router classifying the message — *the model thinks,
-  neuron-db grounds.* **Working memory** (recent dialogue) plus a persistent per-chat **focus** keep a
-  multi-turn task on subject across scroll, and an anti-confabulation guard makes a knowledge gap force a
-  fetch rather than a guess. Web access is direct from the WASM via a `host_http` import to public **CORS**
-  APIs (Wikipedia / DuckDuckGo / open-meteo) — no proxy, no worker; a recursive **deep-research** crawl
-  follows Wikipedia's link graph into neuron-db, and Send doubles as Stop.
+- **In-browser lab — gary-neuron dispatcher (new):** a fully client-side lab (`docs/lab.html`) with a
+  WebLLM host model and neuron-db compiled to WASM as its long-term memory, no server and no key. v3
+  ships gary-neuron as the in-browser dispatcher: a ~7M-parameter int8 transformer
+  (E=256, H=8, L=8, vocab=2048, 512-token context) baked into the WASM build via `include_bytes`, so it
+  runs on CPU with no GPU and nothing to download. It sits as the always-on middle layer between the host
+  model and neuron-db and emits exactly one route per turn: `ANSWER`, `ESCALATE`, `FETCH <topic>`, or
+  `STORE <fact>`. On `ANSWER` the literal value comes from neuron-db's deterministic recall, so the cortex
+  decides the route and the store grounds the bytes. Held-out: routing triage (ANSWER / ESCALATE / FETCH)
+  is 100% on each class, grounded ANSWER accuracy is 88–98% across working sets of 1 to 18 facts, and a
+  browser dispatch is ~54 ms after a SIMD128 pass over the matmuls (down from ~172 ms). Working memory
+  (recent dialogue) plus a persistent per-chat focus keep a multi-turn task on subject across scroll, and a
+  knowledge gap forces a fetch rather than a guess. Web access is direct from the WASM via a `host_http`
+  import to public CORS APIs (Wikipedia / DuckDuckGo / open-meteo), no proxy or worker; a recursive
+  deep-research crawl follows Wikipedia's link graph into neuron-db, and Send doubles as Stop.
 - **Measured head-to-head vs dense vectors** (`docs/guide/VS_VECTORS.md`): on one frozen dataset with
   identical scoring, neuron-db's lexical recall is **p50 ~13.8 µs** vs a hosted
   `text-embedding-3-small` at **p50 320 ms end-to-end (~23,000× slower)** and **6,144 B/fact**. The
@@ -107,13 +111,13 @@ Grounded in a read of the real crate (`lib.rs` / `db.rs` / `router.rs` / `server
 - **Cross-restart persistence of the plastic graph + semantic space.** Hebbian links and the
   Random-Indexing space are rebuilt per session; `dump`/`load` via the existing int8 quantize path
   makes adaptation and meaning durable (true long-term memory, not a session cache).
-- **A pure-Rust gap signal — `mem("assess", …)` (the lab's next lift).** The in-browser lab already routes
-  on a **JS coverage signal** (its phrasing-independent "do I know this?" gap detector) — and the core
-  *already computes* `coverage`/`overlap`/`exact` and drops them at the MCP boundary. Lift that same signal
-  into a pure-Rust WASM op so the gap-driven decision lives in the core, not the harness; the same op backs
-  an opt-in verbose recall suffix + a coarse high/med/low confidence label for the honest-abstention story.
-  Beyond that: a **plastic learned policy** (gap-state → action via the existing Hebbian/plastic tier) so the
-  routing improves itself instead of being prompted each turn.
+- **A pure-Rust gap signal — `mem("assess", …)`.** The core already computes `coverage`/`overlap`/`exact`
+  and drops them at the MCP boundary. Lift that same signal into a pure-Rust WASM op so the gap-driven
+  decision lives in the core; the same op backs an opt-in verbose recall suffix and a coarse high/med/low
+  confidence label for the honest-abstention story. Beyond that: a plastic learned policy (gap-state →
+  action via the existing Hebbian/plastic tier) so the routing improves itself instead of being prompted
+  each turn. The numeric-compare route is the one acknowledged weak spot — it sits near chance and is the
+  next target.
 - **Hub-cue recall.** Broad cues that match most facts are still O(N); an IDF/hub pre-filter
   (mirroring the spreading `dfcap`) would collapse them toward the selective ~µs path.
 - **Onboarding + ops.** Export/import + backup, per-call hybrid-rank tuning knobs, an atomic-counter
