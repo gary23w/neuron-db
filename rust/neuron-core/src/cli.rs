@@ -14,6 +14,7 @@
 //!   secure-get <scope> <query...>               encrypted get (needs --secret, --features secure)
 //! Env: NEURON_DB (db path), NEURON_SECRET (secret for secure-*), NEURON_DB_KEY (server bearer).
 use neuron_core::db::NeuronDB;
+use neuron_core::op::{apply, NeuronOp, OpResult};   // route every store command through the one vocabulary
 use neuron_core::json_escape as esc;          // the canonical control-char-correct escaper
 use std::io::{IsTerminal, Read};
 
@@ -57,32 +58,42 @@ fn main() {
     let need_scope = |c: &str| if scope.is_empty() { eprintln!("'{}' needs a <scope>", c); std::process::exit(2); };
 
     match cmd.as_str() {
-        "observe" => { need_scope("observe"); let d = NeuronDB::open(&db, max); let n = d.observe(&scope, &body(rest()));
+        "observe" => { need_scope("observe"); let d = NeuronDB::open(&db, max);
+            let n = apply(&d, NeuronOp::Observe { scope: scope.clone(), text: body(rest()) }).wrote();
             if json { println!("{{\"wrote\":{}}}", n); } else { println!("stored {} fact(s)", n); } }
-        "get" => { need_scope("get"); let d = NeuronDB::open(&db, max); let v = d.get(&scope, &rest());
+        "get" => { need_scope("get"); let d = NeuronDB::open(&db, max);
+            let v = apply(&d, NeuronOp::RecallOne { scope: scope.clone(), query: rest() }).hit().map(|h| h.value);
             if json { println!("{{\"value\":{}}}", v.as_deref().map(|s| format!("\"{}\"", esc(s))).unwrap_or("null".into())); }
             else { match &v { Some(s) => println!("{}", s), None => eprintln!("(no answer)") } }
             if v.is_none() { std::process::exit(3); } }                       // miss -> exit 3 (scriptable: get … || fallback)
-        "recall" => { need_scope("recall"); let d = NeuronDB::open(&db, max); let h = d.recall(&scope, &rest());
+        "recall" => { need_scope("recall"); let d = NeuronDB::open(&db, max);
+            let h = apply(&d, NeuronOp::RecallOne { scope: scope.clone(), query: rest() }).hit();
             match &h {
                 Some(h) => if json { println!("{{\"fact\":\"{}\",\"value\":\"{}\",\"coverage\":{:.3}}}", esc(&h.fact), esc(&h.value), h.coverage) }
                            else { println!("value:    {}\nfact:     {}\ncoverage: {:.0}%", h.value, h.fact, h.coverage * 100.0) },
                 None => if json { println!("{{\"fact\":null}}"); } else { eprintln!("(no match)"); },
             }
             if h.is_none() { std::process::exit(3); } }
-        "turn" => { need_scope("turn"); let d = NeuronDB::open(&db, max); let t = d.turn(&scope, &body(rest()));
-            if json { println!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{}}}", esc(&t.reply), t.kind, t.wrote, t.facts); }
-            else { println!("{}", t.reply); } }
+        "turn" => { need_scope("turn"); let d = NeuronDB::open(&db, max);
+            if let OpResult::Turned(t) = apply(&d, NeuronOp::Turn { scope: scope.clone(), message: body(rest()) }) {
+                if json { println!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{}}}", esc(&t.reply), t.kind, t.wrote, t.facts); }
+                else { println!("{}", t.reply); }
+            } }
         "chat" => { need_scope("chat"); chat(&db, max, &scope); }
-        "stats" => { need_scope("stats"); let d = NeuronDB::open(&db, max); let s = d.stats(&scope);
-            if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
-            else { println!("facts:   {}\nmax:     {}\nturns:   {}\ncreated: {}\nupdated: {}", s.facts, s.max_facts, s.turns, s.created, s.updated); } }
+        "stats" => { need_scope("stats"); let d = NeuronDB::open(&db, max);
+            if let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: scope.clone() }) {
+                if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
+                else { println!("facts:   {}\nmax:     {}\nturns:   {}\ncreated: {}\nupdated: {}", s.facts, s.max_facts, s.turns, s.created, s.updated); }
+            } }
         "forget" => { need_scope("forget"); let d = NeuronDB::open(&db, max); let m = pos.get(2..).map(|s| s.join(" ")).filter(|s| !s.is_empty());
-            let (f, r) = d.forget(&scope, m.as_deref());
-            if json { println!("{{\"forgot\":{},\"remaining\":{}}}", f, r); } else { println!("forgot {}, {} remaining", f, r); } }
-        "list" => { let d = NeuronDB::open(&db, max); let ids = d.neurons();
-            if json { let items: Vec<String> = ids.iter().map(|s| format!("\"{}\"", esc(s))).collect(); println!("{{\"scopes\":[{}]}}", items.join(",")); }
-            else { for id in ids { println!("{}", id); } } }
+            if let OpResult::Forgot { forgot, remaining } = apply(&d, NeuronOp::Forget { scope: scope.clone(), matching: m }) {
+                if json { println!("{{\"forgot\":{},\"remaining\":{}}}", forgot, remaining); } else { println!("forgot {}, {} remaining", forgot, remaining); }
+            } }
+        "list" => { let d = NeuronDB::open(&db, max);
+            if let OpResult::Scopes(ids) = apply(&d, NeuronOp::List) {
+                if json { let items: Vec<String> = ids.iter().map(|s| format!("\"{}\"", esc(s))).collect(); println!("{{\"scopes\":[{}]}}", items.join(",")); }
+                else { for id in ids { println!("{}", id); } }
+            } }
         "serve" => { serve_cmd(&db, pos.get(1).and_then(|s| s.parse().ok()).unwrap_or(8088)); }
         "secure-put" => secure_put(&db, &secret, &scope, pos.get(2).cloned().unwrap_or_default(), pos.get(3..).map(|s| s.join(" ")).unwrap_or_default()),
         "secure-get" => secure_get(&db, &secret, &scope, &rest()),
@@ -111,7 +122,9 @@ fn chat(db: &str, max: usize, scope: &str) {
         match stdin.read_line(&mut line) { Ok(0) => break, Ok(_) => {}, Err(_) => break }
         let msg = line.trim();
         if msg.is_empty() { continue; }
-        println!("{}", d.turn(scope, msg).reply);
+        if let OpResult::Turned(t) = apply(&d, NeuronOp::Turn { scope: scope.to_string(), message: msg.to_string() }) {
+            println!("{}", t.reply);
+        }
         let _ = std::io::stdout().flush();
     }
 }

@@ -56,6 +56,7 @@ impl OpResult {
     /// remember -> Wrote, …). The op/result pairing is 1:1, so a mismatch is a programming error;
     /// these return an empty default rather than panic to keep dispatchers total.
     pub fn wrote(&self) -> usize { if let OpResult::Wrote(n) = self { *n } else { 0 } }
+    pub fn hit(self) -> Option<Recall> { if let OpResult::Hit(h) = self { h } else { None } }
     pub fn hits(self) -> Vec<Recall> { if let OpResult::Hits(h) = self { h } else { Vec::new() } }
     pub fn assoc(self) -> Vec<Spread> { if let OpResult::Assoc(a) = self { a } else { Vec::new() } }
     pub fn value(self) -> Option<String> { if let OpResult::Value(v) = self { v } else { None } }
