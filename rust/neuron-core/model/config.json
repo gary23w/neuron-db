@@ -1,10 +1,10 @@
 {
+  "model": "gary-neuron",
+  "author": "gary23w",
   "E": 256,
   "H": 8,
   "L": 8,
-  "BLK": 256,
+  "BLK": 512,
   "vocab": 2048,
-  "params": 6908416,
-  "author": "gary23w",
-  "model": "gary-neuron"
+  "params": 6973952
 }

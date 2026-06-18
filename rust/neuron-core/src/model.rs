@@ -8,6 +8,15 @@ use crate::bpe::Bpe;
 
 pub struct GaryModel { cortex: Cortex, bpe: Bpe }
 
+/// The routing decision the middle-layer cortex makes for one turn. v3 emits this as a short
+/// action-prefixed string; `dispatch` parses it so the host (lab / WASM / MCP) can act:
+///   Answer  -> memory answered; serve `.0` directly (no host-model round trip)
+///   Escalate-> memory can't; hand the turn up to the larger host model
+///   Fetch   -> live-world question; go to the web for `.0`
+///   Store   -> a declarative; remember `.0`
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dispatch { Answer(String), Escalate, Fetch(String), Store(String) }
+
 impl GaryModel {
     /// Load the emergence model baked into the binary at compile time. No files, no network.
     pub fn embedded() -> GaryModel {
@@ -41,6 +50,18 @@ impl GaryModel {
             lg = self.cortex.forward(&[best], &mut cache);
         }
         self.bpe.decode(&out).trim().to_string()
+    }
+
+    /// Run the cortex as the middle dispatcher: generate the action and parse it into a route.
+    /// `facts` is the working set neuron-db recalled; `query` is the turn. Unknown/!-prefixed
+    /// output defaults to Escalate (fail safe: hand up to the host model rather than guess).
+    pub fn dispatch(&self, facts: &[String], query: &str) -> Dispatch {
+        let raw = self.think(facts, query, 24);
+        let raw = raw.trim();
+        if let Some(v) = raw.strip_prefix("ANSWER ") { Dispatch::Answer(v.trim().to_string()) }
+        else if let Some(v) = raw.strip_prefix("FETCH ") { Dispatch::Fetch(v.trim().to_string()) }
+        else if let Some(v) = raw.strip_prefix("STORE ") { Dispatch::Store(v.trim().to_string()) }
+        else { Dispatch::Escalate }
     }
 
     pub fn encode(&self, t: &str) -> Vec<u32> { self.bpe.encode(t) }

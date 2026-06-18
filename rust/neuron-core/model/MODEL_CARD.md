@@ -6,92 +6,51 @@ tags:
   - micro-llm
   - neuron-db
   - gary-neuron
-  - grounded-qa
   - on-device
 ---
 
 # gary-neuron
 
-A **~6.9M-parameter** reasoning cortex that sits **between [neuron-db](https://github.com/gary23w/neuron-db) and the user**: the store retrieves a small working set of facts, and this tiny model reads that window and produces a grounded answer over it. Built by **[gary23w](https://github.com/gary23w)**.
+The micro **dispatcher cortex** at the center of [neuron-db](https://github.com/gary23w/neuron-db). It sits between a host model (or app) and the store: given the working set neuron-db recalled plus the turn, it **routes**. Tiny (a few-million-parameter int8 transformer), baked into the binary (`include_bytes!`) — no GPU, no runtime download, no network. Built by **[gary23w](https://github.com/gary23w)**.
 
-It is deliberately *micro* — small enough to bake straight into a binary (`include_bytes!`, no runtime download, no GPU) yet large enough to **select the right fact among distractors, chain two facts, abstain when the answer isn't present, and copy arbitrary values it has never seen.**
+## Role — the middle layer
 
-## Architecture
+gary-neuron is the always-on middle, not a chat model. For each turn it emits exactly one route:
 
-A pre-LN decoder-only transformer, served in **int8**:
-
-| | |
+| route | meaning |
 |---|---|
-| params | **6,908,416** (~6.9M) |
-| dim (E) | 256 |
-| layers | 8 |
-| heads | 8 |
-| context (BLK) | 256 tokens |
-| vocab | 2048 byte-level BPE |
-| activation | tanh-GELU |
-| norm | LayerNorm (eps 1e-5), pre-LN |
-| positions | learned |
-| output | weight-tied to token embedding |
-| weights | per-row **int8** (matmuls) + f32 LayerNorm/bias |
+| `ANSWER` | memory has it — serve from the store (no host-model round trip) |
+| `ESCALATE` | memory can't — hand the turn up to the larger host model |
+| `FETCH <topic>` | live-world question — go to the web |
+| `STORE <fact>` | a declarative — remember it |
 
-The forward pass is **byte-identical** to the Rust runtime in the neuron-db crate, so a checkpoint exported from training swaps into `cortex.bin` with **zero code changes**.
+It holds across realistic recalled working sets and chains multi-fact lookups. On the `ANSWER` route the **exact value comes from neuron-db's deterministic recall** — the cortex decides the route; the store grounds the bytes. (For pure recall you don't need the model at all; the store returns values deterministically.)
 
-## How it was trained
+## Use (Rust)
 
-A 7M model can't be a general LLM — but it *can* master one **narrow** distribution: *read a working set + a query → grounded answer* (knowing what to retrieve is neuron-db's job, not the model's). So it is trained on exactly that:
-
-- **Distillation seed** — a strong teacher generates natural `(facts, query) → ideal answer` examples across the target tasks, plus a **gary23w identity layer** so the model always knows *it is gary-neuron, built by gary23w*.
-- **Synthetic copy-from-window curriculum** (~16k examples) — keys/values/relations randomized every instance, with the **value shape decoupled from the key**, so the model learns the *mechanism* ("emit the span attached to the asked key") rather than memorizing values. This is what makes copy/select **generalize to values it has never seen**.
-- Answer-masked next-token cross-entropy; AdamW; cosine LR + warmup.
-
-## Evaluation
-
-Held-out exact-match accuracy, **N=80 fresh random cases per task** (values never seen in training), greedy decoding, measured in the real int8 runtime:
-
-| task | gary-neuron ~6.9M | prior 1.13M cortex |
-|---|---|---|
-| copy (arbitrary value shapes) | **90.0%** | 11.2% |
-| number-copy (comma integers) | **100%** | 8.8% |
-| select among 3–5 distractors | **70.0%** | 2.5% |
-| abstain (answer absent) | **87.5%** | 0% |
-| **multi-hop (2 facts)** | **91.2%** | 0% |
-| compare (which is more/fewer) | 53.8% | 0% |
-| **mean** | **~82%** | **~3.8%** |
-
-## Use
-
-The neuron-db Rust crate **bundles this model into the binary** (`include_bytes!`) — nothing to load at runtime:
+The neuron-db crate bundles the model — nothing to load at runtime:
 
 ```rust
-use neuron_core::model::GaryModel;
+use neuron_core::model::{GaryModel, Dispatch};
 
-let m = GaryModel::embedded();                       // cortex + tokenizer, baked in
-let facts = vec![
-    "the api key is zeta-9931".to_string(),
-    "the launch is on Friday".to_string(),
-];
-let answer = m.think(&facts, "what is the api key?", 16);   // -> "zeta-9931"
+let m = GaryModel::embedded();
+match m.dispatch(&working_set, "what is the api key?") {
+    Dispatch::Answer(_) => { /* serve the store's recalled value */ }
+    Dispatch::Escalate  => { /* hand up to the host model */ }
+    Dispatch::Fetch(t)  => { /* fetch `t` from the web */ }
+    Dispatch::Store(f)  => { /* remember `f` */ }
+}
 ```
-
-The `think` binary (`rust/neuron-core/src/think.rs`) is a thin CLI over the same call.
 
 ## Files
 
 ```
-cortex.bin          packed int8/f32 weight tensors (layout in manifest.tsv)
-manifest.tsv        tensor manifest: "#cfg E H L BLK VOCAB", then name/qtype/offset/bytelen/rows/cols
-vocab.tsv           byte-level BPE vocab (2048)
-petite_merges.txt   BPE merges
-config.json         E/H/L/BLK, vocab, param count, author
+cortex.bin          packed int8/f32 weights (layout in manifest.tsv)
+manifest.tsv        tensor manifest the loader reads
+vocab.tsv / petite_merges.txt   byte-level BPE tokenizer
+config.json         compact runtime config
 ```
 
-`config.json` is a compact custom config (not a `transformers` config) — the weights are served by the neuron-db Rust crate, not by `AutoModel`.
-
-## Honest limits
-
-- **compare** (deciding which of two numbers is larger) sits at ~54% — numeric magnitude reasoning is genuinely hard for a char/BPE model this small. Treat it as a stretch task, not a guarantee.
-- **paraphrase** beyond copy-from-window is weak; the 2048-token vocab fragments rare words.
-- Decoding is **greedy**, so **ungrounded open-ended generation** is not a goal — with no facts the model tends to fall back to its identity line. In the application it always receives a retrieved working set.
-- For exact recall you don't need the model at all — neuron-db's store returns the value deterministically. The cortex is for generation/association over the working set.
+Served by the neuron-db Rust crate (and its WASM build), not by `transformers`.
 
 MIT. Part of the gary-neuron family by [gary23w](https://github.com/gary23w).
