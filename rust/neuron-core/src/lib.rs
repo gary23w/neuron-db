@@ -602,6 +602,7 @@ pub mod turn;
 #[cfg(feature = "server")] pub mod server;
 #[cfg(feature = "mcp")] pub mod mcp;
 #[cfg(feature = "semantic")] pub mod semantic;
+#[cfg(feature = "compress")] pub mod codec;
 pub mod cortex;
 pub mod bpe;
 pub mod model;
