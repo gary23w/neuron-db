@@ -10,6 +10,7 @@
 use std::io::{self, BufRead, Write};
 use std::time::Instant;
 use crate::db::NeuronDB;
+use crate::op::{apply, NeuronOp, OpResult};
 
 const PROTO_DEFAULT: &str = "2025-06-18";
 
@@ -133,14 +134,9 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             else {
                 let k = json_num(body, "k").unwrap_or(5).clamp(1, 50) as usize;
                 // default to lexical/associative recall; semantic is an explicit opt-in ranking signal
-                let _rank = json_field(body, "rank").unwrap_or_default();
+                let semantic = json_field(body, "rank").unwrap_or_default() == "semantic";
                 let across = body.contains("\"documents\":true") || body.contains("\"documents\": true");
-                #[cfg(feature = "semantic")]
-                let hits = if across { db.recall_many_across(&scope, &q, k) }
-                           else if _rank == "semantic" { db.recall_blended(&scope, &q, k) }
-                           else { db.recall_many(&scope, &q, k) };
-                #[cfg(not(feature = "semantic"))]
-                let hits = if across { db.recall_many_across(&scope, &q, k) } else { db.recall_many(&scope, &q, k) };
+                let hits = apply(db, NeuronOp::Recall { scope: scope.clone(), query: q.clone(), k, semantic, across }).hits();
                 let n = hits.len();
                 if hits.is_empty() {
                     (tool_text(id, &format!("No memories found for \"{}\".", q)), 0)
@@ -157,7 +153,7 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             else {
                 let k = json_num(body, "k").unwrap_or(8).clamp(1, 50) as usize;
                 let hops = json_num(body, "hops").unwrap_or(2).clamp(1, 4) as usize;
-                let hits = db.recall_associative(&scope, &q, k, hops);
+                let hits = apply(db, NeuronOp::RecallAssoc { scope: scope.clone(), query: q.clone(), k, hops }).assoc();
                 let n = hits.len();
                 if hits.is_empty() {
                     (tool_text(id, &format!("No memories found for \"{}\".", q)), 0)
@@ -191,7 +187,8 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                     let key = key.trim();
                     if key.is_empty() { (tool_err(id, "note kind=var needs 'key'"), 0) }
                     else {
-                        let w = db.var_set(&sub, key, text.trim());   // anchored upsert (no key collision)
+                        // anchored upsert (no key collision)
+                        let w = apply(db, NeuronOp::VarSet { scope: sub.clone(), key: key.to_string(), value: text.trim().to_string() }).wrote();
                         if w > 0 { (tool_text(id, &format!("Set var [{}] {} = {}", sub, key, text.trim())), 1) }
                         else { (tool_text(id, &format!("(not stored: '{}' value too short to encode)", key)), 0) }
                     }
@@ -201,11 +198,13 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                     let key = json_field(body, "key").unwrap_or_default();
                     let key = key.trim();
                     if key.is_empty() {
-                        let w = db.observe(&sub, text.trim());
+                        let w = apply(db, NeuronOp::Observe { scope: sub.clone(), text: text.trim().to_string() }).wrote();
                         if w > 0 { (tool_text(id, &format!("Noted stance [{}]: {}", sub, text.trim())), 1) }
                         else { (tool_text(id, &format!("(already noted) stance [{}]", sub)), 0) }
                     } else {
-                        let (s, created) = db.note_stance(&sub, key, text.trim());
+                        let (s, created) = match apply(db, NeuronOp::Stance { scope: sub.clone(), topic: key.to_string(), feeling: text.trim().to_string() }) {
+                            OpResult::Stance { intensity, created } => (intensity, created), _ => (0.0, false),
+                        };
                         if s == 0.0 { (tool_text(id, "(not stored: stance text too short to encode)"), 0) }
                         else {
                             let verb = if created { "Formed" } else { "Intensified" };
@@ -213,7 +212,7 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                         }
                     }
                 } else {
-                    let w = db.observe(&sub, text.trim());
+                    let w = apply(db, NeuronOp::Observe { scope: sub.clone(), text: text.trim().to_string() }).wrote();
                     if w > 0 { (tool_text(id, &format!("Noted {} [{}]: {}", label, sub, text.trim())), 1) }
                     else { (tool_text(id, &format!("(already noted) {} [{}]", label, sub)), 0) }
                 }
@@ -225,7 +224,7 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if key.is_empty() { (tool_err(id, "recall_var needs 'key'"), 0) }
             else {
                 let sub = format!("{}::var", scope);
-                match db.var_get(&sub, key) {
+                match apply(db, NeuronOp::VarGet { scope: sub, key: key.to_string() }).value() {
                     Some(v) => (tool_text(id, &v), 1),
                     None => (tool_text(id, &format!("(unset: {})", key)), 0),
                 }
@@ -234,12 +233,11 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
         "recall_value" => {
             let q = json_field(body, "query").unwrap_or_default();
             if q.is_empty() { (tool_err(id, "recall_value needs a query"), 0) }
+            // main scope first, then a cross-document fallback — both live in apply(RecallValue)
             else {
-                // main scope first; on a miss, fall back across the user's document sub-scopes so a
-                // direct question still finds a value the user filed inside a shared document.
-                let v = db.get(&scope, &q)
-                    .or_else(|| db.recall_many_across(&scope, &q, 1).into_iter().next().map(|h| h.value));
-                match v { Some(v) => (tool_text(id, &v), 1), None => (tool_text(id, "(no memory)"), 0) }
+                match apply(db, NeuronOp::RecallValue { scope: scope.clone(), query: q }).value() {
+                    Some(v) => (tool_text(id, &v), 1), None => (tool_text(id, "(no memory)"), 0),
+                }
             }
         }
         "recall_chain" => {
@@ -247,12 +245,13 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             let path = json_array(body, "path");
             if start.is_empty() || path.is_empty() { (tool_err(id, "recall_chain needs 'start' and 'path'"), 0) }
             else {
-                let (val, trail) = db.recall_chain(&scope, &start, &path);
-                let text = match val {
-                    Some(v) => format!("{}  (via {})", v, trail.join(" -> ")),
-                    None => format!("chain broke after: {}", trail.join(" -> ")),
+                let n = path.len();
+                let text = match apply(db, NeuronOp::RecallChain { scope: scope.clone(), start, path }) {
+                    OpResult::Chain { value: Some(v), trail } => format!("{}  (via {})", v, trail.join(" -> ")),
+                    OpResult::Chain { value: None, trail } => format!("chain broke after: {}", trail.join(" -> ")),
+                    _ => String::new(),
                 };
-                (tool_text(id, &text), path.len())
+                (tool_text(id, &text), n)
             }
         }
         "remember" => {
@@ -260,29 +259,33 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if texts.is_empty() { if let Some(t) = json_field(body, "text") { texts.push(t); } }
             texts.retain(|t| !t.trim().is_empty());
             if texts.is_empty() { (tool_err(id, "remember needs 'text' or 'facts'"), 0) }
-            // observe() per fact (not observe_many) so the interactive remember path dedups
-            // exact restatements; bulk ingest still uses observe_many directly for speed.
-            else { let w: usize = texts.iter().map(|t| db.observe(&scope, t)).sum(); (tool_text(id, &format!("Stored {} fact(s) in {}.", w, scope)), w) }
+            // observe() per fact (ObserveMany) so the interactive remember path dedups exact
+            // restatements; bulk ingest still uses db.observe_many directly for speed.
+            else { let w = apply(db, NeuronOp::ObserveMany { scope: scope.clone(), texts }).wrote(); (tool_text(id, &format!("Stored {} fact(s) in {}.", w, scope)), w) }
         }
         "forget" => {
             let m = json_field(body, "match");
-            let (f, r) = db.forget(&scope, m.as_deref());
+            let (f, r) = match apply(db, NeuronOp::Forget { scope: scope.clone(), matching: m }) {
+                OpResult::Forgot { forgot, remaining } => (forgot, remaining), _ => (0, 0),
+            };
             (tool_text(id, &format!("Forgot {} fact(s) from {}; {} remain.", f, scope, r)), f)
         }
         "stats" => {
-            let s = db.stats(&scope);
-            (tool_text(id, &format!("{} holds {} fact(s) (max {}), {} turns.", scope, s.facts, s.max_facts, s.turns)), s.facts)
+            match apply(db, NeuronOp::Stats { scope: scope.clone() }) {
+                OpResult::Stats(s) => (tool_text(id, &format!("{} holds {} fact(s) (max {}), {} turns.", scope, s.facts, s.max_facts, s.turns)), s.facts),
+                _ => (tool_err(id, "stats failed"), 0),
+            }
         }
         // affective layer — handled but intentionally NOT advertised in tools/list (the harness
         // calls these by name; the mood override is the optional variable passed into the store).
         "feel" => {
             let emo = json_field(body, "emotion").unwrap_or_default();
             let emo = emo.trim();
-            db.set_mood(&scope, emo);
+            apply(db, NeuronOp::Mood { scope: scope.clone(), emotion: emo.to_string() });
             if emo.is_empty() { (tool_text(id, "(mood cleared; back to auto)"), 0) }
             else { (tool_text(id, &format!("now feeling {}", emo)), 1) }
         }
-        "humanize" => (tool_text(id, &db.affect(&scope)), 1),
+        "humanize" => (tool_text(id, &apply(db, NeuronOp::Affect { scope: scope.clone() }).text()), 1),
         other => (tool_err(id, &format!("unknown tool: {}", other)), 0),
     };
     synapse_log(&name, &scope, db, returned, t0.elapsed().as_micros());

@@ -51,6 +51,17 @@ pub enum OpResult {
     Ok,
 }
 
+impl OpResult {
+    /// Convenience extractors for transports whose op fixes the result variant (recall -> Hits,
+    /// remember -> Wrote, …). The op/result pairing is 1:1, so a mismatch is a programming error;
+    /// these return an empty default rather than panic to keep dispatchers total.
+    pub fn wrote(&self) -> usize { if let OpResult::Wrote(n) = self { *n } else { 0 } }
+    pub fn hits(self) -> Vec<Recall> { if let OpResult::Hits(h) = self { h } else { Vec::new() } }
+    pub fn assoc(self) -> Vec<Spread> { if let OpResult::Assoc(a) = self { a } else { Vec::new() } }
+    pub fn value(self) -> Option<String> { if let OpResult::Value(v) = self { v } else { None } }
+    pub fn text(self) -> String { if let OpResult::Text(t) = self { t } else { String::new() } }
+}
+
 /// Execute one op against the durable store — the ONLY place a transport reaches `db.rs` store
 /// methods, so the rank choice, the cross-scope value fallback, and the clamps can't drift between
 /// the CLI and the MCP server.
