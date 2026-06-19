@@ -18,7 +18,9 @@ and an optional **scope** — no IDs, embeddings, or metadata. Two text forms, o
 {"scope":"facts-1","fact":"Aspirin inhibits cyclooxygenase enzymes."}
 ```
 
-**`.facts`** — one bare fact per line, with `# scope:` directives (awk/sed-friendly):
+**`.facts`** — one bare fact per line, with `# scope:` directives (awk/sed-friendly). A line that
+begins with `#` is a comment and one that begins with `{` is read as JSON, so a fact whose text
+starts with `#` or `{` must use the `.jsonl` form (`{"fact":"#1 ranked …"}`):
 ```
 # scope: chemistry
 Water is two hydrogen atoms and one oxygen atom.

@@ -94,33 +94,44 @@ impl NeuronDB {
     /// keeps the store usable for every later op rather than cascading one failed write into a dead
     /// store — important for the long-lived MCP server with a preload boot hook.
     fn guard(&self) -> std::sync::MutexGuard<'_, Inner> { self.inner.lock().unwrap_or_else(|e| e.into_inner()) }
+    // de-poison the semantic-space lock too: a panic inside train() (e.g. under the MCP preload
+    // catch_unwind) would otherwise poison it and crash the first recall in the request loop.
+    #[cfg(feature = "semantic")]
+    fn sem_guard(&self) -> std::sync::MutexGuard<'_, crate::semantic::SemanticSpace> { self.sem.lock().unwrap_or_else(|e| e.into_inner()) }
 
     /// Persist all scopes with unsaved (write-behind) changes. Call before shutdown for durability;
     /// also run automatically on Drop and on LRU eviction.
     pub fn flush_all(&self) {
         let mut g = self.guard(); let inner = &mut *g;
         let Inner { conn, cache, .. } = inner;
-        for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; e.writes = 0; } }
+        for (k, e) in cache.iter_mut() {
+            // isolate each persist like Drop does: a SQLITE_FULL panic on one scope (this is the
+            // pre-shutdown flush after a bulk import — the most likely spot to fill the disk) must
+            // not poison the lock or skip the remaining scopes. A failed scope stays dirty for Drop.
+            if e.dirty && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::persist(conn, k, e))).is_ok() {
+                e.dirty = false; e.writes = 0;
+            }
+        }
     }
 
     /// Train the semantic space on arbitrary background text (e.g. a book/corpus), so recall
     /// can fall back to meaning when lexical cues miss. No-op unless built with `semantic`.
     #[cfg(feature = "semantic")]
-    pub fn train_semantic(&self, text: &str) { self.sem.lock().unwrap().train(text); }
+    pub fn train_semantic(&self, text: &str) { self.sem_guard().train(text); }
     /// (vocab words, tokens seen, approx bytes) of the semantic space.
     #[cfg(feature = "semantic")]
     pub fn semantic_stats(&self) -> (usize, u64, usize) {
-        let s = self.sem.lock().unwrap(); (s.vocab(), s.tokens(), s.bytes())
+        let s = self.sem_guard(); (s.vocab(), s.tokens(), s.bytes())
     }
     /// The k nearest words to `word` in the learned semantic space (for inspection).
     #[cfg(feature = "semantic")]
     pub fn semantic_neighbors(&self, word: &str, k: usize) -> Vec<(String, f32)> {
-        self.sem.lock().unwrap().nearest(word, k)
+        self.sem_guard().nearest(word, k)
     }
     /// Compact the semantic space to int8 for read-mostly serving (~4x smaller; recall intact,
     /// a later observe transparently re-expands it).
     #[cfg(feature = "semantic")]
-    pub fn compact_semantic(&self) { self.sem.lock().unwrap().compact(); }
+    pub fn compact_semantic(&self) { self.sem_guard().compact(); }
 
     /// Ensure `nid` is in the cache (load from sqlite on miss; evict LRU when over cap).
     fn ensure(inner: &mut Inner, nid: &str, max_facts: usize, cap: usize) {
@@ -169,7 +180,7 @@ impl NeuronDB {
             w = e.n.observe(text);
             Self::touch(conn, nid, e, self.flush_every);   // write-behind aware (immediate when flush_every=1)
         }
-        #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(text);
+        #[cfg(feature = "semantic")] self.sem_guard().train(text);
         w
     }
     /// Batch ingest: one load, many appends, one save. Amortizes the per-write commit.
@@ -186,7 +197,7 @@ impl NeuronDB {
             // silently keeping in-memory facts that never reach disk.
             e.dirty = true; Self::persist_now(conn, nid, e); w = acc;
         }
-        #[cfg(feature = "semantic")] { let mut s = self.sem.lock().unwrap(); for t in texts { s.train(t); } }
+        #[cfg(feature = "semantic")] { let mut s = self.sem_guard(); for t in texts { s.train(t); } }
         w
     }
     pub fn recall(&self, nid: &str, query: &str) -> Option<Recall> {
@@ -218,7 +229,7 @@ impl NeuronDB {
         };
         if facts.is_empty() { return None; }
         let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
-        let mut s = self.sem.lock().unwrap();
+        let mut s = self.sem_guard();
         let ranked = s.rank_cached(query, &texts);
         match ranked.first() {
             Some(&(i, score)) if score >= self.sem_threshold => {
@@ -240,7 +251,7 @@ impl NeuronDB {
         };
         if facts.is_empty() { return Vec::new(); }
         let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
-        let ranked = { let mut s = self.sem.lock().unwrap(); s.rank_cached(query, &texts) };
+        let ranked = { let mut s = self.sem_guard(); s.rank_cached(query, &texts) };
         if ranked.is_empty() { return self.recall_many(nid, query, k); } // no semantic signal -> lexical
         // lexical boost: fraction of the query's content words (>=3 chars) present in the fact
         let qw: Vec<String> = query.to_lowercase().split(|c: char| !c.is_alphanumeric())
@@ -305,7 +316,7 @@ impl NeuronDB {
             w = e.n.observe(&line);
             Self::persist(conn, nid, e);
         }
-        #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(value);
+        #[cfg(feature = "semantic")] self.sem_guard().train(value);
         w
     }
     /// Read a named variable's FULL value (everything after the first " is "), so multi-word values
@@ -361,7 +372,7 @@ impl NeuronDB {
             Self::persist(conn, nid, e);
             r
         };
-        #[cfg(feature = "semantic")] self.sem.lock().unwrap().train(feeling);
+        #[cfg(feature = "semantic")] self.sem_guard().train(feeling);
         out
     }
     pub fn get(&self, nid: &str, query: &str) -> Option<String> { self.recall(nid, query).map(|h| h.value) }

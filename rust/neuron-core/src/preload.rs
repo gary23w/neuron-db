@@ -39,8 +39,27 @@ fn json_str_field(body: &str, key: &str) -> Option<String> {
     while j < rest.len() {
         let c = rest[j];
         if c == '\\' && j + 1 < rest.len() {
-            out.push(match rest[j + 1] { 'n' => '\n', 't' => '\t', 'r' => '\r', '"' => '"', '\\' => '\\', o => o });
-            j += 2;
+            match rest[j + 1] {
+                'n' => { out.push('\n'); j += 2; }
+                't' => { out.push('\t'); j += 2; }
+                'r' => { out.push('\r'); j += 2; }
+                'b' => { out.push('\u{0008}'); j += 2; }
+                'f' => { out.push('\u{000C}'); j += 2; }
+                '"' => { out.push('"'); j += 2; }
+                '\\' => { out.push('\\'); j += 2; }
+                '/' => { out.push('/'); j += 2; }
+                // \uXXXX — decode the 4 hex digits to a char (json_escape emits this for control
+                // bytes, so failing to decode it would round-trip "" as the literal text "u0001")
+                'u' if j + 6 <= rest.len() => {
+                    let hex: String = rest[j + 2..j + 6].iter().collect();
+                    match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        Some(ch) => out.push(ch),
+                        None => { out.push('\\'); out.push('u'); }
+                    }
+                    j += 6;
+                }
+                o => { out.push('\\'); out.push(o); j += 2; }   // unknown escape: keep both chars, don't drop the '\'
+            }
         } else if c == '"' { return Some(out); } else { out.push(c); j += 1; }
     }
     Some(out)
@@ -49,9 +68,10 @@ fn json_str_field(body: &str, key: &str) -> Option<String> {
 fn classify_fact(scope: Option<String>, fact: &str) -> PackLine {
     let fact = fact.trim();
     if fact.is_empty() { return PackLine::Skip; }
-    if fact.contains('\t') || fact.contains('\n') { return PackLine::Reject; }
-    // a scope name with a control char can't ride the wire / a `# scope:` header and wouldn't round-trip
-    if scope.as_deref().is_some_and(|s| s.contains(['\t', '\n', '\r'])) { return PackLine::Reject; }
+    // reject ANY control char (tab/newline are wire separators; others like  don't survive the
+    // json_escape→json_str_field round-trip cleanly) so a corruptible byte never enters the store
+    if fact.chars().any(char::is_control) { return PackLine::Reject; }
+    if scope.as_deref().is_some_and(|s| s.chars().any(char::is_control)) { return PackLine::Reject; }
     PackLine::Fact { scope, text: fact.to_string() }
 }
 
@@ -74,7 +94,7 @@ pub fn parse_pack_line(raw: &str) -> PackLine {
     if t.starts_with('{') {
         match json_str_field(line, "fact") {
             Some(fact) => classify_fact(json_str_field(line, "scope"), &fact),
-            None => PackLine::Skip,                         // a JSON line with no "fact" key
+            None => PackLine::Reject,                        // a `{`-line with no "fact" key — surfaced, not silently dropped
         }
     } else {
         classify_fact(None, line)                          // bare .facts line
@@ -111,7 +131,14 @@ mod tests {
     }
     #[test] fn empty_fact_skipped() {
         assert_eq!(parse_pack_line(r#"{"fact":"   "}"#), PackLine::Skip);
-        assert_eq!(parse_pack_line(r#"{"scope":"s"}"#), PackLine::Skip);                     // no fact key
+        assert_eq!(parse_pack_line(r#"{"scope":"s"}"#), PackLine::Reject);                   // no fact key -> surfaced
+    }
+    #[test] fn unicode_escapes_and_control_bytes() {
+        // a valid \uXXXX escape decodes (not stored as the literal text "u00e9")
+        let uni = format!(r#"{{"fact":"caf{}u00e9 au lait"}}"#, '\\');   // builds the literal é escape
+        assert_eq!(parse_pack_line(&uni), PackLine::Fact { scope: None, text: "café au lait".into() });
+        // a control byte (json_escape emits  for it) is rejected, never stored corruptibly
+        assert_eq!(parse_pack_line(r#"{"fact":"badbyte here"}"#), PackLine::Reject);
     }
     #[test] fn scope_precedence() {
         let pf = Some("perfact".to_string()); let dir = Some("dir".to_string()); let def = Some("def".to_string());

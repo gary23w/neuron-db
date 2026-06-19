@@ -264,7 +264,8 @@ impl crate::op::Store for MemStore {
         (before - after, after)
     }
     fn stats(&self, scope: &str) -> crate::Stats {
-        crate::Stats { facts: memdb().scopes.get(scope).map(|n| n.fact_count()).unwrap_or(0), max_facts: 1_000_000, ..Default::default() }
+        let (facts, dropped) = memdb().scopes.get(scope).map(|n| (n.fact_count(), n.dropped)).unwrap_or((0, 0));
+        crate::Stats { facts, max_facts: 1_000_000, dropped, ..Default::default() }
     }
     fn scopes(&self) -> Vec<String> { let mut v: Vec<String> = memdb().scopes.keys().cloned().collect(); v.sort(); v }
 }

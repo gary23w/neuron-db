@@ -437,7 +437,7 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
                 Some(n) => { chunk = n; i += 2; } None => { i += 1; } },
             "--dedup" => { dedup = true; i += 1; }
             "--replace" => { replace = true; i += 1; }
-            o if o.starts_with("--") => { i += 1; }
+            o if o.starts_with('-') => { i += 1; }   // ignore any unknown flag (incl. single-dash), don't take it as the pack
             _ => { if pack.is_none() { pack = Some(args[i].clone()); } i += 1; }
         }
     }
@@ -486,6 +486,9 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
     for (s, dr) in &final_dropped {
         if *dr > 0 { eprintln!("warning: scope '{}' hit max_facts={}; {} earlier fact(s) evicted — raise --max", s, max, dr); }
     }
+    // bulk ingest can silently no-op if the encoder drops every line (too short / no declarative
+    // content); surface that rather than printing a clean "imported 0".
+    if stored == 0 && submitted > 0 { eprintln!("note: 0 facts encoded from {} non-comment line(s) — lines may be too short or contain no declarative content", submitted); }
     if json { println!("{{\"stored\":{},\"submitted\":{},\"scopes\":{},\"skipped\":{},\"rejected\":{},\"evicted\":{}}}", stored, submitted, final_dropped.len(), skipped, rejected, evicted); }
     else { eprintln!("imported {} fact(s) across {} scope(s) — {} lines, {} skipped, {} rejected, {} evicted", stored, final_dropped.len(), submitted, skipped, rejected, evicted); }
 }
