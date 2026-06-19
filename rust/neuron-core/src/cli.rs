@@ -30,6 +30,7 @@ fn main() {
     let mut keyfile = std::env::var("NEURON_SECRET_FILE").ok();
     let mut max: usize = std::env::var("NEURON_MAX_FACTS").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
     let mut json = false;
+    let mut force = false;
     let mut pos: Vec<String> = Vec::new();
     let mut i = 0;
     while i < raw.len() {
@@ -39,6 +40,7 @@ fn main() {
             "--keyfile" => { keyfile = raw.get(i + 1).cloned(); i += 2; }
             "--max" => { if let Some(v) = raw.get(i + 1).and_then(|s| s.parse().ok()) { max = v; } i += 2; }
             "--json" => { json = true; i += 1; }
+            "--force" => { force = true; i += 1; }
             "-h" | "--help" | "help" => { help(); return; }
             // everything after a bare `--` is verbatim positional (the child command for `run`),
             // so neuron never steals the app's own --db/--max/etc.
@@ -83,11 +85,11 @@ fn main() {
                 if json { println!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{}}}", esc(&t.reply), t.kind, t.wrote, t.facts); }
                 else { println!("{}", t.reply); }
             } }
-        "chat" => { need_scope("chat"); chat(&db, max, &scope); }
-        "shell" => { shell(&db, max, &scope); }
-        "capture" => { need_scope("capture"); capture(&db, max, &scope, pos.get(2..).unwrap_or(&[])); }
-        "run" => { need_scope("run"); run_cmd(&db, max, &scope, pos.get(2..).unwrap_or(&[])); }
-        "follow" => { need_scope("follow"); follow(&db, max, &scope, pos.get(2..).unwrap_or(&[])); }
+        "chat" => { need_scope("chat"); chat(&db, max, &scope, force); }
+        "shell" => { shell(&db, max, &scope, force); }
+        "capture" => { need_scope("capture"); capture(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
+        "run" => { need_scope("run"); run_cmd(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
+        "follow" => { need_scope("follow"); follow(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
         "stats" => { need_scope("stats"); let d = NeuronDB::open(&db, max);
             if let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: scope.clone() }) {
                 if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
@@ -117,8 +119,9 @@ fn main() {
 /// Interactive REPL: open the DB ONCE and `turn()` every stdin line. Pinned to immediate
 /// durability (flush_every = 1) so EOF / Ctrl-C / a kill never drops a turn — there is no
 /// deferred cache to lose, and Drop does not run on signals anyway. EOF (Ctrl-D) exits.
-fn chat(db: &str, max: usize, scope: &str) {
+fn chat(db: &str, max: usize, scope: &str, force: bool) {
     use std::io::Write;
+    let _lock = acquire_lock(db, force);
     let d = NeuronDB::open_with_flush(db, max, 1);
     let interactive = std::io::stdin().is_terminal();
     if interactive { eprintln!("neuron chat · scope '{}' · Ctrl-D to exit", scope); }
@@ -156,8 +159,9 @@ help | quit               this / exit (Ctrl-D also exits)");
 /// Interactive shell over the store: open the DB ONCE, then run any command in a loop with a
 /// switchable current scope — the full `apply` surface from one prompt. Immediate-durable
 /// (flush_every = 1). Works interactively or with piped commands; EOF / quit exits.
-fn shell(db: &str, max: usize, start_scope: &str) {
+fn shell(db: &str, max: usize, start_scope: &str, force: bool) {
     use std::io::Write;
+    let _lock = acquire_lock(db, force);
     let d = NeuronDB::open_with_flush(db, max, 1);
     let mut scope = if start_scope.is_empty() { "default".to_string() } else { start_scope.to_string() };
     let interactive = std::io::stdin().is_terminal();
@@ -226,6 +230,45 @@ fn shell(db: &str, max: usize, start_scope: &str) {
     }
 }
 
+// ---- single-writer advisory lock ----
+// One db file is one writer process: the store persists the whole-scope blob last-writer-wins, so
+// two concurrent writers silently clobber each other. Long-lived writer modes take a `<db>.lock`.
+struct LockGuard { path: std::path::PathBuf }
+impl Drop for LockGuard { fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); } }
+
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 { return false; }
+    #[cfg(windows)]
+    { std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
+        .output().map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())).unwrap_or(true) }
+    #[cfg(not(windows))]
+    { std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(true) }
+}
+
+/// Acquire the advisory lock, returning a guard that removes it on a clean exit. Auto-breaks a lock
+/// whose holder pid is dead — the common case after Ctrl-C, since Drop can't run on a signal — and
+/// refuses an actually-live holder unless `force`.
+fn acquire_lock(db: &str, force: bool) -> LockGuard {
+    use std::io::Write;
+    let path = std::path::PathBuf::from(format!("{}.lock", db));
+    loop {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => { let _ = write!(f, "{}", std::process::id()); return LockGuard { path }; }
+            Err(_) => {
+                let held: u32 = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+                if force || !pid_alive(held) {
+                    if !force { eprintln!("breaking stale lock {} (pid {} is gone)", path.display(), held); }
+                    let _ = std::fs::remove_file(&path);
+                    continue;                                            // retry the atomic create
+                }
+                eprintln!("{} is held by a live neuron writer (pid {}).", path.display(), held);
+                eprintln!("one db file = one writer: stop that process, use a different --db, or pass --force.");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 // ---- streaming capture: pipe an app's output into a scope ----
 struct CapOpts { tee: bool, only: Option<String>, skip: Option<String>, max_line: usize }
 fn parse_cap_opts(args: &[String]) -> (CapOpts, Vec<String>) {
@@ -261,9 +304,10 @@ fn cap_line(d: &NeuronDB, scope: &str, only: &Option<String>, skip: &Option<Stri
 
 /// `neuron capture <scope>` — read stdin, observe each line. `--tee` passes the raw bytes through to
 /// stdout first (byte-transparent) so neuron is invisible in a pipeline. Immediate-durable.
-fn capture(db: &str, max: usize, scope: &str, args: &[String]) {
+fn capture(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
     use std::io::Write;
     let (CapOpts { tee, only, skip, max_line }, _) = parse_cap_opts(args);
+    let _lock = acquire_lock(db, force);
     let d = NeuronDB::open_with_flush(db, max, 1);
     let mut splitter = LineSplitter::new(max_line);
     let mut stdin = std::io::stdin().lock();
@@ -283,7 +327,7 @@ fn capture(db: &str, max: usize, scope: &str, args: &[String]) {
 
 /// `neuron run <scope> [--only X] [--skip Y] -- <command> [args…]` — spawn the command, tee its
 /// stdout through unchanged while recording it, then propagate the command's exit code.
-fn run_cmd(db: &str, max: usize, scope: &str, args: &[String]) {
+fn run_cmd(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
     use std::io::Write;
     let cmd: Vec<String> = match args.iter().position(|a| a == "--") {
         Some(p) => args[p + 1..].to_vec(),
@@ -291,6 +335,7 @@ fn run_cmd(db: &str, max: usize, scope: &str, args: &[String]) {
     };
     if cmd.is_empty() { eprintln!("run needs a command after --"); std::process::exit(2); }
     let (CapOpts { only, skip, max_line, .. }, _) = parse_cap_opts(args);   // flags before `--`
+    let lock = acquire_lock(db, force);
     let d = NeuronDB::open_with_flush(db, max, 1);
     let mut child = match std::process::Command::new(&cmd[0]).args(&cmd[1..]).stdout(std::process::Stdio::piped()).spawn() {
         Ok(c) => c, Err(e) => { eprintln!("run {}: {}", cmd[0], e); std::process::exit(1); }
@@ -310,16 +355,18 @@ fn run_cmd(db: &str, max: usize, scope: &str, args: &[String]) {
     drop(process);
     let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(0);
     eprintln!("captured {} fact(s) into {} (exit {})", count, scope, code);
+    drop(lock);                          // process::exit skips Drop — release the lock explicitly
     std::process::exit(code);
 }
 
 /// `neuron follow <scope> [--from-start] <logfile>` — tail a growing logfile, observing each new
 /// line (like `tail -f | neuron capture`). Seeks to the end unless --from-start. Ctrl-C to stop.
-fn follow(db: &str, max: usize, scope: &str, args: &[String]) {
+fn follow(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
     use std::io::{Seek, SeekFrom};
     let from_start = args.iter().any(|a| a == "--from-start");
     let (CapOpts { only, skip, max_line, .. }, positional) = parse_cap_opts(args);
     let path = match positional.first() { Some(p) => p.clone(), None => { eprintln!("usage: neuron follow <scope> [--from-start] <logfile>"); std::process::exit(2); } };
+    let _lock = acquire_lock(db, force);
     let d = NeuronDB::open_with_flush(db, max, 1);
     let mut f = match std::fs::File::open(&path) { Ok(f) => f, Err(e) => { eprintln!("follow {}: {}", path, e); std::process::exit(1); } };
     if !from_start { let _ = f.seek(SeekFrom::End(0)); }
