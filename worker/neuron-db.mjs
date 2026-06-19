@@ -1,12 +1,19 @@
 // neuron-db — the official host binding for the Rust core compiled to WASM.
 //
 // One dependency-free ES module that turns the raw `mem(ptr,len)` byte-FFI + tab protocol into a
-// typed, self-validating API. Drop it next to `neuron_core.wasm` and you get plug-and-play memory:
+// typed, self-validating API. The cortex (gary-neuron) is the centerpiece — ALWAYS mount a cortex
+// build and let it dispatch; it is the cheap front gate that answers from memory and only escalates
+// to a big model when memory can't. `route()` is the headline call:
 //
 //   import { NeuronDB } from "./neuron-db.mjs";
-//   import wasmModule from "./neuron_core.wasm";          // Cloudflare CompiledWasm import
+//   import wasmModule from "./neuron_core.wasm";          // Cloudflare CompiledWasm import (cortex baked in)
 //   const db = NeuronDB.fromModule(wasmModule);           // (browser/node: await NeuronDB.fromBytes(bytes))
-//   db.observeMany("corpus", chunks);
+//   db.observeMany("session:42", priorFacts);
+//   const turn = db.route("session:42", userMessage);     // recall + cortex dispatch, in one call
+//   // turn = { type:"answer"|"escalate"|"fetch"|"store", value, facts } — act on type; raw model
+//   //        text never reaches the user (a degenerate generation resolves to "escalate", not garbage).
+//
+// And the memory engine underneath, used directly when you want it:
 //   const hits = db.recallScored("corpus", question, 8);  // [{fact, coverage, overlap}], best-first
 //   const blob = db.dump("session:42");                   // persist; db.load("session:42", blob) restores
 //
@@ -182,6 +189,22 @@ export class NeuronDB {
       if (raw.startsWith(tag)) return { type: t, value: raw.slice(tag.length).trim() };
     }
     return { type: "escalate", value: "" }; // anything not a clean ANSWER/FETCH/STORE -> escalate (incl. degenerate output)
+  }
+
+  /**
+   * The full cortex loop in one call — the headline primitive. Recall a working set from `scope`,
+   * then route the turn through gary-neuron over it. Returns the typed decision plus the facts it
+   * saw: { type:"answer"|"escalate"|"fetch"|"store", value, facts }. The host acts on `type`:
+   *   answer   -> reply with value (no host-LLM call — the cheap path the cortex exists for)
+   *   escalate -> call the host LLM, passing `facts` as grounding context
+   *   fetch    -> do a live-world lookup for `value`
+   *   store    -> remember `value` (often: observe it back into the scope)
+   * The cortex is always the front gate, so raw model text never reaches the user.
+   */
+  route(scope, query, { k = 6 } = {}) {
+    if (!this.hasCortex) throw new Error("neuron-db: this build has no cortex (gary) — mount a cortex build; the cortex is the dispatcher, never bypass it");
+    const facts = this.recall(scope, query, k);
+    return { ...this.dispatch(query, facts), facts };
   }
 }
 

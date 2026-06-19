@@ -59,10 +59,19 @@ ok("unknown op throws (fail-loud)", threw && /not in this wasm build/.test(msg),
 // the wasm-side sentinel backstop: an unchecked raw call to a bogus op returns the  marker
 ok("wasm emits sentinel for unknown op", db._raw("bogus-op").charCodeAt(0) === 1, db._raw("bogus-op").slice(0,12));
 
-// dispatch unavailable on a store build -> clean error (not garbage)
-let dThrew = false;
-try { db.dispatch("hi", []); } catch (e) { dThrew = /no cortex/.test(e.message); }
-ok("dispatch throws on store build", dThrew, db.hasCortex);
+// cortex path — on a cortex build, dispatch/route return a TYPED decision (never raw model text);
+// on a store build both throw a clean error rather than producing garbage.
+if (db.hasCortex) {
+  const ext = db.dispatch("what is the api key?", ["the api key is zeta-9931"]);
+  ok("dispatch returns a typed decision", ["answer", "escalate", "fetch", "store"].includes(ext.type), ext);
+  db.observeMany("rt", ["the api key is zeta-9931", "the deploy region is us-west-2"]);
+  const r = db.route("rt", "what is the api key?");
+  ok("route returns {type, value, facts}", ["answer", "escalate", "fetch", "store"].includes(r.type) && Array.isArray(r.facts), r);
+} else {
+  let dThrew = false;
+  try { db.dispatch("hi", []); } catch (e) { dThrew = /cortex/.test(e.message); }
+  ok("dispatch throws on store build (clean error, not garbage)", dThrew);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

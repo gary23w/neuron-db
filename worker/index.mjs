@@ -27,7 +27,15 @@ export default {
 
     if (url.pathname === "/") {
       return json({ service: "neuron-db (rust/wasm)", ops: d.listOps(), cortex: d.hasCortex,
-        endpoints: ["POST /v1/observe {scope,facts[]}", "POST /v1/recall {scope,query,k?}", "POST /v1/think {query,facts[]}"] });
+        endpoints: ["POST /v1/chat {scope,query}  (the cortex loop)", "POST /v1/observe {scope,facts[]}",
+                    "POST /v1/recall {scope,query,k?}", "POST /v1/think {query,facts[]}"] });
+    }
+    if (url.pathname === "/v1/chat" && req.method === "POST") {
+      // the headline: the full cortex loop — recall the working set from `scope`, then let gary-neuron
+      // route the turn over it. Returns {type, value, facts}; the host acts on type (escalate -> its LLM).
+      if (!body.scope || !body.query) return json({ error: "need {scope, query}" }, 400);
+      if (!d.hasCortex) return json({ error: "mount a cortex build — the cortex is the dispatcher, never bypass it" }, 501);
+      return json(d.route(body.scope, body.query));
     }
     if (url.pathname === "/v1/observe" && req.method === "POST") {
       if (!body.scope || !Array.isArray(body.facts)) return json({ error: "need {scope, facts[]}" }, 400);
