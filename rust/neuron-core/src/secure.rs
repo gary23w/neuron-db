@@ -29,18 +29,23 @@ pub fn derive_key(secret: &str, nid: &str) -> Vec<u8> {
     let mut salt = b"neuron-db/".to_vec(); salt.extend_from_slice(nid.as_bytes());
     hkdf(secret.as_bytes(), &salt, b"key", 32)
 }
+// Additional authenticated data bound into every GCM tag, so a ciphertext can't be silently
+// replayed under a different format version. The blob's leading byte is the format version: 1 =
+// legacy (empty AAD, still readable), 2 = AAD-bound (what we write now).
+const AAD_V2: &[u8] = b"neuron-secure-v2";
 fn aead_encrypt(key: &[u8], pt: &[u8]) -> Vec<u8> {
     let mut nonce = [0u8; 12]; getrandom::getrandom(&mut nonce).expect("rng");
     let k = hkdf(key, b"neuron-aesgcm", b"v1", 32);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&k));
-    let ct = cipher.encrypt(Nonce::from_slice(&nonce), Payload { msg: pt, aad: b"" }).expect("encrypt");
-    let mut out = vec![1u8]; out.extend_from_slice(&nonce); out.extend_from_slice(&ct); out
+    let ct = cipher.encrypt(Nonce::from_slice(&nonce), Payload { msg: pt, aad: AAD_V2 }).expect("encrypt");
+    let mut out = vec![2u8]; out.extend_from_slice(&nonce); out.extend_from_slice(&ct); out
 }
 fn aead_decrypt(key: &[u8], blob: &[u8]) -> Option<Vec<u8>> {
-    if blob.len() < 13 || blob[0] != 1 { return None; }
+    if blob.len() < 13 { return None; }
+    let aad: &[u8] = match blob[0] { 1 => b"", 2 => AAD_V2, _ => return None };  // read legacy + AAD-bound
     let k = hkdf(key, b"neuron-aesgcm", b"v1", 32);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&k));
-    cipher.decrypt(Nonce::from_slice(&blob[1..13]), Payload { msg: &blob[13..], aad: b"" }).ok()
+    cipher.decrypt(Nonce::from_slice(&blob[1..13]), Payload { msg: &blob[13..], aad }).ok()
 }
 
 pub struct SecureNeuron { key: Vec<u8>, idx_key: Vec<u8>, entries: Vec<(Vec<String>, String)> }
