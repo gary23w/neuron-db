@@ -1,5 +1,13 @@
 # neuron-db
 
+[![CI](https://github.com/gary23w/neuron-db/actions/workflows/ci.yml/badge.svg)](https://github.com/gary23w/neuron-db/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@gary23w/neuron-db?logo=npm&color=cb3837&label=npm)](https://www.npmjs.com/package/@gary23w/neuron-db)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20model-gary--neuron--emergent-FFD21E)](https://huggingface.co/gary23w/gary-neuron-emergent)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/gary23w/neuron-db?style=social)](https://github.com/gary23w/neuron-db/stargazers)
+
+> ⭐ **If neuron-db is useful to you, [star it on GitHub](https://github.com/gary23w/neuron-db/stargazers).** It's a solo project — a star genuinely helps it reach more people.
+
 An associative memory you can run anywhere — and the flat-cost **long-term memory for an
 LLM**. Write facts in plain language, recall them by meaning, and **link neurons across
 arbitrarily deep chains at no extra model cost**. No tables, no schema, no embeddings, no
@@ -27,7 +35,8 @@ DuckDuckGo, open-meteo) — **no proxy, no worker, nothing leaves your browser**
 
 A small model called gary-neuron (v5) is the middle layer between a host model and neuron-db. It
 is a ~7M-parameter int8 transformer baked into the WebAssembly/binary build (no download, no GPU),
-and it works as a dispatcher: each turn it picks one route. It is the front gate on **every** mount —
+and it works as a dispatcher: each turn it picks one route. The weights are published on Hugging Face
+as a pure-NumPy mirror — **[gary23w/gary-neuron-emergent](https://huggingface.co/gary23w/gary-neuron-emergent)**. It is the front gate on **every** mount —
 `neuron route` on the CLI, the MCP `route` tool, and `route()` in the WASM binding — and a required
 feature of the `neuron` binary and the `mcp` build, so it is never bypassed.
 
@@ -179,6 +188,27 @@ are immediate-durable; keys stay off the process args (`--keyfile` / `NEURON_SEC
 surface: `neuron --help`, with the design + roadmap in
 **[docs/guide/CLI_ROADMAP.md](docs/guide/CLI_ROADMAP.md)**.
 
+## JavaScript / TypeScript
+
+The same Rust core, compiled to WebAssembly, ships as a dependency-free npm package — one typed ES
+module that turns the raw `mem()` byte-FFI into a self-validating API:
+
+```sh
+npm i @gary23w/neuron-db
+```
+
+```js
+import { NeuronDB } from "@gary23w/neuron-db";
+const db = await NeuronDB.forBrowser(new URL("@gary23w/neuron-db/wasm", import.meta.url));
+
+db.observeMany("user:42", ["the deploy region is us-west-2", "the api key is zeta-9931"]);
+db.recall("user:42", "what is the deploy region?");   // ["the deploy region is us-west-2", ...]
+db.route("user:42", userMessage);                      // { type: "answer"|"escalate"|"fetch"|"store", value, facts }
+```
+
+`forBrowser` / `forNode` / `fromModule` cover every host — Cloudflare Workers, the browser, Node,
+Deno, Bun. A runnable **login + memory console** built on it is in **[examples/npm-demo/](examples/npm-demo/)**.
+
 ## Why it's interesting
 
 - **Tiny.** A fact's retrieval state is stems and scalars, not a dense vector — about 48
@@ -227,8 +257,9 @@ is preserved on the **`legacy-python`** branch.
 
 Runnable code and integration guides are in **[examples/](examples/)** — quickstart, a
 chatbot-memory loop, per-user profiles, sharding, encrypted secrets, HTTP clients
-(curl/browser/Node/Python), and guides for wiring neuron-db into a **[chatbot](examples/guides/CHATBOT.md)**
-or an **[existing API](examples/guides/EXISTING_API.md)**.
+(curl/browser/Node/Python), a **[TypeScript login + memory console](examples/npm-demo/)** on the npm
+package, and guides for wiring neuron-db into a **[chatbot](examples/guides/CHATBOT.md)** or an
+**[existing API](examples/guides/EXISTING_API.md)**.
 
 ## Docs
 

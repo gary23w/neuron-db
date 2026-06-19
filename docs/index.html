@@ -711,7 +711,7 @@
           </div>
         </div>
         <div class="callout" style="margin-top:18px">
-          <b>gary-neuron v5 — the dispatcher cortex.</b> A ~7M-parameter int8 transformer baked into every build with <span class="mono">include_bytes!</span>: no download, no GPU, no network to load it. Each turn it routes to <span class="mono">ANSWER</span> / <span class="mono">ESCALATE</span> / <span class="mono">FETCH</span> / <span class="mono">STORE</span> over the recalled working set. On a held-out test the routing triage is <b class="accent">100%</b> on each class (<span class="mono">router_bench</span> 500/500), with STORE routing fixed <b class="accent">0→100%</b>; grounded answers land <b class="accent">94–100%</b> for working sets up to 12 facts, and an open-ended turn over on-topic facts resolves to a clean <span class="mono">ESCALATE</span> — no degenerate output. A dispatch runs in <b class="accent">~54 ms</b> in the browser (SIMD128) or <b class="accent">~255 ms</b> natively. It is the front gate on <b>every</b> mount — <span class="mono">neuron route</span> on the CLI, the MCP <span class="mono">route</span> tool, and <span class="mono">route()</span> in the WASM binding — a required feature, never bypassed; each returns a typed <span class="mono">{type, value, facts}</span>, so raw model text never reaches the user. The pure-Rust forward pass matches the numpy and TypeScript ports to <b class="accent">0.0000 MSE</b>.
+          <b>gary-neuron v5 — the dispatcher cortex.</b> A ~7M-parameter int8 transformer baked into every build with <span class="mono">include_bytes!</span>: no download, no GPU, no network to load it. Each turn it routes to <span class="mono">ANSWER</span> / <span class="mono">ESCALATE</span> / <span class="mono">FETCH</span> / <span class="mono">STORE</span> over the recalled working set. On a held-out test the routing triage is <b class="accent">100%</b> on each class (<span class="mono">router_bench</span> 500/500), with STORE routing fixed <b class="accent">0→100%</b>; grounded answers land <b class="accent">94–100%</b> for working sets up to 12 facts, and an open-ended turn over on-topic facts resolves to a clean <span class="mono">ESCALATE</span> — no degenerate output. A dispatch runs in <b class="accent">~54 ms</b> in the browser (SIMD128) or <b class="accent">~255 ms</b> natively. It is the front gate on <b>every</b> mount — <span class="mono">neuron route</span> on the CLI, the MCP <span class="mono">route</span> tool, and <span class="mono">route()</span> in the WASM binding — a required feature, never bypassed; each returns a typed <span class="mono">{type, value, facts}</span>, so raw model text never reaches the user. The pure-Rust forward pass matches the numpy and TypeScript ports to <b class="accent">0.0000 MSE</b>. The weights are published on <a href="https://huggingface.co/gary23w/gary-neuron-emergent" target="_blank" rel="noopener">Hugging Face</a> as a pure-NumPy mirror.
         </div>
       </div>
     </div>
@@ -893,6 +893,7 @@
         <button data-qs="docker"><span class="n">05</span> Docker</button>
         <button data-qs="secure"><span class="n">06</span> Encrypted tier</button>
         <button data-qs="mcp"><span class="n">07</span> MCP server</button>
+        <button data-qs="js"><span class="n">08</span> JavaScript</button>
       </div>
       <div>
         <div class="qs-panel active" data-qs="build">
@@ -1029,6 +1030,26 @@ v.get(<span class="tok-s">"alice"</span>, <span class="tok-s">"WRONG"</span>,   
 }
 </code></pre>
           </div>
+        </div>
+
+        <div class="qs-panel" data-qs="js">
+          <h3>JavaScript / TypeScript: the npm package</h3>
+          <p>The same Rust core compiled to WebAssembly, as a dependency-free npm package — <span class="mono">@gary23w/neuron-db</span>. One typed ES module over the raw <span class="mono">mem()</span> FFI; runs in Cloudflare Workers, the browser, Node, Deno, Bun.</p>
+          <div class="terminal codeblock"><button class="copy">copy</button>
+            <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">npm</span></div>
+<pre><code><span class="tok-c"># install</span>
+<span class="tok-p">npm</span> i @gary23w/neuron-db
+
+<span class="tok-c">// then — browser, Node, Deno, or a Worker</span>
+<span class="tok-k">import</span> { NeuronDB } <span class="tok-k">from</span> <span class="tok-s">"@gary23w/neuron-db"</span>;
+<span class="tok-k">const</span> db = <span class="tok-k">await</span> NeuronDB.forBrowser(<span class="tok-k">new</span> URL(<span class="tok-s">"@gary23w/neuron-db/wasm"</span>, import.meta.url));
+
+db.observeMany(<span class="tok-s">"user:42"</span>, [<span class="tok-s">"the api key is zeta-9931"</span>]);
+db.recall(<span class="tok-s">"user:42"</span>, <span class="tok-s">"what is the api key?"</span>);   <span class="tok-c">// -&gt;</span> <span class="tok-r">["the api key is zeta-9931"]</span>
+db.route(<span class="tok-s">"user:42"</span>, userMessage);              <span class="tok-c">// {type:"answer"|"escalate"|"fetch"|"store", value, facts}</span>
+</code></pre>
+          </div>
+          <p class="dim" style="font-size:13px;margin-top:10px">A runnable login + memory console: <a href="https://github.com/gary23w/neuron-db/tree/main/examples/npm-demo" target="_blank" rel="noopener">examples/npm-demo</a>.</p>
         </div>
       </div>
     </div>
