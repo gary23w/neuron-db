@@ -9,7 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{Neuron, Recall, Spread};
 use crate::turn::turn;
 
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS neurons (id TEXT PRIMARY KEY, facts TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0);";
+const SCHEMA: &str = "\
+CREATE TABLE IF NOT EXISTS neurons (id TEXT PRIMARY KEY, facts TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0);\n\
+CREATE TABLE IF NOT EXISTS fact_log (scope TEXT NOT NULL, seq INTEGER NOT NULL, lines TEXT NOT NULL, PRIMARY KEY(scope, seq));";
+// the per-scope append-log can grow to ~the snapshot size before we fold it back into a fresh snapshot,
+// so a single durable observe is one small INSERT (O(new facts)) and compaction is amortized O(1)/fact.
+const COMPACT_FLOOR: usize = 256;
 fn now_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64 }
 
 pub use crate::{Stats, TurnOut};   // defined at the crate root so a no-sqlite wasm build can name them too
@@ -43,11 +48,13 @@ impl crate::op::Store for NeuronDB {
     fn scopes(&self) -> Vec<String> { self.neurons() }
 }
 
-struct Entry { n: Neuron, created: i64, turns: i64, used: u64, dirty: bool, writes: u32 }
+// snap_count = facts in the neurons.facts snapshot blob; episodes[snap_count..] live in the append-log
+// (durable). log_next = next log seq. dirty = the log has entries not yet folded into the snapshot.
+struct Entry { n: Neuron, created: i64, turns: i64, used: u64, dirty: bool, snap_count: usize, log_next: i64 }
 struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
 pub struct NeuronDB {
     inner: Mutex<Inner>, max_facts: usize, cap: usize,
-    flush_every: usize,   // 1 = persist every single observe (immediate durability); >1 = write-behind
+    flush_every: usize,   // append-log compaction floor: the log folds into a snapshot once it reaches ~max(snap_count, this)
     #[cfg(feature = "semantic")] sem: Mutex<crate::semantic::SemanticSpace>,
     #[cfg(feature = "semantic")] sem_threshold: f32,
 }
@@ -63,7 +70,9 @@ impl Drop for NeuronDB {
         let mut g = self.guard();
         let inner = &mut *g; let Inner { conn, cache, .. } = inner;
         for (k, e) in cache.iter_mut() {
-            if e.dirty { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::persist(conn, k, e))); e.dirty = false; }
+            // snapshot() clears dirty on success; a panic (e.g. still-full disk) leaves it dirty rather
+            // than falsely clearing it — the log already holds the facts, so reopen still recovers them.
+            if e.dirty { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::snapshot(conn, k, e))); }
         }
     }
 }
@@ -72,15 +81,15 @@ impl NeuronDB {
     /// Open with immediate per-write durability (every observe is persisted). The default.
     pub fn open(path: &str, max_facts: usize) -> Self { Self::open_with_flush(path, max_facts, 1) }
 
-    /// Open with write-behind: a single observe defers the (O(scope)) SQLite blob rewrite, persisting
-    /// only every `flush_every` writes to a scope (and always on eviction, flush_all(), and Drop).
-    /// flush_every=1 keeps immediate durability; larger values trade up to `flush_every` facts of
-    /// crash-loss per scope for far higher single-observe throughput. Recall is unaffected (it reads
-    /// the in-memory cache); only on-disk durability is deferred.
+    /// Open with a custom compaction floor. Every observe is durable immediately — one append-log INSERT,
+    /// O(new facts), NOT a whole-scope blob rewrite — regardless of `flush_every`; the log folds back into
+    /// a fresh snapshot once it reaches ~max(snapshot size, `flush_every`). A larger `flush_every` lets the
+    /// log grow further between snapshots (fewer, larger compactions). Recall reads the in-memory cache.
+    /// Kept for API compatibility — `open()` (flush_every=1) is the right default.
     pub fn open_with_flush(path: &str, max_facts: usize, flush_every: usize) -> Self {
         let conn = Connection::open(path).expect("open sqlite");
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-        conn.execute(SCHEMA, []).expect("schema");
+        conn.execute_batch(SCHEMA).expect("schema");
         NeuronDB {
             inner: Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }), max_facts, cap: 256,
             flush_every: flush_every.max(1),
@@ -108,8 +117,9 @@ impl NeuronDB {
             // isolate each persist like Drop does: a SQLITE_FULL panic on one scope (this is the
             // pre-shutdown flush after a bulk import — the most likely spot to fill the disk) must
             // not poison the lock or skip the remaining scopes. A failed scope stays dirty for Drop.
-            if e.dirty && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::persist(conn, k, e))).is_ok() {
-                e.dirty = false; e.writes = 0;
+            if e.dirty {
+                // snapshot() clears dirty on success; a SQLITE_FULL panic leaves it dirty for Drop to retry
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::snapshot(conn, k, e)));
             }
         }
     }
@@ -140,31 +150,73 @@ impl NeuronDB {
         let row = inner.conn.query_row("SELECT facts,created,updated,turns FROM neurons WHERE id=?1", params![nid],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))).ok();
         let entry = match row {
-            Some((blob, c, _u, t)) => Entry { n: Neuron::load(&blob, max_facts), created: c, turns: t, used: tick, dirty: false, writes: 0 },
-            None => { let n = now_ms(); Entry { n: Neuron::new(max_facts), created: n, turns: 0, used: tick, dirty: false, writes: 0 } }
+            Some((blob, c, _u, t)) => {
+                // snapshot facts, then replay the append-log (facts written since the last snapshot)
+                let snap_count = blob.split('\n').filter(|l| !l.is_empty()).count();
+                let mut combined = blob;
+                let mut log_next = 0i64;
+                {
+                    let mut st = inner.conn.prepare_cached("SELECT seq,lines FROM fact_log WHERE scope=?1 ORDER BY seq").expect("prep log");
+                    let rows = st.query_map(params![nid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).expect("log rows");
+                    for (seq, lines) in rows.flatten() {
+                        if !lines.is_empty() { if !combined.is_empty() { combined.push('\n'); } combined.push_str(&lines); }
+                        log_next = seq + 1;
+                    }
+                }
+                // dirty=false on load: a pure read session never triggers a compaction write on Drop;
+                // dirty is set only when THIS session appends (the writer bounds the log via compaction).
+                Entry { n: Neuron::load(&combined, max_facts), created: c, turns: t, used: tick, dirty: false, snap_count, log_next }
+            }
+            None => { let n = now_ms(); Entry { n: Neuron::new(max_facts), created: n, turns: 0, used: tick, dirty: false, snap_count: 0, log_next: 0 } }
         };
         if inner.cache.len() >= cap {
             if let Some(k) = inner.cache.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) {
-                // persist-on-evict: under write-behind the LRU victim may hold unsaved writes —
-                // dropping it without persisting would be data loss.
-                if let Some(e) = inner.cache.get(&k) { if e.dirty { Self::persist(&inner.conn, &k, e); } }
+                // the append-log keeps every write durable, so the LRU victim is just dropped — no flush
+                // needed; its uncompacted log replays on the next load.
                 inner.cache.remove(&k);
             }
         }
         inner.cache.insert(nid.to_string(), entry);
     }
-    fn persist(conn: &Connection, nid: &str, e: &Entry) {
-        // prepare_cached: the INSERT is parsed once and reused across writes instead of re-parsed each call
-        let mut stmt = conn.prepare_cached("INSERT INTO neurons(id,facts,created,updated,turns) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts,updated=excluded.updated,turns=excluded.turns").expect("prepare");
-        stmt.execute(params![nid, e.n.dump(), e.created, now_ms(), e.turns]).expect("save");
+    /// Full snapshot: rewrite the scope blob, clear the append-log, reset the log counters. The O(scope)
+    /// writer — used for compaction, for deletes/edits (which shift fact indices), and at clean shutdown.
+    fn snapshot(conn: &Connection, nid: &str, e: &mut Entry) {
+        // ATOMIC: the new snapshot blob and the cleared log must commit together. A crash between the
+        // upsert and the DELETE would otherwise leave the new blob PLUS orphaned log rows, and reopen
+        // would replay those rows on top of the blob — duplicating every just-snapshotted fact. The
+        // transaction makes a mid-snapshot crash a clean rollback (old blob + log stay; replay is correct).
+        let tx = conn.unchecked_transaction().expect("tx");
+        {
+            // prepare_cached: the upsert is parsed once and reused across writes, not re-parsed each call
+            let mut stmt = tx.prepare_cached("INSERT INTO neurons(id,facts,created,updated,turns) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts,updated=excluded.updated,turns=excluded.turns").expect("prepare");
+            stmt.execute(params![nid, e.n.dump(), e.created, now_ms(), e.turns]).expect("save");
+        }
+        tx.execute("DELETE FROM fact_log WHERE scope=?1", params![nid]).expect("clear log");
+        tx.commit().expect("commit");
+        e.snap_count = e.n.episodes.len(); e.log_next = 0; e.dirty = false;
     }
-    /// Persist now and clear the dirty/write-behind state (used by the immediate-durability paths).
-    fn persist_now(conn: &Connection, nid: &str, e: &mut Entry) { Self::persist(conn, nid, e); e.dirty = false; e.writes = 0; }
-    /// Mark a single-observe write: persist immediately when flush_every<=1, else defer until the
-    /// per-scope write count reaches the threshold (eviction/flush_all/Drop also flush).
-    fn touch(conn: &Connection, nid: &str, e: &mut Entry, flush_every: usize) {
-        e.dirty = true; e.writes = e.writes.saturating_add(1);
-        if flush_every <= 1 || (e.writes as usize) >= flush_every { Self::persist_now(conn, nid, e); }
+    /// Append the facts added since `from` as one durable log row — O(new facts), no whole-blob rewrite.
+    /// When the un-snapshotted tail has grown to ~the snapshot size, fold everything into a fresh
+    /// snapshot instead (amortized O(1) per fact). Caller guarantees no fact was removed/reordered.
+    fn append(conn: &Connection, nid: &str, e: &mut Entry, from: usize, flush_every: usize) {
+        let logged = e.n.episodes.len().saturating_sub(e.snap_count);
+        if logged >= e.snap_count.max(flush_every).max(COMPACT_FLOOR) { Self::snapshot(conn, nid, e); return; }
+        let block = e.n.dump_from(from);
+        if block.is_empty() { return; }
+        // register a row for a brand-new scope so neurons()/scopes() lists it — ONLY on the first append.
+        // We must never UPDATE this row afterward: SQLite rewrites the whole row, and its `facts` blob can
+        // be megabytes, which would re-introduce the O(scope) write we're eliminating. `updated` refreshes
+        // on the next snapshot() instead (so neurons() recency can lag a little between snapshots).
+        if e.snap_count == 0 && e.log_next == 0 {
+            conn.execute("INSERT OR IGNORE INTO neurons(id,facts,created,updated,turns) VALUES(?1,'',?2,?3,?4)",
+                         params![nid, e.created, now_ms(), e.turns]).ok();
+        }
+        // set dirty BEFORE the write: if the INSERT panics (e.g. SQLITE_FULL), the entry stays dirty so
+        // flush_all/Drop snapshots the in-memory facts rather than silently losing this append.
+        e.dirty = true;
+        let mut stmt = conn.prepare_cached("INSERT INTO fact_log(scope,seq,lines) VALUES(?1,?2,?3)").expect("prep append");
+        stmt.execute(params![nid, e.log_next, block]).expect("append");
+        e.log_next += 1;
     }
 
     pub fn observe(&self, nid: &str, text: &str) -> usize {
@@ -179,10 +231,14 @@ impl NeuronDB {
             // single observe stays O(1) — not O(scope) — on a million-fact store (a re-statement that
             // matters lands within a session's worth of facts, not a million ago).
             const DEDUP_WINDOW: usize = 4096;
-            let recent = e.n.episodes.len().saturating_sub(DEDUP_WINDOW);
+            let old_len = e.n.episodes.len();
+            let recent = old_len.saturating_sub(DEDUP_WINDOW);
             if e.n.episodes[recent..].iter().any(|ep| ep.t == text) { return 0; }
             w = e.n.observe(text);
-            Self::touch(conn, nid, e, self.flush_every);   // write-behind aware (immediate when flush_every=1)
+            // pure append (no capacity eviction shifted indices) -> log just the new facts (O(new), one
+            // durable INSERT); a front-drain moved everything, so re-snapshot the whole scope instead.
+            if e.n.episodes.len() == old_len + w { Self::append(conn, nid, e, old_len, self.flush_every); }
+            else { Self::snapshot(conn, nid, e); }
         }
         #[cfg(feature = "semantic")] self.sem_guard().train(text);
         w
@@ -195,11 +251,13 @@ impl NeuronDB {
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
+            let old_len = e.n.episodes.len();
             let mut acc = 0; for t in texts { acc += e.n.observe(t); }
-            // mark dirty BEFORE persisting: if persist panics (e.g. SQLITE_FULL) and a later guard()
-            // de-poisons the lock, the entry stays dirty so flush_all/Drop re-persists it rather than
-            // silently keeping in-memory facts that never reach disk.
-            e.dirty = true; Self::persist_now(conn, nid, e); w = acc;
+            // pure append -> one durable log row for the whole batch (O(batch)); a large batch compacts
+            // to a snapshot inside append(). A capacity eviction mid-batch -> re-snapshot the scope.
+            if e.n.episodes.len() == old_len + acc { Self::append(conn, nid, e, old_len, self.flush_every); }
+            else { Self::snapshot(conn, nid, e); }
+            w = acc;
         }
         #[cfg(feature = "semantic")] { let mut s = self.sem_guard(); for t in texts { s.train(t); } }
         w
@@ -318,7 +376,7 @@ impl NeuronDB {
             let e = cache.get_mut(nid).unwrap();
             e.n.forget_prefix(&format!("{} is ", key));
             w = e.n.observe(&line);
-            Self::persist(conn, nid, e);
+            Self::snapshot(conn, nid, e);
         }
         #[cfg(feature = "semantic")] self.sem_guard().train(value);
         w
@@ -373,7 +431,7 @@ impl NeuronDB {
             // neglected dispositions fade as new feelings form, so the active "culture" can shift
             // over time rather than monotonically hardening on whatever was felt first.
             e.n.decay_prefix_others(topic, crate::affect::STANCE_DECAY, crate::affect::STANCE_FLOOR);
-            Self::persist(conn, nid, e);
+            Self::snapshot(conn, nid, e);
             r
         };
         #[cfg(feature = "semantic")] self.sem_guard().train(feeling);
@@ -415,7 +473,7 @@ impl NeuronDB {
         let r = turn(&mut e.n, msg);
         if at_cap && r.wrote > 0 { e.n.episodes.truncate(max); }
         e.turns += 1;
-        Self::persist(conn, nid, e);
+        Self::snapshot(conn, nid, e);
         TurnOut { reply: r.reply, kind: r.kind, wrote: r.wrote, facts: e.n.fact_count(), capacity_reached: at_cap && r.wrote > 0 }
     }
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
@@ -428,7 +486,7 @@ impl NeuronDB {
             match m { Some(s) => { let s = s.to_lowercase(); e.n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&s)); }, None => e.n.episodes.clear() }
             e.n.invalidate_index(); // removal shifts episode indices -> force a rebuild on next recall
             let after = e.n.fact_count();
-            Self::persist(conn, nid, e);
+            Self::snapshot(conn, nid, e);
             (before, after)
         };
         // A full wipe (no match — the "forget me" path) cascades to the typed sub-scopes so stored
@@ -441,7 +499,7 @@ impl NeuronDB {
                 let Inner { conn, cache, .. } = &mut *inner;
                 let e = cache.get_mut(&sub).unwrap();
                 e.n.episodes.clear(); e.n.invalidate_index();
-                Self::persist(conn, &sub, e);
+                Self::snapshot(conn, &sub, e);
             }
         }
         (before - after, after)

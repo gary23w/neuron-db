@@ -546,12 +546,15 @@ impl Neuron {
 
     /// Persistence: "<flag>\t<text>\t<strength>" per line; index rebuilt on load. Strength carries
     /// accumulated salience (e.g. a stance that intensified with repetition) durably across restarts.
-    pub fn dump(&self) -> String {
+    pub fn dump(&self) -> String { self.dump_from(0) }
+    /// Serialize `episodes[from..]` in the same line format as dump(). The durable append-log uses this
+    /// to write ONLY the newly-appended facts, instead of rewriting the whole scope blob on each observe.
+    pub fn dump_from(&self, from: usize) -> String {
         use std::fmt::Write as _;
-        // one pass into a single pre-sized buffer (no intermediate Vec<String>, no join copy) — halves
-        // peak memory and the allocation count when persisting a million-fact scope.
-        let mut out = String::with_capacity(self.episodes.len().saturating_mul(48));
-        for (i, e) in self.episodes.iter().enumerate() {
+        // one pass into a single pre-sized buffer (no intermediate Vec<String>, no join copy).
+        let eps = self.episodes.get(from..).unwrap_or(&[]);
+        let mut out = String::with_capacity(eps.len().saturating_mul(48));
+        for (i, e) in eps.iter().enumerate() {
             if i > 0 { out.push('\n'); }
             let _ = write!(out, "{}\t{}\t{}", if e.self_flag {1} else {0}, esc(&e.t), e.strength);
         }
