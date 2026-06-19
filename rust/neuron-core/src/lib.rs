@@ -4,7 +4,7 @@
 //! A stem->fact inverted index keeps recall sub-linear.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 fn set(words: &str) -> HashSet<&'static str> {
     // leak once into 'static; sets are tiny and built one time
@@ -162,8 +162,26 @@ fn surprise(w: &str, i: usize) -> f64 {
     s
 }
 
+/// Intern a stem into a process-global pool so the millions of facts that share common stems hold one
+/// shared `Arc<str>` instead of a fresh String each — cuts per-fact stem storage ~2x at scale. The pool
+/// only grows (bounded by the vocabulary). Comparing/searching by `&str` needs no interning.
+fn intern(s: &str) -> Arc<str> {
+    use std::sync::Mutex;
+    static POOL: OnceLock<Mutex<HashSet<Arc<str>>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut g = pool.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(a) = g.get(s) { return a.clone(); }
+    let a: Arc<str> = Arc::from(s);
+    g.insert(a.clone());
+    a
+}
+/// Whether sorted interned stem list `s` contains stem `c` (binary search by &str, no allocation).
+#[inline] pub(crate) fn has_stem<S: AsRef<str>>(s: &[Arc<str>], c: S) -> bool { s.binary_search_by(|p| p.as_ref().cmp(c.as_ref())).is_ok() }
+/// Index of stem `c` in the sorted interned list (for the aligned `pos` lookup), if present.
+#[inline] pub(crate) fn stem_pos<S: AsRef<str>>(s: &[Arc<str>], c: S) -> Option<usize> { s.binary_search_by(|p| p.as_ref().cmp(c.as_ref())).ok() }
+
 #[derive(Clone, Debug)]
-pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<String>, pub raw: Vec<String>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32 }
+pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<Arc<str>>, pub raw: Vec<Arc<str>>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32 }
 
 #[derive(Clone, Debug)]
 pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
@@ -229,17 +247,19 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     for w in u.split_whitespace() { let x = w1(w); if !x.is_empty() && !stop().contains(x.as_str()) && !adv().contains(x.as_str()) { head = stem1(&x); break; } }
     let _ = entity;
     let s_set: HashSet<String> = stems_s(&cont);
-    let mut s: Vec<String> = s_set.into_iter().collect(); s.sort();
+    let mut s_str: Vec<String> = s_set.into_iter().collect(); s_str.sort();
     // earliest raw-token position of each content stem, aligned with the sorted `s`. This lets
     // recall() compute the subject-position tiebreak via a binary_search per cue word instead
     // of re-tokenizing + re-stemming the whole fact for every candidate (the hot-loop cost).
-    let mut pos = vec![u32::MAX; s.len()];
+    let mut pos = vec![u32::MAX; s_str.len()];
     for (i, tok) in u.split_whitespace().enumerate() {
-        if let Ok(k) = s.binary_search(&stem1(&w1(tok))) {
+        if let Ok(k) = s_str.binary_search(&stem1(&w1(tok))) {
             if pos[k] == u32::MAX { pos[k] = i as u32; }
         }
     }
-    let mut raw: Vec<String> = cont.into_iter().collect(); raw.sort(); raw.dedup();
+    let s: Vec<Arc<str>> = s_str.iter().map(|x| intern(x)).collect();   // share common stems across facts
+    let mut raw_str: Vec<String> = cont.into_iter().collect(); raw_str.sort(); raw_str.dedup();
+    let raw: Vec<Arc<str>> = raw_str.iter().map(|x| intern(x)).collect();
     Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, pos, head, self_flag: self_name, id: -1, strength: 1.0 })
 }
 fn w_clone(raw: &str) -> String { clip(raw) }
@@ -291,7 +311,7 @@ fn pick_value(ep: &Episode, cue: &HashSet<String>, want_num: bool) -> (String, b
 pub struct Neuron {
     pub episodes: Vec<Episode>,
     pub max_facts: usize,
-    index: Option<HashMap<String, Vec<usize>>>,
+    index: Option<HashMap<Arc<str>, Vec<usize>>>,   // interned stem keys, shared with the episodes
     index_len: usize,
     pub dropped: u64,   // oldest facts evicted by the max_facts front-drain. Per-session: NOT persisted
                         // by dump()/load(), so it resets on reload/eviction — read it right after a write.
@@ -300,7 +320,7 @@ impl Neuron {
     pub fn new(max_facts: usize) -> Self { Neuron { episodes: Vec::new(), max_facts, index: None, index_len: usize::MAX, dropped: 0 } }
 
     fn build_index(&mut self) {
-        let mut idx: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut idx: HashMap<Arc<str>, Vec<usize>> = HashMap::new();
         // clone a stem String only the first time it's seen (once per unique stem), not once per
         // posting — at millions of facts this is ~unique-stems clones instead of ~total-postings.
         for (i,e) in self.episodes.iter().enumerate() {
@@ -353,29 +373,29 @@ impl Neuron {
         self.ensure_index();
         let idx = self.index.as_ref().unwrap();
         let mut cand: HashSet<usize> = HashSet::new();
-        for s in &cue { if let Some(v) = idx.get(s) { cand.extend(v); } }
-        if pet_query { for s in pets() { if let Some(v) = idx.get(s) { cand.extend(v); } } }
+        for s in &cue { if let Some(v) = idx.get(s.as_str()) { cand.extend(v); } }
+        if pet_query { for s in pets() { if let Some(v) = idx.get(s.as_str()) { cand.extend(v); } } }
         let mut order: Vec<usize> = cand.into_iter().collect(); order.sort();
         let mut best: Option<usize> = None;
         let mut bk: (i64,i64,i64,i64,i64,i64,i64) = (-1,-1,-1,-1,0,-100000,-1);
         for i in order {
             let e = &self.episodes[i];
-            let mut ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
-            let es_pet = e.s.iter().any(|s| pets().contains(s));
+            let mut ov = cue.iter().filter(|c| has_stem(&e.s, c)).count();
+            let es_pet = e.s.iter().any(|s| pets().contains(s.as_ref()));
             if ov < 1 && pet_query && es_pet { ov = 1; }
             if ov < 1 { continue; }
-            let unbound_es = e.s.iter().any(|s| rel_s().contains(s) && !cue.contains(s));
+            let unbound_es = e.s.iter().any(|s| rel_s().contains(s.as_ref()) && !cue.contains(s.as_ref()));
             if unbound_es && !(pet_query && es_pet) { continue; }
-            let unbound_cue = cue.iter().any(|s| rel_s().contains(s) && e.s.binary_search(s).is_err());
+            let unbound_cue = cue.iter().any(|s| rel_s().contains(s) && !has_stem(&e.s, s));
             if unbound_cue && !(pet_query && es_pet) { continue; }
-            let exact_ov = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
+            let exact_ov = qraw.iter().filter(|wd| has_stem(&e.raw, wd)).count() as i64;
             let selfp = if name_query && e.self_flag { 1 } else { 0 };
             let subj = if cue.contains(&e.head) { 1 } else { 0 };
-            let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
+            let spec = -(e.s.iter().filter(|s| !cue.contains(s.as_ref()) && !stopval_s().contains(s.as_ref())).count() as i64);
             // prefer the fact where the query's words appear EARLIEST (the subject), so
             // "Aurora depends on" beats "X depends on Aurora". Tiebreak before recency.
             let first_cue = cue.iter()
-                .filter_map(|c| e.s.binary_search(c).ok().map(|k| e.pos[k] as i64))
+                .filter_map(|c| stem_pos(&e.s, c).map(|k| e.pos[k] as i64))
                 .min().unwrap_or(9999);
             let sc = (exact_ov, ov as i64, selfp, subj, spec, -first_cue, i as i64);
             if sc > bk { bk = sc; best = Some(i); }
@@ -386,14 +406,14 @@ impl Neuron {
         // query. Prefer it when it does. This rescues the entity-only-overlap case where the
         // primary would otherwise pick an arbitrary fact about the right entity.
         let prim_ov = { let bs = &self.episodes[bi].s;
-                        cue.iter().filter(|c| bs.binary_search(c).is_ok()).count() };
+                        cue.iter().filter(|c| has_stem(bs, c)).count() };
         // The O(N) root_scan rescue only helps the relation-MORPHOLOGY case (query "owner" vs fact "owned"):
         // a missing NON-relation word (e.g. "where", "what") can't be matched by a morph scan, so don't pay
         // O(N) for it. Gating on an unbound relation cue keeps recall O(candidates) for ordinary questions —
         // value/assess/chain (which all call recall) drop from ~ms to ~µs on a large scope.
         if prim_ov < cue.len() {
             let bs = &self.episodes[bi].s;
-            let unbound_rel = cue.iter().any(|c| rel_s().contains(c) && bs.binary_search(c).is_err());
+            let unbound_rel = cue.iter().any(|c| rel_s().contains(c) && !has_stem(bs, c));
             if unbound_rel {
                 if let Some(r) = self.root_scan(query, 1).into_iter().next() {
                     if r.overlap > prim_ov { return Some(r); }
@@ -401,8 +421,8 @@ impl Neuron {
             }
         }
         let e = &self.episodes[bi];
-        let mut cov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count() as f64 / (cue.len().max(1) as f64);
-        if pet_query && e.s.iter().any(|s| pets().contains(s)) { cov = 1.0; }
+        let mut cov = cue.iter().filter(|c| has_stem(&e.s, c)).count() as f64 / (cue.len().max(1) as f64);
+        if pet_query && e.s.iter().any(|s| pets().contains(s.as_ref())) { cov = 1.0; }
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(e, &cue, want_num);
         Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, exact: bk.0 as usize, echo })
@@ -425,12 +445,12 @@ impl Neuron {
         let mut heap: std::collections::BinaryHeap<Reverse<Key>> = std::collections::BinaryHeap::with_capacity(k + 1);
         for i in order {
             let e = &self.episodes[i];
-            let ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
+            let ov = cue.iter().filter(|c| has_stem(&e.s, c)).count();
             if ov < 1 { continue; }
-            let exact = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
-            let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
+            let exact = qraw.iter().filter(|wd| has_stem(&e.raw, wd)).count() as i64;
+            let spec = -(e.s.iter().filter(|s| !cue.contains(s.as_ref()) && !stopval_s().contains(s.as_ref())).count() as i64);
             let first_cue = cue.iter()
-                .filter_map(|c| e.s.binary_search(c).ok().map(|kk| e.pos[kk] as i64))
+                .filter_map(|c| stem_pos(&e.s, c).map(|kk| e.pos[kk] as i64))
                 .min().unwrap_or(9999);
             let key: Key = ((exact, ov as i64, spec, -first_cue), Reverse(i));
             if heap.len() < k { heap.push(Reverse(key)); }
@@ -442,7 +462,7 @@ impl Neuron {
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let out: Vec<Recall> = scored.into_iter().map(|(sc,i)| {
             let e = &self.episodes[i];
-            let cov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count() as f64 / (cue.len().max(1) as f64);
+            let cov = cue.iter().filter(|c| has_stem(&e.s, c)).count() as f64 / (cue.len().max(1) as f64);
             let (val, echo) = pick_value(e, &cue, want_num);
             Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo }
         }).collect();
@@ -466,7 +486,7 @@ impl Neuron {
         let mut seed: HashSet<usize> = HashSet::new();
         let mut frontier: Vec<usize> = Vec::new();
         for s in &cue {
-            if let Some(v) = idx.get(s) {
+            if let Some(v) = idx.get(s.as_str()) {
                 for &j in v { if seed.insert(j) { frontier.push(j); } *act.entry(j).or_insert(0.0) += 1.0; }
             }
         }
@@ -477,7 +497,7 @@ impl Neuron {
             for &i in &frontier {
                 let ai = act[&i];
                 for s in &self.episodes[i].s {
-                    if stopval_s().contains(s) { continue; }
+                    if stopval_s().contains(s.as_ref()) { continue; }
                     let posting = match idx.get(s) { Some(p) => p, None => continue };
                     let df = posting.len();
                     if df < 2 || df > dfcap { continue; }    // unique stem = no link; hub = skipped
@@ -536,7 +556,7 @@ impl Neuron {
         scored.into_iter().map(|(sc, i)| {
             let e = &self.episodes[i];
             let cue: HashSet<String> = e.raw.iter()
-                .filter(|w| qroots.contains(&root(w)) || qroots.contains(&root(&canon(w))))
+                .filter(|&w| qroots.contains(&root(w)) || qroots.contains(&root(&canon(w))))
                 .map(|w| stem1(w)).collect();
             let (val, echo) = pick_value(e, &cue, want_num);
             let cov = sc.0 as f64 / qroots.len().max(1) as f64;
@@ -641,15 +661,15 @@ impl Neuron {
         // broad query (every cue stem is a hub) falls back to gathering all. The dfcap floor (64) keeps
         // behavior byte-identical at small scope — only large scopes are gated.
         let dfcap = ((self.episodes.len() as f64) * 0.25).max(64.0) as usize;
-        let has_rare = cue.iter().any(|s| idx.get(s).is_some_and(|v| v.len() <= dfcap));
+        let has_rare = cue.iter().any(|s| idx.get(s.as_str()).is_some_and(|v| v.len() <= dfcap));
         let mut cand: HashSet<usize> = HashSet::new();
         for s in cue {
-            if let Some(v) = idx.get(s) {
+            if let Some(v) = idx.get(s.as_str()) {
                 if has_rare && v.len() > dfcap { continue; }   // skip the hub posting; a rarer cue covers it
                 cand.extend(v);
             }
         }
-        if pet_query { for s in pets() { if let Some(v) = idx.get(s) { cand.extend(v); } } }
+        if pet_query { for s in pets() { if let Some(v) = idx.get(s.as_str()) { cand.extend(v); } } }
         let mut order: Vec<usize> = cand.into_iter().collect(); order.sort(); order
     }
 }
