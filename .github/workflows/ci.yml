@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust core — test + wasm build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust/neuron-core
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable + wasm target)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/neuron-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/neuron-core/Cargo.toml') }}
+      - name: Test (all native features)
+        run: cargo test --features secure,server,mcp,http,compress
+      - name: Build cortex wasm (default features)
+        run: cargo build --lib --release --target wasm32-unknown-unknown
+      - name: Build store-only wasm
+        run: cargo build --lib --release --no-default-features --target wasm32-unknown-unknown
+
+  js:
+    name: js binding battery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Sync + VERSION guard
+        run: node js/_sync-check.mjs
+      - name: Binding battery (store-only wasm)
+        run: node worker/test-binding.mjs js/neuron_core.wasm
+      - name: Binding battery (cortex wasm)
+        run: node worker/test-binding.mjs worker/neuron_core.wasm

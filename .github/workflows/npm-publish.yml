@@ -32,11 +32,16 @@ jobs:
 
       - name: Decide whether this version needs publishing
         id: gate
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           echo "package: $NAME@$VERSION"
-          if npm view "$NAME@$VERSION" version 2>/dev/null | grep -q .; then
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::NPM_TOKEN secret is not set — skipping publish. Add an npm automation token as the NPM_TOKEN repo secret to enable auto-publish."
+          elif npm view "$NAME@$VERSION" version 2>/dev/null | grep -q .; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "::notice::$NAME@$VERSION is already on npm — skipping publish."
           else
