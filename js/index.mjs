@@ -30,7 +30,7 @@
 const SENTINEL = String.fromCharCode(1); // mem() prefixes an unknown-op error with this; never appears in real output.
 
 /** The binding version (matches the npm package). */
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 export class NeuronDB {
   /** Wrap an already-instantiated wasm `exports`. Prefer fromModule / fromBytes. */
