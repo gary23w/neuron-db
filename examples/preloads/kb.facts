@@ -1,6 +1,6 @@
 # A sample fact pack (.facts form): one declarative fact per line.
 # `# scope: <id>` sets the scope for the lines that follow it, until the next directive.
-# Load it:  neuron import app.db examples/preloads/kb.facts
+# Load it:  neuron --db app.db import examples/preloads/kb.facts
 # Or seed an MCP server:  NEURON_MCP_PRELOAD=examples/preloads/kb.facts neuron-mcp
 
 # scope: solar-system

@@ -87,7 +87,8 @@ function preload(EX, facts, { maxPerCall = 2000 } = {}){
     const byScope = new Map();
     for (const { scope, fact } of facts.slice(i, i + maxPerCall)){
       const f = clean(fact); if (!f) continue;
-      (byScope.get(scope) || byScope.set(scope, []).get(scope)).push(f);
+      const s = clean(scope);   // the SCOPE must be tab/newline-free too — both are loadmany wire separators
+      (byScope.get(s) || byScope.set(s, []).get(s)).push(f);
     }
     const args = [];
     for (const [s, fs] of byScope){ args.push(s, fs.join("\n")); }

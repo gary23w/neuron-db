@@ -57,10 +57,14 @@ impl Drop for NeuronDB {
     fn drop(&mut self) {
         // Route through guard() (de-poisoning) rather than `if let Ok(lock())`: a prior persist panic
         // (e.g. SQLITE_FULL) poisons the mutex, and the old form would silently SKIP this shutdown
-        // flush — dropping every dirty write-behind buffer. guard() never panics.
+        // flush — dropping every dirty write-behind buffer. guard() never panics. Each per-entry
+        // persist is catch_unwind-isolated so a panic on one scope (a still-full disk) neither aborts
+        // the process nor skips the remaining scopes' flushes.
         let mut g = self.guard();
         let inner = &mut *g; let Inner { conn, cache, .. } = inner;
-        for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; } }
+        for (k, e) in cache.iter_mut() {
+            if e.dirty { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::persist(conn, k, e))); e.dirty = false; }
+        }
     }
 }
 
@@ -440,8 +444,8 @@ impl NeuronDB {
         rows.filter_map(|x| x.ok()).collect()
     }
 
-    /// A scope's serialized dump() blob (the `flag\ttext\tstrength` lines) — the read path for export.
-    /// Re-importable verbatim via observe_many (or load_scope semantics). Tab/newline-safe (dump escapes).
+    /// A scope's serialized dump() blob (`flag\ttext\tstrength` lines) — a raw read primitive
+    /// (tab/newline-safe; dump escapes). The CLI export uses scope_facts() for readable packs.
     pub fn dump_scope(&self, nid: &str) -> String {
         let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);

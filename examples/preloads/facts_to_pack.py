@@ -12,7 +12,7 @@ Generalizes to any (document, optional-id) dataset via --column.
 
   python facts_to_pack.py examples.csv > pack.jsonl
   python facts_to_pack.py data.csv --column body --min-words 4 --scope-prefix doc- > pack.jsonl
-  python facts_to_pack.py examples.csv | neuron import facts.db - --max 200000   # (stream)
+  python facts_to_pack.py examples.csv > pack.jsonl && neuron --db facts.db --max 200000 import pack.jsonl
 
 Output is wire-safe for every surface: no tabs/newlines, no leading '#', no questions, no fragments.
 """

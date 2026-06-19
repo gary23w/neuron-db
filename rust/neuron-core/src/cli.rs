@@ -429,7 +429,8 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--scope" => { scope_default = args.get(i + 1).cloned(); i += 2; }
+            // consume the next token as the scope only if it isn't another flag (don't eat `--dedup`)
+            "--scope" => match args.get(i + 1) { Some(v) if !v.starts_with('-') => { scope_default = Some(v.clone()); i += 2; } _ => { i += 1; } },
             // only consume the next token as the flush count if it actually parses as a number, so a
             // valid `import --flush pack.facts` (missing value) doesn't swallow the pack path.
             "--flush" => match args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
@@ -486,7 +487,7 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
         if *dr > 0 { eprintln!("warning: scope '{}' hit max_facts={}; {} earlier fact(s) evicted — raise --max", s, max, dr); }
     }
     if json { println!("{{\"stored\":{},\"submitted\":{},\"scopes\":{},\"skipped\":{},\"rejected\":{},\"evicted\":{}}}", stored, submitted, final_dropped.len(), skipped, rejected, evicted); }
-    else { eprintln!("imported {} fact(s) across {} scope(s) — {} lines, {} skipped, {} rejected", stored, final_dropped.len(), submitted, skipped, rejected); }
+    else { eprintln!("imported {} fact(s) across {} scope(s) — {} lines, {} skipped, {} rejected, {} evicted", stored, final_dropped.len(), submitted, skipped, rejected, evicted); }
 }
 
 /// `neuron export <scope> [-o FILE] | export --all [-o FILE]` — dump a scope (or every scope) to a
@@ -498,7 +499,7 @@ fn export_cmd(db: &str, max: usize, args: &[String], json: bool) {
     while i < args.len() {
         match args[i].as_str() {
             "--all" => { all = true; i += 1; }
-            "-o" | "--out" => { out = args.get(i + 1).cloned(); i += 2; }
+            "-o" | "--out" => match args.get(i + 1) { Some(v) if !v.starts_with('-') => { out = Some(v.clone()); i += 2; } _ => { i += 1; } },
             o if o.starts_with('-') => { i += 1; }
             _ => { if scope.is_none() { scope = Some(args[i].clone()); } i += 1; }
         }
@@ -517,8 +518,10 @@ fn export_cmd(db: &str, max: usize, args: &[String], json: bool) {
         if !scope_unsafe { buf.push_str(&format!("# scope: {}\n", s)); }
         for f in &facts {
             let clean = f.replace(['\t', '\n'], " ");
-            // a fact beginning with '#' would also be re-read as a comment/directive — JSONL it too.
-            if scope_unsafe || clean.trim_start().starts_with('#') { buf.push_str(&format!("{{\"scope\":\"{}\",\"fact\":\"{}\"}}\n", esc(s), esc(&clean))); }
+            // a fact whose text begins with '#' OR '{' would be re-read as a comment/directive OR a
+            // JSON object (the reader auto-detects both) — emit those as JSONL so they round-trip.
+            let lead = clean.trim_start();
+            if scope_unsafe || lead.starts_with('#') || lead.starts_with('{') { buf.push_str(&format!("{{\"scope\":\"{}\",\"fact\":\"{}\"}}\n", esc(s), esc(&clean))); }
             else { buf.push_str(&clean); buf.push('\n'); }
             total += 1;
         }
