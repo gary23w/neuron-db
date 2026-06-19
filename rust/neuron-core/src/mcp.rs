@@ -13,6 +13,11 @@ use crate::db::NeuronDB;
 use crate::op::{apply, NeuronOp, OpResult};
 
 const PROTO_DEFAULT: &str = "2025-06-18";
+/// The MCP protocol versions the server actually speaks. `initialize` echoes the client's requested
+/// version only when it is one of these; for anything else it answers with `PROTO_DEFAULT` (its own
+/// latest), per the spec — so the client sees a real version it can accept or disconnect on, rather
+/// than neuron rubber-stamping a version it doesn't support.
+const SUPPORTED_PROTO: [&str; 1] = [PROTO_DEFAULT];
 
 // ---- minimal JSON helpers (flat-search; mirrors server.rs) ----
 use crate::json_escape;
@@ -75,12 +80,72 @@ fn raw_id(body: &str) -> String {
     let tail = after[c + 1..].trim_start();
     let chars: Vec<char> = tail.chars().collect();
     if chars.first() == Some(&'"') {
-        let mut out = String::from("\""); let mut j = 1;
-        while j < chars.len() { let ch = chars[j]; out.push(ch); if ch == '"' && chars[j - 1] != '\\' { break; } j += 1; }
-        return out;
+        // find the real closing quote via escape PARITY (an odd backslash run escapes the quote; an
+        // even one leaves it a real close — checking only the single preceding char mis-reads `\\"`).
+        let mut out = String::from("\""); let mut j = 1; let (mut esc, mut closed) = (false, false);
+        while j < chars.len() {
+            let ch = chars[j]; out.push(ch);
+            if esc { esc = false; } else if ch == '\\' { esc = true; } else if ch == '"' { closed = true; break; }
+            j += 1;
+        }
+        // echo the token ONLY if it is a fully well-formed JSON string (no raw control char, every
+        // escape legal, `\u` four-hex with correct surrogate pairing). The id is interpolated into the
+        // response WITHOUT escaping, so anything less would emit invalid JSON — fail safe to null, as
+        // the numeric branch does (this covers unterminated, raw-control, and malformed-`\u` ids).
+        let oc: Vec<char> = out.chars().collect();
+        return if closed && is_valid_json_string(&oc) { out } else { "null".into() };
     }
+    // the numeric branch must yield a VALID JSON number or null — `take_while(digit|'-')` alone admits
+    // malformed runs (`-`, `--5`, `5-3`, `-9-9`). Echo the token verbatim only if it is a well-formed
+    // JSON integer (preserving an arbitrary-width id exactly, for correlation), else null.
     let val: String = tail.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
-    if !val.is_empty() { val } else { "null".into() }
+    if is_json_int(&val) { val } else { "null".into() }
+}
+/// True iff `s` is a syntactically valid JSON integer: an optional leading `-`, then a single `0` or a
+/// non-zero-leading digit run (no leading zeros, no interior/repeated signs). Used to decide whether a
+/// numeric id can be echoed verbatim into a response or must fall back to `null`.
+fn is_json_int(s: &str) -> bool {
+    let d = s.strip_prefix('-').unwrap_or(s);
+    !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) && (d == "0" || d.as_bytes()[0] != b'0')
+}
+/// Read exactly four hex digits of a `\uXXXX` escape starting at `at`, as a code unit. `None` if any
+/// of the four is missing or non-hex (a truncated / malformed `\u`).
+fn hex4(s: &[char], at: usize) -> Option<u32> {
+    let mut v = 0u32;
+    for k in 0..4 { v = v * 16 + s.get(at + k)?.to_digit(16)?; }
+    Some(v)
+}
+/// True iff `s` (a char slice opening with `"`) is a complete, well-formed JSON string token per RFC
+/// 8259: it closes with `"` as its LAST char, holds no raw control char (U+0000..U+001F), and every
+/// `\` begins a legal escape — `\uXXXX` needs four hex digits, and a high surrogate (D800..DBFF) must
+/// be followed by a `\u` low surrogate (DC00..DFFF); a lone/truncated surrogate is rejected. Gate for
+/// echoing a string id verbatim into the unescaped response slot so the line is always valid JSON.
+fn is_valid_json_string(s: &[char]) -> bool {
+    if s.first() != Some(&'"') { return false; }
+    let mut i = 1;
+    loop {
+        let c = match s.get(i) { Some(&c) => c, None => return false };  // ran off the end: never closed
+        if c == '"' { return i == s.len() - 1; }                         // real close must be the final char
+        if (c as u32) < 0x20 { return false; }                            // raw control char: illegal unescaped
+        if c == '\\' {
+            match s.get(i + 1) {
+                Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => i += 2,
+                Some('u') => match hex4(s, i + 2) {
+                    Some(hi) if (0xD800..=0xDBFF).contains(&hi) => {
+                        // high surrogate -> must be paired with a following `\u` low surrogate
+                        if s.get(i + 6) != Some(&'\\') || s.get(i + 7) != Some(&'u') { return false; }
+                        match hex4(s, i + 8) { Some(lo) if (0xDC00..=0xDFFF).contains(&lo) => i += 12, _ => return false }
+                    }
+                    Some(cu) if (0xDC00..=0xDFFF).contains(&cu) => return false,   // lone low surrogate
+                    Some(_) => i += 6,
+                    None => return false,                                          // truncated / non-hex `\u`
+                },
+                _ => return false,                                                // illegal / dangling escape
+            }
+        } else {
+            i += 1;
+        }
+    }
 }
 
 // ---- response builders ----
@@ -93,6 +158,72 @@ fn tool_text(id: &str, text: &str) -> String {
 }
 fn tool_err(id: &str, text: &str) -> String {
     result(id, &format!("{{\"content\":[{{\"type\":\"text\",\"text\":\"{}\"}}],\"isError\":true}}", json_escape(text)))
+}
+/// Render `["a","b",...]` from cap names (escaped defensively, though names are static identifiers).
+fn json_str_list(items: &[&str]) -> String {
+    format!("[{}]", items.iter().map(|s| format!("\"{}\"", json_escape(s))).collect::<Vec<_>>().join(","))
+}
+/// The TOP-LEVEL keys of the MCP `capabilities` object (e.g. `sampling`, `roots`, `experimental`).
+/// A name counts only when it sits in KEY position directly inside the object — right after the
+/// object's `{` or a `,`, at object-depth 1 and NOT inside any array, AND followed by `:`. That
+/// follows the JSON object grammar (`{ key : value , … }`), so it can never be confused with: a
+/// sibling field outside the object; a key nested deeper (e.g. `experimental.note`); a value inside
+/// an array; or a string *value* that merely spells "sampling" — even one followed by a stray colon
+/// in malformed input, because a value is not in key position. The scan tracks object-depth,
+/// array-depth, and string/escape state and walks `chars`, so it is structure-correct and multi-byte
+/// safe. Fails closed — an absent / non-object / unbalanced `capabilities` value yields no keys (cede
+/// nothing). Used by `host_deferrable`; the only consumer.
+fn capability_keys(line: &str) -> Vec<String> {
+    const KEY: &str = "\"capabilities\"";
+    // require the key's OWN colon (only whitespace between key and `:`), then an object `{` — so a
+    // non-object value (`"capabilities":null`) or a key with no colon can't latch onto a sibling's.
+    let after = match line.find(KEY) { Some(i) => &line[i + KEY.len()..], None => return vec![] };
+    let body = match after.trim_start().strip_prefix(':') { Some(r) => r.trim_start(), None => return vec![] };
+    if !body.starts_with('{') { return vec![]; }
+    let (mut depth, mut adepth, mut in_str, mut esc) = (0i32, 0i32, false, false);
+    let mut cur = String::new();             // the quoted string currently being read
+    let mut expect_key = false;              // are we in KEY position directly inside the object?
+    let mut pending: Option<String> = None;  // a top-level key string awaiting its `:` to be committed
+    let mut keys = Vec::new();
+    let top = |depth: i32, adepth: i32| depth == 1 && adepth == 0;  // directly inside the object
+    for c in body.chars() {
+        if in_str {
+            match c {
+                '\\' if !esc => { esc = true; cur.push(c); }
+                '"' if !esc => {
+                    in_str = false;
+                    if top(depth, adepth) && expect_key { pending = Some(std::mem::take(&mut cur)); }
+                    expect_key = false;      // a string closes the key-expecting slot
+                }
+                _ => { esc = false; cur.push(c); }
+            }
+        } else {
+            match c {
+                '"' => { in_str = true; cur.clear(); }
+                '{' => { depth += 1; if top(depth, adepth) { expect_key = true; pending = None; } }
+                '}' => { depth -= 1; if depth == 0 { return keys; } }
+                '[' => adepth += 1,
+                ']' => if adepth > 0 { adepth -= 1; },
+                ':' if top(depth, adepth) => { if let Some(k) = pending.take() { keys.push(k); } }
+                ',' if top(depth, adepth) => { expect_key = true; pending = None; }
+                _ => {}
+            }
+        }
+    }
+    vec![]   // unbalanced — never saw the closing brace, so trust nothing (fail closed)
+}
+/// Map the host's advertised MCP client capabilities to the neuron *deferrable* capability names
+/// they enable. `sampling` (the host can run an LLM on our behalf) unlocks the model-class text work
+/// — summarize/embed/normalize; `roots` (the host exposes resource roots) unlocks `fetch`. Reads
+/// only the TOP-LEVEL keys of the `capabilities` object (`capability_keys`), so a sibling field, a
+/// nested key, or a string value spelling "sampling"/"roots" can't over-cede. These are only the
+/// names neuron MIGHT cede — `caps::resolve` makes the final call, so a grounded cap never yields.
+fn host_deferrable(line: &str) -> Vec<&'static str> {
+    let keys = capability_keys(line);
+    let mut out = Vec::new();
+    if keys.iter().any(|k| k == "sampling") { out.extend(["summarize", "embed", "normalize"]); }
+    if keys.iter().any(|k| k == "roots") { out.push("fetch"); }
+    out
 }
 
 // tools/list payload. Each entry MUST be a single line: MCP stdio framing is one JSON
@@ -125,8 +256,20 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
     let name = json_field(body, "name").unwrap_or_default();
     // §7: the capability manifest — scope-independent meta, so it answers before the scope check.
     // Hidden from tools/list (not a memory op) but callable by name; tells a host what neuron can do
-    // and which capabilities it owns (grounded) vs would yield to a richer host (deferrable).
-    if name == "caps" { return tool_text(id, &crate::caps::manifest()); }
+    // and which capabilities it owns (grounded) vs would yield to a richer host (deferrable). With a
+    // `host` array of neuron cap names the host claims, it resolves the live keep/defer disposition
+    // (parity with `neuron caps <names...>`); with no `host`, the static manifest. Grounded names
+    // resolve to `keep` even if the host lists them — grounded beats tier.
+    if name == "caps" {
+        let host = json_array(body, "host");
+        // drop empty entries so an all-empty/degenerate host (`host:[""]`) resolves to the manifest,
+        // identical to a host that was omitted — keeps caps byte-identical with the CLI and WASM.
+        let hv: Vec<&str> = host.iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
+        if hv.is_empty() { return tool_text(id, &crate::caps::manifest()); }
+        let lines = crate::caps::resolve(&hv).into_iter()
+            .map(|(n, d)| format!("{}\t{}", n, d.tag())).collect::<Vec<_>>().join("\n");
+        return tool_text(id, &lines);
+    }
     let scope = json_field(body, "scope").unwrap_or_default();
     if scope.is_empty() { return tool_err(id, "missing required argument: scope"); }
     let scope = scope.chars().take(128).collect::<String>();
@@ -307,20 +450,34 @@ pub fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
     let id = raw_id(line);
     match method.as_str() {
         "initialize" => {
-            let pv = json_field(line, "protocolVersion").unwrap_or_else(|| PROTO_DEFAULT.into());
-            // §7: read the CLIENT's advertised capabilities instead of ignoring them. `sampling` means
-            // the host can run an LLM on our behalf — the signal that a *deferrable* capability
-            // (summarize/embed/normalize) could be ceded to it. We note it; grounded capabilities
-            // (recall/chain/assess/var/stance) are never ceded regardless. "Grounded beats tier."
-            let host_sampling = line.contains("\"sampling\"");
-            let host_roots = line.contains("\"roots\"");
+            // answer with the client's requested version only if we actually speak it; otherwise our
+            // own latest (PROTO_DEFAULT) — never rubber-stamp an unsupported/garbage version.
+            let pv = match json_field(line, "protocolVersion") {
+                Some(v) if SUPPORTED_PROTO.contains(&v.as_str()) => v,
+                _ => PROTO_DEFAULT.to_string(),
+            };
+            // §7: read the CLIENT's advertised capabilities and ANSWER with neuron's negotiated
+            // surface — instead of returning a static `{}`. Map the host's MCP caps to the neuron
+            // *deferrable* names they unlock (sampling -> summarize/embed/normalize, roots -> fetch),
+            // then let `caps::resolve` decide. Grounded caps (recall/chain/assess/var/stance/store)
+            // are NEVER ceded, whatever the host claims. "Grounded beats tier." The result is carried
+            // under `capabilities.experimental.neuron` (the MCP-blessed slot for non-standard caps):
+            //   deferred = the store-free work neuron yields to THIS host (empty if it offered none),
+            //   grounded = the store-touching work neuron always owns,
+            //   manifestTool = the tool to call for the full name/owner/about manifest.
+            let host_has = host_deferrable(line);
+            let deferred = crate::caps::deferred_for(&host_has);
+            let grounded = crate::caps::grounded_names();
             if std::env::var("NEURON_MCP_LOG").as_deref() == Ok("1") {
-                eprintln!("mcp init: host caps sampling={} roots={} — deferrable caps may yield, grounded caps stay local",
-                          host_sampling, host_roots);
+                eprintln!("mcp init: host unlocks {:?}; neuron defers {:?}, keeps grounded {:?}",
+                          host_has, deferred, grounded);
             }
+            let neuron = format!(
+                "{{\"deferred\":{},\"grounded\":{},\"manifestTool\":\"caps\"}}",
+                json_str_list(&deferred), json_str_list(&grounded));
             Some(result(&id, &format!(
-                "{{\"protocolVersion\":\"{}\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"neuron-db\",\"version\":\"0.1.0\"}}}}",
-                json_escape(&pv))))
+                "{{\"protocolVersion\":\"{}\",\"capabilities\":{{\"tools\":{{}},\"experimental\":{{\"neuron\":{}}}}},\"serverInfo\":{{\"name\":\"neuron-db\",\"version\":\"0.1.0\"}}}}",
+                json_escape(&pv), neuron)))
         }
         "tools/list" => Some(result(&id, &format!("{{\"tools\":{}}}", tools_array()))),
         "tools/call" => Some(tool_call(db, &id, line)),
@@ -449,6 +606,146 @@ mod tests {
         assert!(r.contains("\"id\":1"));
         assert!(r.contains("\"serverInfo\""));
         assert!(r.contains("\"protocolVersion\":\"2025-06-18\""));
+    }
+
+    #[test]
+    fn initialize_with_no_host_caps_defers_nothing() {
+        // §7: a bare host (advertises no capabilities) -> neuron yields nothing, keeps the grounded
+        // floor. The handshake must carry the negotiated surface, not a static {}.
+        let db = NeuronDB::open(&tmp(), 500);
+        let r = handle_line(&db, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{}}}").unwrap();
+        assert!(r.contains("\"experimental\":{\"neuron\":"), "must advertise the neuron capability, got {}", r);
+        assert!(r.contains("\"deferred\":[]"), "a bare host should be ceded nothing, got {}", r);
+        assert!(r.contains("\"grounded\":[\"recall\""), "must list the grounded floor, got {}", r);
+        assert!(r.contains("\"manifestTool\":\"caps\""), "got {}", r);
+    }
+
+    #[test]
+    fn initialize_with_sampling_cedes_model_class_work_but_keeps_grounded() {
+        // §7 grounded-beats-tier on the live wire: a sampling host (can run an LLM for us) is ceded
+        // the store-free text work, never the store-touching ops.
+        let db = NeuronDB::open(&tmp(), 500);
+        let r = handle_line(&db, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"sampling\":{},\"roots\":{\"listChanged\":true}}}}").unwrap();
+        for ceded in ["summarize", "embed", "normalize", "fetch"] {
+            assert!(r.contains(&format!("\"{}\"", ceded)), "sampling+roots host should be ceded {}, got {}", ceded, r);
+        }
+        // the deferred set must hold NONE of the grounded ops, even though the host can "sample"
+        let deferred = r.split("\"deferred\":").nth(1).unwrap().split(']').next().unwrap();
+        for grounded in ["recall", "chain", "assoc", "assess", "store", "var", "stance"] {
+            assert!(!deferred.contains(&format!("\"{}\"", grounded)), "{} must never be ceded, got deferred={}", grounded, deferred);
+        }
+    }
+
+    #[test]
+    fn host_deferrable_is_scoped_to_the_capabilities_object() {
+        // a real cap KEY at the TOP LEVEL of the capabilities object is detected, including when its
+        // value is a sub-object; a `}` inside a quoted value must not close the object early.
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"sampling\":{}}}}"), vec!["summarize", "embed", "normalize"]);
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"roots\":{\"listChanged\":true}}}}"), vec!["fetch"]);
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"sampling\":{},\"roots\":{}}}}"), vec!["summarize", "embed", "normalize", "fetch"]);
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"experimental\":{\"note\":\"a } brace\"},\"roots\":{}}}}"), vec!["fetch"]);
+        assert!(host_deferrable("{\"params\":{}}").is_empty());   // no capabilities key at all
+        // a stray "sampling"/"roots" token in a SIBLING field — BEFORE or AFTER the capabilities
+        // object (MCP members are unordered; clientInfo commonly serializes AFTER capabilities) —
+        // must NOT trip detection.
+        assert_eq!(host_deferrable("{\"params\":{\"clientInfo\":{\"name\":\"sampling-test\"},\"capabilities\":{}}}"), Vec::<&str>::new());
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{},\"clientInfo\":{\"name\":\"roots\"}}}"), Vec::<&str>::new());
+        assert_eq!(host_deferrable("{\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"experimental\":{\"roots\":1,\"sampling\":2}}}"), Vec::<&str>::new());
+        // capabilities is NOT an object (null) — must not latch onto a sibling object's brace
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":null,\"clientInfo\":{\"name\":\"roots\"}}}"), Vec::<&str>::new());
+        // the capabilities key has no colon of its own — must not latch onto the SIBLING's colon/object
+        assert_eq!(host_deferrable("{\"foo\":1,\"capabilities\" ,\"bar\":{\"roots\":{}}}"), Vec::<&str>::new());
+        // "sampling"/"roots" as a string VALUE (not a key), or as a key NESTED below depth 1, must
+        // NOT be read as an advertised top-level capability.
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"experimental\":{\"note\":\"sampling\"}}}}"), Vec::<&str>::new());
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"x\":\"roots\"}}}"), Vec::<&str>::new());
+        assert_eq!(host_deferrable("{\"params\":{\"capabilities\":{\"experimental\":{\"sampling\":{}}}}}"), Vec::<&str>::new());
+        // a string VALUE spelling "sampling" followed by a stray colon (malformed) is in value
+        // position, not key position — it must NOT be promoted to a top-level capability key.
+        assert_eq!(host_deferrable("{\"capabilities\":{\"a\":\"sampling\":1}}"), Vec::<&str>::new());
+        // a value that spells a cap but is followed by no colon at all is also never a key
+        assert_eq!(host_deferrable("{\"capabilities\":{\"a\":\"roots\"}}"), Vec::<&str>::new());
+        // inside an array (even a malformed `value:` shape) is not key position at object-depth 1
+        assert_eq!(host_deferrable("{\"capabilities\":{\"a\":[\"x\",\"sampling\":{}]}}"), Vec::<&str>::new());
+        assert_eq!(host_deferrable("{\"capabilities\":{\"a\":[{\"roots\":{}}]}}"), Vec::<&str>::new());
+        // a real top-level key AFTER an array value is still found
+        assert_eq!(host_deferrable("{\"capabilities\":{\"a\":[1,2],\"roots\":{}}}"), vec!["fetch"]);
+    }
+
+    #[test]
+    fn caps_tool_manifest_and_resolve() {
+        let db = NeuronDB::open(&tmp(), 500);
+        // no host arg -> the static manifest (owner tags present)
+        let m = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"caps\",\"arguments\":{}}}").unwrap();
+        assert!(m.contains("recall\\tgrounded") && m.contains("summarize\\tdeferrable"), "got {}", m);
+        // with a host that claims recall (grounded) AND summarize (deferrable): recall stays keep,
+        // summarize is ceded -> defer. This is grounded-beats-tier through the MCP tool surface.
+        let r = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"caps\",\"arguments\":{\"host\":[\"recall\",\"summarize\"]}}}").unwrap();
+        assert!(r.contains("recall\\tkeep"), "grounded recall must stay local even if host claims it, got {}", r);
+        assert!(r.contains("summarize\\tdefer"), "offered deferrable must be ceded, got {}", r);
+    }
+
+    #[test]
+    fn caps_tool_empty_host_is_the_manifest_like_no_host() {
+        // parity: a degenerate all-empty host (`host:[""]`) must resolve to the manifest, identical to
+        // an omitted host — so the caps surface stays byte-for-byte the same across CLI/MCP/WASM.
+        let db = NeuronDB::open(&tmp(), 500);
+        let none = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"caps\",\"arguments\":{}}}").unwrap();
+        let empty = handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"caps\",\"arguments\":{\"host\":[\"\"]}}}").unwrap();
+        assert_eq!(none, empty, "empty host must match no-host (the manifest), got {} vs {}", none, empty);
+        assert!(empty.contains("grounded") && !empty.contains("\\tkeep"), "must be the manifest, not the resolve table, got {}", empty);
+    }
+
+    #[test]
+    fn initialize_answers_with_a_supported_protocol_version() {
+        // MCP: the server answers with a version it actually speaks. A garbage/unsupported requested
+        // version must NOT be echoed back as if neuron supported it — it falls back to PROTO_DEFAULT.
+        let db = NeuronDB::open(&tmp(), 500);
+        let r = handle_line(&db, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\",\"capabilities\":{}}}").unwrap();
+        assert!(r.contains(&format!("\"protocolVersion\":\"{}\"", PROTO_DEFAULT)), "must advertise our real version, got {}", r);
+        assert!(!r.contains("1999-01-01"), "must not echo an unsupported version, got {}", r);
+    }
+
+    #[test]
+    fn raw_id_always_yields_a_valid_json_token() {
+        // every response must be one line of valid JSON, so raw_id must return a well-formed token
+        // (closed string / integer / null) for ANY id — including malformed/truncated request lines.
+        // well-formed ids pass through unchanged, including an arbitrary-width integer beyond i64:
+        assert_eq!(raw_id("{\"id\":42,\"method\":\"ping\"}"), "42");
+        assert_eq!(raw_id("{\"id\":-5,\"method\":\"ping\"}"), "-5");
+        assert_eq!(raw_id("{\"id\":0}"), "0");
+        assert_eq!(raw_id("{\"id\":99999999999999999999,\"x\":1}"), "99999999999999999999");
+        assert_eq!(raw_id("{\"id\":\"abc-1\"}"), "\"abc-1\"");
+        // leading-zero integers are not valid JSON numbers -> null (don't guess/canonicalize):
+        assert_eq!(raw_id("{\"id\":007}"), "null");
+        // a string value ending in a backslash (escaped `\\`) must find the REAL close, not over-run:
+        assert_eq!(raw_id("{\"id\":\"a\\\\\",\"method\":\"ping\"}"), "\"a\\\\\"");
+        // an unterminated string falls back to null (not echoed verbatim):
+        assert_eq!(raw_id("{\"method\":\"ping\",\"id\":\"abc"), "null");
+        // a string id carrying a RAW control char (unescaped tab / CR) is not a well-formed JSON
+        // string token -> null (a PROPERLY escaped \t is fine: it's the bytes backslash+t, not a tab):
+        assert_eq!(raw_id("{\"id\":\"a\tb\",\"method\":\"ping\"}"), "null");
+        assert_eq!(raw_id("{\"id\":\"a\rb\"}"), "null");
+        assert_eq!(raw_id("{\"id\":\"a\\tb\"}"), "\"a\\tb\"");   // escaped tab round-trips verbatim
+        // malformed `\u` escapes are not well-formed JSON strings -> null (build with a literal
+        // backslash via '\\' so the source isn't a Rust unicode escape):
+        let bs = '\\';
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}ud83d"}}"#)), "null");        // lone HIGH surrogate
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}ude00"}}"#)), "null");        // lone LOW surrogate
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}u"}}"#)), "null");            // truncated \u (no hex)
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}uZZZZ"}}"#)), "null");        // non-hex \u
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}x"}}"#)), "null");            // illegal escape
+        // a valid surrogate PAIR and a valid \u escape ARE well-formed -> echoed verbatim:
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}ud83d{bs}ude00"}}"#)), format!(r#""{bs}ud83d{bs}ude00""#));
+        assert_eq!(raw_id(&format!(r#"{{"id":"{bs}u00e9"}}"#)), format!(r#""{bs}u00e9""#));
+        // malformed numbers (lone/leading/interior dashes) are NOT valid JSON numbers -> null:
+        for bad in ["{\"id\":-}", "{\"id\":--5}", "{\"id\":5-3,\"x\":1}", "{\"method\":\"ping\",\"id\":-9-9}"] {
+            assert_eq!(raw_id(bad), "null", "malformed number id must be null, input {}", bad);
+        }
+        // end to end: an unterminated id serializes as null and never leaks the open token
+        let db = NeuronDB::open(&tmp(), 500);
+        let r = handle_line(&db, "{\"method\":\"ping\",\"id\":\"abc").unwrap();
+        assert!(r.contains("\"id\":null") && !r.contains("\"id\":\"abc,"), "got {}", r);
     }
 
     #[test]
@@ -685,5 +982,31 @@ mod tests {
         let db = NeuronDB::open(&tmp(), 500);
         let r = handle_line(&db, "{\"id\":\"abc-1\",\"method\":\"ping\"}").unwrap();
         assert!(r.contains("\"id\":\"abc-1\""), "got {}", r);
+    }
+
+    #[test]
+    fn preload_records_front_drain_so_boot_hook_can_warn() {
+        // A pack with more facts than max_facts front-drains its oldest facts at load. The boot hook
+        // must NOT lose them silently: it checks each loaded scope's Stats.dropped and warns on stderr
+        // (PRELOAD.md's promise). Here we assert the exact trigger condition that warning is gated on —
+        // the scope is capped at max_facts and the eviction is recorded in `dropped`. A `# scope:`
+        // directive pins the target so the test never depends on the NEURON_MCP_PRELOAD_* env vars.
+        let (max, n) = (4usize, 12usize);
+        let mut body = String::from("# scope: evict_probe\n");
+        for i in 0..n { body.push_str(&format!("subject{} states a distinct recorded fact.\n", i)); }
+        let pack = std::env::temp_dir()
+            .join(format!("ndb_preload_evict_{}_{}.facts", std::process::id(), n));
+        std::fs::write(&pack, body).unwrap();
+
+        let db = NeuronDB::open(&tmp(), max);
+        preload_into(&db, pack.to_str().unwrap()).expect("preload should succeed");
+
+        let st = match apply(&db, NeuronOp::Stats { scope: "evict_probe".into() }) {
+            OpResult::Stats(s) => s, _ => panic!("stats"),
+        };
+        assert_eq!(st.facts, max, "scope must be capped at max_facts after the front-drain");
+        assert!(st.dropped > 0, "eviction must be recorded so the boot hook warns (not silent loss)");
+
+        let _ = std::fs::remove_file(&pack);
     }
 }

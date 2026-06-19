@@ -62,6 +62,22 @@ pub fn manifest() -> String {
         .collect::<Vec<_>>().join("\n")
 }
 
+/// The always-local (grounded) capability names — never ceded to any host, whatever it advertises.
+/// Transports advertise this as the floor of what neuron always owns. Order matches `CAPABILITIES`.
+pub fn grounded_names() -> Vec<&'static str> {
+    CAPABILITIES.iter().filter(|c| c.ownership == Ownership::Grounded).map(|c| c.name).collect()
+}
+
+/// The capability names neuron will cede to a host advertising `host_has` — the `Defer` set of
+/// `resolve`. A grounded name never appears here even if the host claims it, so this is the exact
+/// surface a transport hands off in a handshake. Order matches `CAPABILITIES`.
+pub fn deferred_for(host_has: &[&str]) -> Vec<&'static str> {
+    resolve(host_has).into_iter()
+        .filter(|(_, d)| *d == Disposition::Defer)
+        .map(|(n, _)| n)
+        .collect()
+}
+
 /// What neuron does with a capability after a host advertises its own tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
@@ -140,5 +156,20 @@ mod tests {
             assert_eq!(disp(&r, deferred), Disposition::Defer);
         }
         assert_eq!(disp(&r, "recall"), Disposition::Keep);   // grounded, never yielded
+    }
+    #[test]
+    fn grounded_names_are_exactly_the_grounded_caps() {
+        let g = grounded_names();
+        assert!(g.iter().all(|n| !is_deferrable(n)), "grounded_names must contain no deferrable cap");
+        assert_eq!(g.len(), CAPABILITIES.iter().filter(|c| c.ownership == Ownership::Grounded).count());
+        assert!(g.contains(&"recall") && g.contains(&"stance") && !g.contains(&"summarize"));
+    }
+    #[test]
+    fn deferred_for_is_the_defer_set_and_never_grounded() {
+        // a bare host cedes nothing; a sampling-class host cedes only the store-free names it offered
+        assert!(deferred_for(&[]).is_empty());
+        let d = deferred_for(&["summarize", "embed", "recall", "chain"]);
+        assert_eq!(d, vec!["summarize", "embed"]);            // grounded names dropped, source order kept
+        assert!(d.iter().all(|n| is_deferrable(n)));
     }
 }

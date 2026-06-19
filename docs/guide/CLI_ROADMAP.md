@@ -397,9 +397,10 @@ explicitly with its reconcile/compaction/crash story designed, since it is a sec
 
 The near-term WASM/MCP work is the *grounded* pieces only; the negotiation subsystem is §7.
 
-- **Read real MCP client caps.** `initialize` currently returns a static
-  `"capabilities":{"tools":{}}` and **ignores the client capabilities already in the params**. Read
-  them so `initialize` stops lying. No invented vocabulary — just reflect what the wire carries.
+- ✅ **Read real MCP client caps.** `initialize` no longer returns a static
+  `"capabilities":{"tools":{}}` ignoring the client's caps — it reads the advertised
+  `sampling`/`roots`, resolves the grounded-beats-tier surface, and reflects it under
+  `experimental.neuron`. No invented vocabulary — just what the wire carries (done in §7).
 - **`ToolDef` is `visibility: Listed | Hidden` plus the op name.** That is the only distinction
   today (enforced by `affect_layer_is_unlisted`). Add fields when a feature actually reads them — not
   before.
@@ -456,15 +457,21 @@ method on each transport) **without touching `apply()`**. Staged path:
 
 **Shipped (the real-today foundation, `src/caps.rs`):** the capability manifest — each capability
 tagged grounded or deferrable — plus `caps::resolve(host_has)`, the grounded-beats-tier decision as
-a pure function (a host that *claims* a grounded capability is still denied it). Advertised as a
-`caps` op on the wasm `mem()` surface, a hidden `caps` MCP tool, and a `neuron caps [host-caps…]`
-CLI command. MCP `initialize` now reads the client's advertised `sampling`/`roots` instead of
-returning a static `{}`. Tests pin the inverse-guard. The live wire + host-function ABI below remain
-the gated future.
+a pure function (a host that *claims* a grounded capability is still denied it). All three transports
+resolve, not just advertise: a `caps` op on the wasm `mem()` surface, a hidden `caps` MCP tool, and a
+`neuron caps [host-caps…]` CLI command each take the host's claimed caps and return the live
+keep/defer surface. And the MCP `initialize` **handshake now negotiates**: it maps the client's
+advertised `sampling`/`roots` to the neuron deferrable names they unlock, runs `caps::resolve`, and
+answers with that surface under `capabilities.experimental.neuron` (`deferred` = what neuron yields
+to *this* host, `grounded` = what it always owns) — instead of the static `{}` it used to return.
+Tests pin the inverse-guard on the live wire. The host-function ABI below (a host actually *running*
+a deferred step) remains the gated future.
 
 **Real today — done:**
-- ✅ Read the MCP client capabilities that `initialize` already receives (stop returning a static
-  `{}`).
+- ✅ Read the MCP client capabilities that `initialize` receives **and reflect the negotiated
+  surface back** (`experimental.neuron.{deferred,grounded}`) — no longer a static `{}`.
+- ✅ Resolve-vs-host on every transport (`caps` MCP tool / wasm op / `neuron caps` CLI), so the
+  grounded-beats-tier decision is queryable wherever neuron mounts, with identical results.
 - Keep `host_call` WASM-local (the one place the poll model is genuinely needed).
 - ✅ `Listed | Hidden` tool visibility — reflect what the wire actually carries, nothing invented.
 
@@ -480,12 +487,13 @@ meaning "get bypassed."
 `normalize_then_store`. Neither side has these alone, and they are the reason a capability layer is
 worth building at all (not just defense).
 
-**Future — gated on prerequisites, stated honestly:** a symmetric capability manifest with an
-`owner_policy` (Always / DeferIfCap / Split) resolved at advertise-time, and a generalized
-`host_call` for native/MCP. Prerequisites before any of this becomes code:
+**Future — gated on prerequisites, stated honestly:** the negotiation is now *resolved* on the wire,
+but nothing yet *executes* a ceded step. The augmented surface (`recall_then_summarize`: neuron
+grounds, the host phrases) needs the server to call back into the host mid-request — and that is what
+stays gated. Prerequisites before any of this becomes code:
 1. an async or explicit-timeout story, so defer-then-fallback can't hang the core;
-2. a host that actually advertises tool tiers (MCP `initialize` doesn't yet — its client caps are
-   protocol-level: sampling, roots);
+2. a host that will actually *run* a deferred step on request (MCP `sampling/createMessage` is the
+   shape, but it is a server→client round-trip the open-once stdio loop can't yet make);
 3. a trust model — a host can **lie** about having a better tool, so every defer must be
    fallback-guarded (try host, fall back to in-core on timeout/refusal).
 
@@ -541,8 +549,11 @@ requiring any of it to be redone.
 
 - `rust/neuron-core/src/cli.rs` — flag loop, single dispatch `match`, seven `NeuronDB::open(&db,500)`
   sites, `esc()`, `--secret` to deprecate.
-- `rust/neuron-core/src/mcp.rs` — `serve_stdio` the open-once loop; `initialize` cap gap; listed/hidden
-  tool partition; `json_escape`; `tools_list_has_all_tools` (keep the fixed-list assertion).
+- `rust/neuron-core/src/mcp.rs` — `serve_stdio` the open-once loop; `initialize` negotiates via
+  `host_deferrable`→`caps::resolve` (the cap gap, now closed); listed/hidden tool partition; the
+  `caps` tool's optional `host` resolve; `json_escape`; `tools_list_has_all_tools`.
+- `rust/neuron-core/src/caps.rs` — the §7 manifest + `resolve`/`grounded_names`/`deferred_for`
+  (grounded-beats-tier); transport-neutral, std-only, the single source of the keep/defer truth.
 - `rust/neuron-core/src/wasm.rs` — `host_http`/`http_deliver`/`fetched` (keep WASM-local); `mem()`
   dispatch; `assess`; `alloc` leak; in-memory affective fork.
 - `rust/neuron-core/src/db.rs` — `Inner`/`Mutex` (the concurrency constraint), `Drop` flush (does NOT

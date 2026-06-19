@@ -109,7 +109,9 @@ fn main() {
         // the capability manifest (grounded vs deferrable). With host caps as args, resolve which
         // neuron keeps vs would yield to that host — grounded capabilities are always kept.
         "caps" => {
-            let host: Vec<&str> = pos.get(1..).unwrap_or(&[]).iter().map(String::as_str).collect();
+            // filter empty args so `neuron caps ""` resolves to the manifest, identical to a bare
+            // `neuron caps` — keeps the caps surface byte-identical with the MCP tool and WASM op.
+            let host: Vec<&str> = pos.get(1..).unwrap_or(&[]).iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
             if host.is_empty() { println!("{}", neuron_core::caps::manifest()); }
             else { for (name, d) in neuron_core::caps::resolve(&host) { println!("{}\t{}", name, d.tag()); } }
         }

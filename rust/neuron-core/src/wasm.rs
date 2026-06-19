@@ -444,8 +444,14 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         // overview: every live scope as "scope\tfactcount" lines (sorted) — for debugging / a memory map
         "scopes" => { let mut v: Vec<String> = memdb().scopes.iter().map(|(k,n)| format!("{}\t{}", k, n.fact_count())).collect(); v.sort(); v.join("\n") }
         // the capability manifest a host reads to learn what neuron can do and which capabilities it
-        // owns: "name\tgrounded|deferrable\tabout" lines (§7 — grounded beats tier)
-        "caps" => crate::caps::manifest(),
+        // owns: "name\tgrounded|deferrable\tabout" lines (§7 — grounded beats tier). With host cap
+        // names as trailing fields, resolves the live keep/defer surface (parity with CLI/MCP);
+        // grounded names stay `keep` even if the host claims them.
+        "caps" => {
+            let host: Vec<&str> = f.get(1..).unwrap_or(&[]).iter().copied().filter(|s| !s.is_empty()).collect();
+            if host.is_empty() { crate::caps::manifest() }
+            else { crate::caps::resolve(&host).into_iter().map(|(n, d)| format!("{}\t{}", n, d.tag())).collect::<Vec<_>>().join("\n") }
+        }
         _ => String::new(),
     };
     put(&out)
