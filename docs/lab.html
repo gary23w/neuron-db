@@ -1199,12 +1199,23 @@ async function agentTurn(userText, seedHits, seedOrdered){
 // across every phrasing. (Provisional in JS; the next step lifts this into a pure-Rust mem("assess",…) op.)
 function assess(query){
   const qk = keywords(queryKeywords(query));
-  const { hits } = smartRecall(query);
+  const sr = smartRecall(query);
+  let hits = sr.hits;
   if(!qk.length) return { coverage:1, covered:0, total:0, hits, cues:[] };   // no content cues → pure chit-chat, nothing to "know"
+  // Coverage is neuron-db's OWN recall confidence (the wasm assess op) — phrasing-independent and
+  // always consistent with what recall actually returns — instead of re-deriving it by JS string
+  // match (which could disagree with the engine and wrongly escalate an in-memory answer). Assess
+  // the active scope and any recalled doc; take the stronger signal.
+  const scopes = sr.doc && sr.doc.scope ? [SCOPE, sr.doc.scope] : [SCOPE];
+  let coverage = 0;
+  for(const sc of scopes){ const c = parseFloat(mem("assess", sc, query).split("\t")[0]); if(c > coverage) coverage = c; }
+  // if the JS recall came up empty but neuron-db DOES cover the query, trust the engine for the
+  // working set too, so the answer isn't lost to an empty hit list.
+  if(coverage > 0 && !hits.length){ hits = recallIn(SCOPE, queryKeywords(query), 6); }
+  const covered = Math.round(coverage * qk.length);
   const hay = " "+hits.join("  ").toLowerCase()+" ";
-  const missing = qk.filter(w=>!hay.includes(w));
-  const covered = qk.length - missing.length;
-  return { coverage: covered/qk.length, covered, total:qk.length, hits, cues:qk, missing };
+  const missing = qk.filter(w => !hay.includes(w));
+  return { coverage, covered, total:qk.length, hits, cues:qk, missing };
 }
 function parseAction(raw){ const o=firstJsonObj(stripThink(raw)); return (o && o.action) ? o : null; }
 const CONTROLLER_SYS =
