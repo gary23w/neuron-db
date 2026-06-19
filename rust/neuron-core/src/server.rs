@@ -11,6 +11,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use crate::db::NeuronDB;
+use crate::op::{apply, NeuronOp, OpResult};
 
 use crate::json_escape;
 fn json_field(body: &str, key: &str) -> Option<String> {
@@ -135,8 +136,9 @@ fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str,
         if segs.len() == 1 && segs[0] == "metrics" { return (200, format!("{{\"requests\":{},\"uptime_s\":{}}}", reqs, uptime)); }
         if !authed { return (401, "{\"error\":\"unauthorized\"}".into()); }
         if segs.len() >= 2 && segs[0] == "v1" {
-            let s = db.stats(&clip(&segs[1]));
-            return (200, format!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns));
+            if let OpResult::Stats(s) = apply(db, NeuronOp::Stats { scope: clip(&segs[1]) }) {
+                return (200, format!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns));
+            }
         }
         return (404, "{\"error\":\"not found\"}".into());
     }
@@ -146,26 +148,27 @@ fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str,
         let nid = clip(&segs[1]);
         let sub = segs.get(2).map(|s| s.as_str()).unwrap_or("");
         if sub == "forget" {
-            let (f, r) = db.forget(&nid, json_field(body, "match").as_deref());
-            return (200, format!("{{\"forgot\":{},\"remaining\":{}}}", f, r));
+            if let OpResult::Forgot { forgot, remaining } = apply(db, NeuronOp::Forget { scope: nid.clone(), matching: json_field(body, "match") }) {
+                return (200, format!("{{\"forgot\":{},\"remaining\":{}}}", forgot, remaining));
+            }
         }
         if sub == "observe" {
             let facts = json_array(body, "facts");
             if facts.is_empty() { return (400, "{\"error\":\"need {facts:[...]}\"}".into()); }
-            let w = db.observe_many(&nid, &facts);
+            let w = apply(db, NeuronOp::ObserveBulk { scope: nid.clone(), texts: facts }).wrote();
             return (200, format!("{{\"wrote\":{}}}", w));
         }
         if sub == "get" {
             let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
             if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
-            let v = db.get(&nid, &cap(&q, 4000));
+            let v = apply(db, NeuronOp::RecallOne { scope: nid.clone(), query: cap(&q, 4000) }).hit().map(|h| h.value);
             let vj = match v { Some(s) => format!("\"{}\"", json_escape(&s)), None => "null".to_string() };
             return (200, format!("{{\"value\":{}}}", vj));
         }
         if sub == "recall" {
             let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
             if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
-            return match db.recall(&nid, &cap(&q, 4000)) {
+            return match apply(db, NeuronOp::RecallOne { scope: nid.clone(), query: cap(&q, 4000) }).hit() {
                 Some(h) => (200, format!("{{\"value\":\"{}\",\"fact\":\"{}\",\"coverage\":{:.4},\"overlap\":{},\"exact\":{}}}", json_escape(&h.value), json_escape(&h.fact), h.coverage, h.overlap, h.exact)),
                 None => (200, "{\"value\":null,\"coverage\":0}".into()),
             };
@@ -174,14 +177,58 @@ fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str,
             let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
             if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
             let k = json_num(body, "k").unwrap_or(5).clamp(1, 50) as usize;
-            let items: Vec<String> = db.recall_many(&nid, &cap(&q, 4000), k).iter()
+            let items: Vec<String> = apply(db, NeuronOp::Recall { scope: nid.clone(), query: cap(&q, 4000), k, semantic: false, across: false }).hits().iter()
                 .map(|h| format!("{{\"value\":\"{}\",\"fact\":\"{}\",\"coverage\":{:.4}}}", json_escape(&h.value), json_escape(&h.fact), h.coverage)).collect();
             return (200, format!("{{\"hits\":[{}]}}", items.join(",")));
         }
         let msg = json_field(body, "message").unwrap_or_default();
         if msg.is_empty() { return (400, "{\"error\":\"empty message\"}".into()); }
-        let t = db.turn(&nid, &cap(&msg, 4000));
-        return (200, format!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{},\"capacity_reached\":{}}}", json_escape(&t.reply), t.kind, t.wrote, t.facts, t.capacity_reached));
+        return match apply(db, NeuronOp::Turn { scope: nid.clone(), message: cap(&msg, 4000) }) {
+            OpResult::Turned(t) => (200, format!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{},\"capacity_reached\":{}}}", json_escape(&t.reply), t.kind, t.wrote, t.facts, t.capacity_reached)),
+            _ => (500, "{\"error\":\"turn failed\"}".into()),
+        };
     }
     (404, "{\"error\":\"not found\"}".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn seg(p: &str) -> Vec<String> { p.split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() }
+
+    // Pins the HTTP route surface end-to-end, now that every db call routes through op::apply.
+    #[test]
+    fn route_endpoints_through_apply() {
+        let tmp = std::env::temp_dir().join(format!("neuron_route_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let db = NeuronDB::open(tmp.to_str().unwrap(), 500);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/u/observe"), true, "{\"facts\":[\"my plan is pro\",\"the launch is Friday\"]}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"wrote\":2"), "observe: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/u/get"), true, "{\"query\":\"what is my plan\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("pro"), "get: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/u/recall"), true, "{\"query\":\"launch\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"fact\":") && body.contains("Friday"), "recall: {}", body);
+
+        let (_st, body) = route(&db, "POST", &seg("/v1/u/recall_many"), true, "{\"query\":\"plan\",\"k\":3}", 1, 0);
+        assert!(body.contains("\"hits\":["), "recall_many: {}", body);
+
+        let (st, body) = route(&db, "GET", &seg("/v1/u"), true, "", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"facts\":2"), "stats: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/u"), true, "{\"message\":\"hi there\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"reply\":"), "turn: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/u/forget"), true, "{\"match\":\"launch\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"forgot\":1"), "forget: {}", body);
+
+        // gates that must still hold
+        assert_eq!(route(&db, "GET", &seg("/v1/u"), false, "", 1, 0).0, 401);          // auth
+        assert_eq!(route(&db, "POST", &seg("/v1/u/get"), true, "{}", 1, 0).0, 400);    // empty query
+        assert_eq!(route(&db, "OPTIONS", &seg("/v1/u"), true, "", 1, 0).0, 204);       // CORS preflight
+
+        let _ = std::fs::remove_file(&tmp);
+    }
 }

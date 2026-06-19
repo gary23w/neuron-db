@@ -16,7 +16,8 @@ use crate::{Recall, Spread};
 #[derive(Debug, Clone)]
 pub enum NeuronOp {
     Observe { scope: String, text: String },
-    ObserveMany { scope: String, texts: Vec<String> },
+    ObserveMany { scope: String, texts: Vec<String> },   // per-fact observe (dedups exact restatements)
+    ObserveBulk { scope: String, texts: Vec<String> },   // db.observe_many (bulk ingest, no dedup)
     Recall { scope: String, query: String, k: usize, semantic: bool, across: bool },
     RecallOne { scope: String, query: String },
     RecallValue { scope: String, query: String },
@@ -72,6 +73,7 @@ pub fn apply(db: &NeuronDB, op: NeuronOp) -> OpResult {
         // observe() per fact (dedups exact restatements) — matches the MCP `remember` path; bulk
         // ingest that wants speed over dedup calls db.observe_many directly, not this.
         NeuronOp::ObserveMany { scope, texts } => OpResult::Wrote(texts.iter().map(|t| db.observe(&scope, t)).sum()),
+        NeuronOp::ObserveBulk { scope, texts } => OpResult::Wrote(db.observe_many(&scope, &texts)),
         NeuronOp::Recall { scope, query, k, semantic, across } => {
             let k = k.clamp(1, 50);
             #[cfg(feature = "semantic")]
