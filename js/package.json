@@ -1,0 +1,61 @@
+{
+  "name": "neuron-db",
+  "version": "0.1.0",
+  "description": "Plug-and-play host binding for neuron-db — a pure-Rust associative memory + the gary-neuron dispatcher cortex, compiled to WebAssembly. Typed methods over the wasm FFI, a self-describing op surface, and route() (recall + cortex dispatch in one call). Runs in Cloudflare Workers, the browser, Node, Deno, and Bun. Zero dependencies.",
+  "type": "module",
+  "scripts": {
+    "prepublishOnly": "node _sync-check.mjs"
+  },
+  "main": "./index.mjs",
+  "module": "./index.mjs",
+  "types": "./index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./index.d.mts",
+      "default": "./index.mjs"
+    },
+    "./neuron_core.wasm": "./neuron_core.wasm",
+    "./wasm": "./neuron_core.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "index.d.mts",
+    "neuron_core.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "license": "MIT",
+  "author": "gary23w",
+  "homepage": "https://github.com/gary23w/neuron-db#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gary23w/neuron-db.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/gary23w/neuron-db/issues"
+  },
+  "keywords": [
+    "memory",
+    "associative-memory",
+    "wasm",
+    "webassembly",
+    "rag",
+    "recall",
+    "embeddings-alternative",
+    "vector-database",
+    "cloudflare-workers",
+    "llm-memory",
+    "agent-memory",
+    "rust",
+    "cortex",
+    "dispatcher",
+    "neuron-db",
+    "gary-neuron"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
