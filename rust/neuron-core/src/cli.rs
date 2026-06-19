@@ -104,6 +104,13 @@ fn main() {
                 if json { let items: Vec<String> = ids.iter().map(|s| format!("\"{}\"", esc(s))).collect(); println!("{{\"scopes\":[{}]}}", items.join(",")); }
                 else { for id in ids { println!("{}", id); } }
             } }
+        // the capability manifest (grounded vs deferrable). With host caps as args, resolve which
+        // neuron keeps vs would yield to that host — grounded capabilities are always kept.
+        "caps" => {
+            let host: Vec<&str> = pos.get(1..).unwrap_or(&[]).iter().map(String::as_str).collect();
+            if host.is_empty() { println!("{}", neuron_core::caps::manifest()); }
+            else { for (name, d) in neuron_core::caps::resolve(&host) { println!("{}\t{}", name, d.tag()); } }
+        }
         "serve" => { serve_cmd(&db, pos.get(1).and_then(|s| s.parse().ok()).unwrap_or(8088)); }
         "secure-put" => secure_put(&db, &secret, &scope, pos.get(2).cloned().unwrap_or_default(), pos.get(3..).map(|s| s.join(" ")).unwrap_or_default()),
         "secure-get" => secure_get(&db, &secret, &scope, &rest()),
@@ -491,6 +498,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   stats   <scope>                fact count + timestamps\n\
   forget  <scope> [match...]     drop facts\n\
   list                           list scope ids\n\
+  caps    [host-caps...]          capability manifest (grounded vs deferrable); resolve vs a host\n\
   serve   [port]                 HTTP server (--features server)\n\
   mount   claude [--global] [--config PATH] [--dry-run]   register neuron-mcp with Claude Code\n\
   secure-put <scope> <keyphrase> <value...>   encrypted (needs a key)\n\

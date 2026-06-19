@@ -62,6 +62,34 @@ pub fn manifest() -> String {
         .collect::<Vec<_>>().join("\n")
 }
 
+/// What neuron does with a capability after a host advertises its own tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// neuron keeps doing it (it's grounded, or the host can't).
+    Keep,
+    /// the host has a better tool and it's store-free, so neuron yields it.
+    Defer,
+}
+impl Disposition {
+    pub fn tag(self) -> &'static str { match self { Disposition::Keep => "keep", Disposition::Defer => "defer" } }
+}
+
+/// Resolve neuron's effective surface against a host advertising the capabilities in `host_has`.
+/// Grounded capabilities are ALWAYS kept — a host without the store would hallucinate them, so even
+/// a host that *claims* to recall must not take it. A deferrable capability is yielded only if the
+/// host actually advertises it, else kept (neuron still does it in-core). This is "grounded beats
+/// tier" as a pure decision — the negotiation brain, with no wire and no async needed.
+pub fn resolve(host_has: &[&str]) -> Vec<(&'static str, Disposition)> {
+    CAPABILITIES.iter().map(|c| {
+        let d = match c.ownership {
+            Ownership::Grounded => Disposition::Keep,
+            Ownership::Deferrable if host_has.contains(&c.name) => Disposition::Defer,
+            Ownership::Deferrable => Disposition::Keep,
+        };
+        (c.name, d)
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +113,32 @@ mod tests {
         let m = manifest();
         assert!(m.contains("recall\tgrounded") && m.contains("summarize\tdeferrable"), "{m}");
         assert_eq!(m.lines().count(), CAPABILITIES.len());
+    }
+    fn disp(r: &[(&'static str, Disposition)], name: &str) -> Disposition {
+        r.iter().find(|(n, _)| *n == name).unwrap().1
+    }
+    #[test]
+    fn a_lying_host_cannot_take_a_grounded_capability() {
+        // the whole point: a host claiming it can recall/chain must NOT be ceded them — it has no store
+        let r = resolve(&["recall", "chain", "assess", "stance", "summarize"]);
+        for grounded in ["recall", "chain", "assess", "stance"] {
+            assert_eq!(disp(&r, grounded), Disposition::Keep, "{grounded} must stay local even if the host claims it");
+        }
+        // but a deferrable the host genuinely has IS yielded
+        assert_eq!(disp(&r, "summarize"), Disposition::Defer);
+    }
+    #[test]
+    fn no_host_keeps_everything() {
+        // a bare host (advertises nothing) -> neuron does it all in-core
+        let r = resolve(&[]);
+        assert!(r.iter().all(|(_, d)| *d == Disposition::Keep));
+    }
+    #[test]
+    fn richer_host_yields_only_store_free_work() {
+        let r = resolve(&["summarize", "embed", "normalize", "fetch", "recall"]);
+        for deferred in ["summarize", "embed", "normalize", "fetch"] {
+            assert_eq!(disp(&r, deferred), Disposition::Defer);
+        }
+        assert_eq!(disp(&r, "recall"), Disposition::Keep);   // grounded, never yielded
     }
 }
