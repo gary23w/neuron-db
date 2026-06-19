@@ -452,10 +452,28 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
             if host.is_empty() { crate::caps::manifest() }
             else { crate::caps::resolve(&host).into_iter().map(|(n, d)| format!("{}\t{}", n, d.tag())).collect::<Vec<_>>().join("\n") }
         }
-        _ => String::new(),
+        // self-describing op surface: the wire ops THIS build exposes, newline-joined. A host binding
+        // reads it once at load to validate that an op it wants is actually present (fail at load, not
+        // a silent empty result mid-run). `cortex` adds the model exports (`gary`) — checked separately
+        // by the host as `typeof exports.gary === "function"`, since those are not mem() ops.
+        "ops" => MEM_OPS.join("\n"),
+        // an UNKNOWN op is a wiring bug — return a sentinel the binding raises as an error, instead of
+        // an empty string that silently looks like "no result". Leading \u{1} never occurs in real output.
+        _ => format!("\u{1}unknown op: {}", op),
     };
     put(&out)
 }
+
+/// The wire ops `mem()` dispatches — the build's self-describing op surface (returned by the `ops`
+/// op). Keep in sync with the match arms above; the host binding reads this to fail loud at load on a
+/// missing op rather than silently no-op'ing.
+pub const MEM_OPS: &[&str] = &[
+    "observe", "obsmany", "loadmany", "recall", "recallscored", "value", "assess", "assoc", "chain",
+    "setvar", "getvar", "vars", "delvar", "addinstr", "instrs", "delinstr", "clearinstr",
+    "forget", "stats", "episodes", "dump", "load", "scopes",
+    "feel", "stance", "humanize", "mood", "topstance", "stanceof", "fetch", "fetched",
+    "caps", "ops",
+];
 
 // ---- semantic space exports (feature `semantic`), for the in-browser PCA visualization ----
 #[cfg(feature = "semantic")]
