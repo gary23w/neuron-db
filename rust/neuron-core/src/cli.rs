@@ -401,24 +401,26 @@ fn follow(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
 // scope's (durable fact count, evicted count) read WHILE IT IS STILL CACHED — so the totals stay
 // accurate even when a later scope evicts this one from the LRU cache (which would reset its
 // in-memory `dropped` to 0). On --replace, the scope is cleared the first time it is touched.
-// Returns None when the buffer is already empty (nothing flushed) so the EOF drain can't overwrite
-// a scope's real snapshot with (0,0) — otherwise a scope flushed mid-stream (a --flush chunk or the
-// GLOBAL_CAP) would re-flush empty at EOF and zero out its stored/evicted counts (and silence the
-// eviction warning). Some((facts, evicted)) read while the scope is still cached.
+// Returns None when the buffer is already empty (nothing flushed), so the EOF drain can't re-flush a
+// scope drained mid-stream and zero its counts. On a real flush returns Some((facts written THIS
+// call, the scope's current evicted count)) — the caller SUMS the write count for `stored` (so it
+// never counts pre-existing facts) and tracks the evicted count per scope.
 fn flush_scope(d: &NeuronDB, buffers: &mut std::collections::HashMap<String, Vec<String>>, scope: &str,
                cleared: &mut std::collections::HashSet<String>, replace: bool, global: &mut usize) -> Option<(usize, u64)> {
     let texts = match buffers.get_mut(scope) { Some(v) if !v.is_empty() => std::mem::take(v), _ => return None };
     *global -= texts.len();
     if replace && cleared.insert(scope.to_string()) { apply(d, NeuronOp::Forget { scope: scope.to_string(), matching: None }); }
-    apply(d, NeuronOp::ObserveBulk { scope: scope.to_string(), texts });
-    Some(match apply(d, NeuronOp::Stats { scope: scope.to_string() }) { OpResult::Stats(s) => (s.facts, s.dropped), _ => (0, 0) })
+    let wrote = apply(d, NeuronOp::ObserveBulk { scope: scope.to_string(), texts }).wrote();
+    let dropped = match apply(d, NeuronOp::Stats { scope: scope.to_string() }) { OpResult::Stats(s) => s.dropped, _ => 0 };
+    Some((wrote, dropped))
 }
 
 /// `neuron import <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]` — bulk-load a
 /// fact pack into the durable store. Streams the file, groups by scope, and issues one ObserveBulk
 /// (one O(scope) persist) per scope-batch, so a multi-scope pack is O(N). `--flush 0` (default)
 /// buffers a whole scope (one persist — best for one big scope); `--flush N` caps the per-scope
-/// batch. Memory is bounded by an internal global cap regardless of scope cardinality.
+/// batch. Buffered-fact memory is bounded by an internal global cap regardless of scope cardinality
+/// (note: `--dedup` additionally holds an index of every accepted (scope, fact), so it is O(distinct)).
 fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
     use std::io::BufRead;
     use std::collections::{HashMap, HashSet};
@@ -446,10 +448,11 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
     let mut buffers: HashMap<String, Vec<String>> = HashMap::new();
     let mut cleared: HashSet<String> = HashSet::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();   // --dedup keyed per (scope, fact), not globally
-    let mut final_state: HashMap<String, (usize, u64)> = HashMap::new();   // scope -> (durable facts, evicted) at its last flush
+    let mut final_dropped: HashMap<String, u64> = HashMap::new();   // scope -> evicted count at its last flush
+    let mut stored = 0usize;
     let mut directive: Option<String> = None;
     let (mut global, mut submitted, mut skipped, mut rejected) = (0usize, 0usize, 0usize, 0usize);
-    macro_rules! flush { ($scope:expr) => {{ if let Some(fs) = flush_scope(&d, &mut buffers, $scope, &mut cleared, replace, &mut global) { final_state.insert($scope.to_string(), fs); } }}; }
+    macro_rules! flush { ($scope:expr) => {{ if let Some((wrote, dropped)) = flush_scope(&d, &mut buffers, $scope, &mut cleared, replace, &mut global) { stored += wrote; final_dropped.insert($scope.to_string(), dropped); } }}; }
     for line in std::io::BufReader::new(file).lines() {
         let line = match line { Ok(l) => l, Err(e) => { eprintln!("import: read error (pack truncated?): {}", e); std::process::exit(1); } };
         match parse_pack_line(&line) {
@@ -474,14 +477,16 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
     let keys: Vec<String> = buffers.keys().cloned().collect();
     for k in keys { flush!(&k); }
     d.flush_all();
-    // accurate totals from each scope's final cached state (read at flush time, eviction-proof)
-    let stored: usize = final_state.values().map(|(f, _)| *f).sum();
-    let evicted: u64 = final_state.values().map(|(_, dr)| *dr).sum();
-    for (s, (_, dr)) in &final_state {
+    // `stored` = facts this run actually wrote (summed per flush). `evicted` is each scope's last
+    // flush-time drop count; it can under-report if a scope is flushed, LRU-evicted (its in-memory
+    // counter resets), then re-flushed — a narrow case needing >256 scopes AND chunked --flush — so
+    // data is never lost, only the advisory eviction count.
+    let evicted: u64 = final_dropped.values().sum();
+    for (s, dr) in &final_dropped {
         if *dr > 0 { eprintln!("warning: scope '{}' hit max_facts={}; {} earlier fact(s) evicted — raise --max", s, max, dr); }
     }
-    if json { println!("{{\"stored\":{},\"submitted\":{},\"scopes\":{},\"skipped\":{},\"rejected\":{},\"evicted\":{}}}", stored, submitted, final_state.len(), skipped, rejected, evicted); }
-    else { eprintln!("imported {} fact(s) across {} scope(s) — {} lines, {} skipped, {} rejected", stored, final_state.len(), submitted, skipped, rejected); }
+    if json { println!("{{\"stored\":{},\"submitted\":{},\"scopes\":{},\"skipped\":{},\"rejected\":{},\"evicted\":{}}}", stored, submitted, final_dropped.len(), skipped, rejected, evicted); }
+    else { eprintln!("imported {} fact(s) across {} scope(s) — {} lines, {} skipped, {} rejected", stored, final_dropped.len(), submitted, skipped, rejected); }
 }
 
 /// `neuron export <scope> [-o FILE] | export --all [-o FILE]` — dump a scope (or every scope) to a
@@ -505,12 +510,15 @@ fn export_cmd(db: &str, max: usize, args: &[String], json: bool) {
     for s in &scopes {
         let facts = d.scope_facts(s);
         if facts.is_empty() { continue; }
-        buf.push_str(&format!("# scope: {}\n", s));
+        // a scope NAME that isn't header-safe — control chars, a leading '#', or surrounding space the
+        // `# scope:` directive parser would trim — can't ride a header without renaming or losing the
+        // scope on re-import. Emit such a scope's facts entirely as JSONL (scope carried verbatim).
+        let scope_unsafe = s.contains(['\t', '\n', '\r']) || s.starts_with('#') || s.as_str() != s.trim();
+        if !scope_unsafe { buf.push_str(&format!("# scope: {}\n", s)); }
         for f in &facts {
             let clean = f.replace(['\t', '\n'], " ");
-            // a fact beginning with '#' would be re-read as a comment/`# scope:` directive (silent
-            // loss + scope reroute) — emit it as JSONL instead (the reader auto-detects the `{`).
-            if clean.trim_start().starts_with('#') { buf.push_str(&format!("{{\"scope\":\"{}\",\"fact\":\"{}\"}}\n", esc(s), esc(&clean))); }
+            // a fact beginning with '#' would also be re-read as a comment/directive — JSONL it too.
+            if scope_unsafe || clean.trim_start().starts_with('#') { buf.push_str(&format!("{{\"scope\":\"{}\",\"fact\":\"{}\"}}\n", esc(s), esc(&clean))); }
             else { buf.push_str(&clean); buf.push('\n'); }
             total += 1;
         }

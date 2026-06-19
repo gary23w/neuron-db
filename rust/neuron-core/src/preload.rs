@@ -50,6 +50,8 @@ fn classify_fact(scope: Option<String>, fact: &str) -> PackLine {
     let fact = fact.trim();
     if fact.is_empty() { return PackLine::Skip; }
     if fact.contains('\t') || fact.contains('\n') { return PackLine::Reject; }
+    // a scope name with a control char can't ride the wire / a `# scope:` header and wouldn't round-trip
+    if scope.as_deref().is_some_and(|s| s.contains(['\t', '\n', '\r'])) { return PackLine::Reject; }
     PackLine::Fact { scope, text: fact.to_string() }
 }
 
