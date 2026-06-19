@@ -123,6 +123,10 @@ fn synapse_log(tool: &str, scope: &str, db: &NeuronDB, returned: usize, us: u128
 
 fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
     let name = json_field(body, "name").unwrap_or_default();
+    // §7: the capability manifest — scope-independent meta, so it answers before the scope check.
+    // Hidden from tools/list (not a memory op) but callable by name; tells a host what neuron can do
+    // and which capabilities it owns (grounded) vs would yield to a richer host (deferrable).
+    if name == "caps" { return tool_text(id, &crate::caps::manifest()); }
     let scope = json_field(body, "scope").unwrap_or_default();
     if scope.is_empty() { return tool_err(id, "missing required argument: scope"); }
     let scope = scope.chars().take(128).collect::<String>();
@@ -304,6 +308,16 @@ pub fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
     match method.as_str() {
         "initialize" => {
             let pv = json_field(line, "protocolVersion").unwrap_or_else(|| PROTO_DEFAULT.into());
+            // §7: read the CLIENT's advertised capabilities instead of ignoring them. `sampling` means
+            // the host can run an LLM on our behalf — the signal that a *deferrable* capability
+            // (summarize/embed/normalize) could be ceded to it. We note it; grounded capabilities
+            // (recall/chain/assess/var/stance) are never ceded regardless. "Grounded beats tier."
+            let host_sampling = line.contains("\"sampling\"");
+            let host_roots = line.contains("\"roots\"");
+            if std::env::var("NEURON_MCP_LOG").as_deref() == Ok("1") {
+                eprintln!("mcp init: host caps sampling={} roots={} — deferrable caps may yield, grounded caps stay local",
+                          host_sampling, host_roots);
+            }
             Some(result(&id, &format!(
                 "{{\"protocolVersion\":\"{}\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"neuron-db\",\"version\":\"0.1.0\"}}}}",
                 json_escape(&pv))))

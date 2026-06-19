@@ -428,6 +428,9 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         }
         // overview: every live scope as "scope\tfactcount" lines (sorted) — for debugging / a memory map
         "scopes" => { let mut v: Vec<String> = memdb().scopes.iter().map(|(k,n)| format!("{}\t{}", k, n.fact_count())).collect(); v.sort(); v.join("\n") }
+        // the capability manifest a host reads to learn what neuron can do and which capabilities it
+        // owns: "name\tgrounded|deferrable\tabout" lines (§7 — grounded beats tier)
+        "caps" => crate::caps::manifest(),
         _ => String::new(),
     };
     put(&out)
