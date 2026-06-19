@@ -177,7 +177,7 @@ pub struct Spread { pub fact: String, pub value: String, pub seed: bool, pub act
 #[derive(Debug, Clone, Default)]
 pub struct TurnOut { pub reply: String, pub kind: String, pub wrote: usize, pub facts: usize, pub capacity_reached: bool }
 #[derive(Debug, Clone, Default)]
-pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub updated: i64, pub turns: i64 }
+pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub updated: i64, pub turns: i64, pub dropped: u64 }
 
 fn sentences(u: &str, cap: usize) -> Vec<String> {
     let mut parts = Vec::new(); let mut cur = String::new();
@@ -290,9 +290,10 @@ pub struct Neuron {
     pub max_facts: usize,
     index: Option<HashMap<String, Vec<usize>>>,
     index_len: usize,
+    pub dropped: u64,   // oldest facts evicted by the max_facts front-drain (else silent data loss)
 }
 impl Neuron {
-    pub fn new(max_facts: usize) -> Self { Neuron { episodes: Vec::new(), max_facts, index: None, index_len: usize::MAX } }
+    pub fn new(max_facts: usize) -> Self { Neuron { episodes: Vec::new(), max_facts, index: None, index_len: usize::MAX, dropped: 0 } }
 
     fn build_index(&mut self) {
         let mut idx: HashMap<String, Vec<usize>> = HashMap::new();
@@ -327,6 +328,7 @@ impl Neuron {
         }
         if self.episodes.len() > self.max_facts {
             let start = self.episodes.len() - self.max_facts;
+            self.dropped = self.dropped.saturating_add(start as u64);   // record the eviction (not silent)
             self.episodes.drain(0..start);
             self.index = None; self.index_len = usize::MAX; // front-drain shifts indices -> rebuild
         }
@@ -621,6 +623,7 @@ pub mod plastic;
 pub mod router;
 pub mod turn;
 pub mod stream;   // line-splitting for piping app output into a scope (capture/run/follow)
+pub mod preload;  // shared fact-pack reader for `neuron import` + the MCP preload boot hook
 pub mod affect;   // the one shared mood + stance + humanize-directive layer (db.rs and wasm both use it)
 pub mod caps;     // the capability manifest (grounded vs deferrable) — the polymorphism spine (§7)
 #[cfg(feature = "sqlite")] pub mod db;

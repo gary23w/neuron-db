@@ -90,6 +90,8 @@ fn main() {
         "capture" => { need_scope("capture"); capture(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
         "run" => { need_scope("run"); run_cmd(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
         "follow" => { need_scope("follow"); follow(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
+        "import" => { import_cmd(&db, max, pos.get(1..).unwrap_or(&[]), json, force); }
+        "export" => { export_cmd(&db, max, pos.get(1..).unwrap_or(&[]), json); }
         "stats" => { need_scope("stats"); let d = NeuronDB::open(&db, max);
             if let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: scope.clone() }) {
                 if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
@@ -394,6 +396,119 @@ fn follow(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
     }
 }
 
+// ---- fact-pack import / export (preload) ----
+// Flush one scope's buffered facts through a single ObserveBulk (one O(scope) persist). Returns the
+// count stored. On --replace, the scope is cleared the first time it is touched.
+fn flush_scope(d: &NeuronDB, buffers: &mut std::collections::HashMap<String, Vec<String>>, scope: &str,
+               cleared: &mut std::collections::HashSet<String>, replace: bool, global: &mut usize) -> usize {
+    let texts = match buffers.get_mut(scope) { Some(v) if !v.is_empty() => std::mem::take(v), _ => return 0 };
+    *global -= texts.len();
+    if replace && cleared.insert(scope.to_string()) { apply(d, NeuronOp::Forget { scope: scope.to_string(), matching: None }); }
+    apply(d, NeuronOp::ObserveBulk { scope: scope.to_string(), texts }).wrote()
+}
+
+/// `neuron import <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]` — bulk-load a
+/// fact pack into the durable store. Streams the file, groups by scope, and issues one ObserveBulk
+/// (one O(scope) persist) per scope-batch, so a multi-scope pack is O(N). `--flush 0` (default)
+/// buffers a whole scope (one persist — best for one big scope); `--flush N` caps the per-scope
+/// batch. Memory is bounded by an internal global cap regardless of scope cardinality.
+fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
+    use std::io::BufRead;
+    use std::collections::{HashMap, HashSet};
+    use neuron_core::preload::{parse_pack_line, resolve_scope, PackLine};
+    let (mut scope_default, mut chunk, mut dedup, mut replace, mut pack) = (None::<String>, 0usize, false, false, None::<String>);
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--scope" => { scope_default = args.get(i + 1).cloned(); i += 2; }
+            "--flush" => { chunk = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
+            "--dedup" => { dedup = true; i += 1; }
+            "--replace" => { replace = true; i += 1; }
+            o if o.starts_with("--") => { i += 1; }
+            _ => { if pack.is_none() { pack = Some(args[i].clone()); } i += 1; }
+        }
+    }
+    let pack = match pack { Some(p) => p, None => { eprintln!("usage: neuron import <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]"); std::process::exit(2); } };
+    let file = match std::fs::File::open(&pack) { Ok(f) => f, Err(e) => { eprintln!("import {}: {}", pack, e); std::process::exit(1); } };
+    let _lock = acquire_lock(db, force);
+    let d = NeuronDB::open_with_flush(db, max, 1);
+    const GLOBAL_CAP: usize = 200_000;        // bound peak memory by total buffered facts, not scope count
+    let mut buffers: HashMap<String, Vec<String>> = HashMap::new();
+    let (mut cleared, mut seen, mut touched): (HashSet<String>, HashSet<String>, HashSet<String>) = (HashSet::new(), HashSet::new(), HashSet::new());
+    let mut directive: Option<String> = None;
+    let (mut global, mut submitted, mut skipped, mut rejected, mut stored) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    for line in std::io::BufReader::new(file).lines() {
+        let line = match line { Ok(l) => l, Err(_) => break };
+        match parse_pack_line(&line) {
+            PackLine::Skip => skipped += 1,
+            PackLine::Reject => rejected += 1,
+            PackLine::Scope(s) => directive = Some(s),
+            PackLine::Fact { scope, text } => {
+                let target = match resolve_scope(&scope, &directive, &scope_default) {
+                    Some(s) => s.to_string(),
+                    None => { eprintln!("import: a fact has no scope and no --scope default was given"); std::process::exit(2); }
+                };
+                if dedup && !seen.insert(text.clone()) { skipped += 1; continue; }
+                submitted += 1; touched.insert(target.clone());
+                buffers.entry(target.clone()).or_default().push(text); global += 1;
+                if chunk > 0 && buffers.get(&target).map_or(0, |v| v.len()) >= chunk {
+                    stored += flush_scope(&d, &mut buffers, &target, &mut cleared, replace, &mut global);
+                }
+                if global >= GLOBAL_CAP {
+                    if let Some(big) = buffers.iter().max_by_key(|(_, v)| v.len()).map(|(k, _)| k.clone()) {
+                        stored += flush_scope(&d, &mut buffers, &big, &mut cleared, replace, &mut global);
+                    }
+                }
+            }
+        }
+    }
+    let keys: Vec<String> = buffers.keys().cloned().collect();
+    for k in keys { stored += flush_scope(&d, &mut buffers, &k, &mut cleared, replace, &mut global); }
+    d.flush_all();
+    let mut evicted = 0u64;
+    for s in &touched {
+        if let OpResult::Stats(st) = apply(&d, NeuronOp::Stats { scope: s.clone() }) {
+            if st.dropped > 0 { evicted += st.dropped; eprintln!("warning: scope '{}' hit max_facts={}; {} earlier fact(s) evicted — raise --max", s, max, st.dropped); }
+        }
+    }
+    if json { println!("{{\"stored\":{},\"submitted\":{},\"scopes\":{},\"skipped\":{},\"rejected\":{},\"evicted\":{}}}", stored, submitted, touched.len(), skipped, rejected, evicted); }
+    else { eprintln!("imported {} fact(s) across {} scope(s) — {} lines, {} skipped, {} rejected", stored, touched.len(), submitted, skipped, rejected); }
+}
+
+/// `neuron export <scope> [-o FILE] | export --all [-o FILE]` — dump a scope (or every scope) to a
+/// `.facts` pack (`# scope:` headers + one fact per line), re-importable with `neuron import`.
+fn export_cmd(db: &str, max: usize, args: &[String], json: bool) {
+    use std::io::Write;
+    let (mut all, mut out, mut scope) = (false, None::<String>, None::<String>);
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--all" => { all = true; i += 1; }
+            "-o" | "--out" => { out = args.get(i + 1).cloned(); i += 2; }
+            o if o.starts_with('-') => { i += 1; }
+            _ => { if scope.is_none() { scope = Some(args[i].clone()); } i += 1; }
+        }
+    }
+    let d = NeuronDB::open_with_flush(db, max, 1);
+    let scopes = if all { d.neurons() } else { match scope { Some(s) => vec![s], None => { eprintln!("usage: neuron export <scope> [-o FILE] | export --all"); std::process::exit(2); } } };
+    let mut buf = String::new();
+    let mut total = 0usize;
+    for s in &scopes {
+        let facts = d.scope_facts(s);
+        if facts.is_empty() { continue; }
+        buf.push_str(&format!("# scope: {}\n", s));
+        for f in &facts { buf.push_str(&f.replace(['\t', '\n'], " ")); buf.push('\n'); total += 1; }
+        buf.push('\n');
+    }
+    match out {
+        Some(path) => {
+            if let Err(e) = std::fs::write(&path, &buf) { eprintln!("export {}: {}", path, e); std::process::exit(1); }
+            if json { println!("{{\"exported\":{},\"scopes\":{}}}", total, scopes.len()); } else { eprintln!("exported {} fact(s) from {} scope(s) -> {}", total, scopes.len(), path); }
+        }
+        None => { if json { println!("{{\"exported\":{},\"scopes\":{}}}", total, scopes.len()); } else { let _ = std::io::stdout().write_all(buf.as_bytes()); } }
+    }
+}
+
 #[cfg(feature = "server")]
 fn serve_cmd(db: &str, port: u16) {
     let host = std::env::var("NEURON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -499,6 +614,8 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   capture <scope> [--tee] [--only S] [--skip S] [--flush N]   observe each stdin line (pipe an app in)\n\
   run     <scope> [--only S] -- <cmd...>           run a command, tee its output, record it\n\
   follow  <scope> [--from-start] <logfile>         tail a logfile into the scope\n\
+  import  <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]   bulk-load a fact pack\n\
+  export  <scope> [-o FILE] | export --all [-o FILE]                          dump scope(s) to a pack\n\
   stats   <scope>                fact count + timestamps\n\
   forget  <scope> [match...]     drop facts\n\
   list                           list scope ids\n\

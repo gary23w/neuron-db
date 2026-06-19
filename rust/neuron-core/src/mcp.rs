@@ -332,6 +332,65 @@ pub fn handle_line(db: &NeuronDB, line: &str) -> Option<String> {
 }
 
 /// Run the stdio MCP loop until stdin closes.
+// Flush one scope's buffered facts through a single ObserveBulk (one persist). Returns count stored.
+fn preload_flush(db: &NeuronDB, buffers: &mut std::collections::HashMap<String, Vec<String>>, scope: &str) -> usize {
+    let texts = match buffers.get_mut(scope) { Some(v) if !v.is_empty() => std::mem::take(v), _ => return 0 };
+    apply(db, NeuronOp::ObserveBulk { scope: scope.to_string(), texts }).wrote()
+}
+
+// A collision-proof default scope derived from the pack filename (so a pack with no per-fact scope
+// lands somewhere unlikely to clash with a live runtime scope).
+fn preload_default_scope(pack: &str) -> String {
+    let base = pack.rsplit(['/', '\\']).next().unwrap_or(pack);
+    format!("preload-{}", base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base))
+}
+
+/// Load a fact pack into the durable store at boot. Streams the file, groups by scope, and writes
+/// one ObserveBulk per scope-chunk. Per-scope idempotency: a scope that already holds facts is
+/// skipped (so a restart with the env still set is a near no-op), unless NEURON_MCP_PRELOAD_FORCE=1
+/// re-seeds it. All diagnostics go to stderr (stdout stays single-line-clean for the JSON-RPC framing).
+fn preload_into(db: &NeuronDB, pack: &str) -> io::Result<()> {
+    use std::io::BufRead;
+    use std::collections::HashMap;
+    use crate::preload::{parse_pack_line, resolve_scope, PackLine};
+    let file = std::fs::File::open(pack)?;
+    let force = std::env::var("NEURON_MCP_PRELOAD_FORCE").as_deref() == Ok("1");
+    let chunk: usize = std::env::var("NEURON_MCP_PRELOAD_CHUNK").ok().and_then(|s| s.parse().ok()).unwrap_or(2000).max(1);
+    let default_scope = std::env::var("NEURON_MCP_PRELOAD_SCOPE").ok().filter(|s| !s.is_empty())
+        .unwrap_or_else(|| preload_default_scope(pack));
+    let default_scope = Some(default_scope);
+    let mut buffers: HashMap<String, Vec<String>> = HashMap::new();
+    let mut decision: HashMap<String, bool> = HashMap::new();   // scope -> load(true)/skip(false)
+    let mut directive: Option<String> = None;
+    let (mut stored, mut dropped, mut skipped_scopes) = (0usize, 0usize, 0usize);
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line?;
+        match parse_pack_line(&line) {
+            PackLine::Skip | PackLine::Reject => { dropped += 1; }
+            PackLine::Scope(s) => directive = Some(s),
+            PackLine::Fact { scope, text } => {
+                let target = match resolve_scope(&scope, &directive, &default_scope) { Some(s) => s.to_string(), None => { dropped += 1; continue; } };
+                let load = *decision.entry(target.clone()).or_insert_with(|| {
+                    let nonempty = matches!(apply(db, NeuronOp::Stats { scope: target.clone() }), OpResult::Stats(s) if s.facts > 0);
+                    if nonempty && !force { false }
+                    else { if nonempty && force { apply(db, NeuronOp::Forget { scope: target.clone(), matching: None }); } true }
+                });
+                if !load { continue; }
+                buffers.entry(target.clone()).or_default().push(text);
+                if buffers.get(&target).map_or(0, |v| v.len()) >= chunk { stored += preload_flush(db, &mut buffers, &target); }
+            }
+        }
+    }
+    let keys: Vec<String> = buffers.keys().cloned().collect();
+    for k in keys { stored += preload_flush(db, &mut buffers, &k); }
+    db.flush_all();
+    skipped_scopes += decision.values().filter(|&&v| !v).count();
+    let loaded = decision.values().filter(|&&v| v).count();
+    eprintln!("neuron-db preload: {} fact(s) into {} scope(s) from {} ({} scope(s) already loaded, {} line(s) dropped)",
+              stored, loaded, pack, skipped_scopes, dropped);
+    Ok(())
+}
+
 pub fn serve_stdio() -> io::Result<()> {
     let path = std::env::var("NEURON_MCP_DB").unwrap_or_else(|_| "neuron-memory.db".into());
     let max = std::env::var("NEURON_MAX_FACTS").ok().and_then(|s| s.parse().ok()).unwrap_or(100_000);
@@ -339,6 +398,19 @@ pub fn serve_stdio() -> io::Result<()> {
     // Default 1 = immediate per-write durability.
     let flush = std::env::var("NEURON_FLUSH_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
     let db = NeuronDB::open_with_flush(&path, max, flush);
+    // Optional one-shot fact preload (NEURON_MCP_PRELOAD=<pack>): load a fact pack into the store at
+    // boot, before the request loop, with zero lock contention. Pure opt-in (unset = skip). Wrapped
+    // in catch_unwind so a preload failure (e.g. disk-full) logs to stderr and the server still
+    // serves whatever persisted, rather than taking the request loop down with it.
+    if let Ok(pack) = std::env::var("NEURON_MCP_PRELOAD") {
+        if !pack.trim().is_empty() {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| preload_into(&db, &pack))) {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("neuron-db preload error: {}", e),
+                Err(_) => eprintln!("neuron-db preload aborted (write error); serving what persisted"),
+            }
+        }
+    }
     eprintln!("neuron-db MCP server ready on stdio (db={}, max_facts={})", path, max);
     let stdin = io::stdin();
     let mut out = io::stdout();

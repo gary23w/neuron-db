@@ -83,10 +83,16 @@ impl NeuronDB {
         }
     }
 
+    /// Lock the inner state, recovering from a poisoned mutex instead of panicking. A write that
+    /// panics mid-persist (e.g. SQLITE_FULL on a huge import) poisons the lock; de-poisoning here
+    /// keeps the store usable for every later op rather than cascading one failed write into a dead
+    /// store — important for the long-lived MCP server with a preload boot hook.
+    fn guard(&self) -> std::sync::MutexGuard<'_, Inner> { self.inner.lock().unwrap_or_else(|e| e.into_inner()) }
+
     /// Persist all scopes with unsaved (write-behind) changes. Call before shutdown for durability;
     /// also run automatically on Drop and on LRU eviction.
     pub fn flush_all(&self) {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         let Inner { conn, cache, .. } = inner;
         for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; e.writes = 0; } }
     }
@@ -147,7 +153,7 @@ impl NeuronDB {
     pub fn observe(&self, nid: &str, text: &str) -> usize {
         let w;
         {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -164,7 +170,7 @@ impl NeuronDB {
     pub fn observe_many(&self, nid: &str, texts: &[String]) -> usize {
         let w;
         {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -176,7 +182,7 @@ impl NeuronDB {
     }
     pub fn recall(&self, nid: &str, query: &str) -> Option<Recall> {
         let lex = {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             inner.cache.get_mut(nid).unwrap().n.recall(query)
         };
@@ -195,7 +201,7 @@ impl NeuronDB {
     pub fn recall_semantic(&self, nid: &str, query: &str) -> Option<Recall> {
         const SEM_FALLBACK_CAP: usize = 4000;
         let facts: Vec<(String, String)> = {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
             let start = eps.len().saturating_sub(SEM_FALLBACK_CAP);   // most-recent window only
@@ -219,7 +225,7 @@ impl NeuronDB {
     #[cfg(feature = "semantic")]
     pub fn recall_blended(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
         let facts: Vec<(String, String)> = {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| (e.t.clone(), e.v.clone())).collect()
         };
@@ -261,14 +267,14 @@ impl NeuronDB {
         all
     }
     pub fn recall_many(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_many(query, k)
     }
     /// Spreading-activation recall: seeds on cue matches, then follows shared-entity links to
     /// surface associated facts (see Neuron::recall_spreading). Association-based, not keyword/cosine.
     pub fn recall_associative(&self, nid: &str, query: &str, k: usize, hops: usize) -> Vec<Spread> {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
     }
@@ -282,7 +288,7 @@ impl NeuronDB {
         if Neuron::new(self.max_facts).observe(&line) == 0 { return 0; }
         let w;
         {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -296,7 +302,7 @@ impl NeuronDB {
     /// Read a named variable's FULL value (everything after the first " is "), so multi-word values
     /// and values that themselves contain " is " round-trip exactly — unlike cue-isolated recall.
     pub fn var_get(&self, nid: &str, key: &str) -> Option<String> {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let kl = format!("{} is ", key.to_lowercase());
         inner.cache.get(nid).unwrap().n.episodes.iter()
@@ -315,7 +321,7 @@ impl NeuronDB {
     /// (the disposition built up over time). This is how the store colors the model's tone.
     pub fn affect(&self, nid: &str, asked_topic: Option<&str>) -> String {
         let (mood, stances) = {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             let asub = format!("{}::affect", nid);
             Self::ensure(inner, &asub, self.max_facts, self.cap);
             let mood = inner.cache.get(&asub).unwrap().n.episodes.iter()
@@ -335,7 +341,7 @@ impl NeuronDB {
     /// (a disposition that deepens with repetition), persisted durably. Returns (new_strength, new).
     pub fn note_stance(&self, nid: &str, topic: &str, feeling: &str) -> (f32, bool) {
         let out = {
-            let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+            let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -376,7 +382,7 @@ impl NeuronDB {
         (Some(current), trail)
     }
     pub fn turn(&self, nid: &str, msg: &str) -> TurnOut {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let max = self.max_facts;
         let Inner { conn, cache, .. } = inner;
@@ -389,7 +395,7 @@ impl NeuronDB {
         TurnOut { reply: r.reply, kind: r.kind, wrote: r.wrote, facts: e.n.fact_count(), capacity_reached: at_cap && r.wrote > 0 }
     }
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let (before, after) = {
             let Inner { conn, cache, .. } = &mut *inner;
@@ -417,15 +423,30 @@ impl NeuronDB {
         (before - after, after)
     }
     pub fn stats(&self, nid: &str) -> Stats {
-        let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
+        let mut g = self.guard(); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let e = inner.cache.get(nid).unwrap();
-        Stats { facts: e.n.fact_count(), max_facts: self.max_facts, created: e.created, updated: now_ms(), turns: e.turns }
+        Stats { facts: e.n.fact_count(), max_facts: self.max_facts, created: e.created, updated: now_ms(), turns: e.turns, dropped: e.n.dropped }
     }
     pub fn neurons(&self) -> Vec<String> {
-        let g = self.inner.lock().unwrap();
+        let g = self.guard();
         let mut st = g.conn.prepare("SELECT id FROM neurons ORDER BY updated DESC").unwrap();
         let rows = st.query_map([], |r| r.get::<_, String>(0)).unwrap();
         rows.filter_map(|x| x.ok()).collect()
+    }
+
+    /// A scope's serialized dump() blob (the `flag\ttext\tstrength` lines) — the read path for export.
+    /// Re-importable verbatim via observe_many (or load_scope semantics). Tab/newline-safe (dump escapes).
+    pub fn dump_scope(&self, nid: &str) -> String {
+        let mut g = self.guard(); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        inner.cache.get(nid).unwrap().n.dump()
+    }
+
+    /// A scope's stored fact texts, in insertion order — the readable export path (`neuron export`).
+    pub fn scope_facts(&self, nid: &str) -> Vec<String> {
+        let mut g = self.guard(); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| e.t.clone()).collect()
     }
 }

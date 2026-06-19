@@ -347,6 +347,20 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         // batch ingest: arg2 is a newline-joined block. One wasm crossing for a whole document
         // instead of N — fewer boundary hops + encodes. Returns the count of newly-stored facts.
         "obsmany" => apply(&MemStore, NeuronOp::ObserveBulk { scope, texts: arg(2).split('\n').map(|l| l.to_string()).collect() }).wrote().to_string(),
+        // loadmany\t<scope1>\t<facts1 \n-joined>\t<scope2>\t<facts2>… — multi-scope fact preload in ONE
+        // crossing. mem() already split the request on \t, so each scope's \n-joined facts are one field
+        // here (facts must be tab/newline-free — the pack reader + the JS helper guarantee that). Returns
+        // "<stored>\t<lines>" so the host can compare episodes-stored against lines-submitted.
+        "loadmany" => {
+            let (mut total, mut lines) = (0usize, 0usize);
+            let mut idx = 1;
+            while idx + 1 < f.len() {
+                let (sc, blob) = (f[idx], f[idx + 1]); idx += 2;
+                let texts: Vec<String> = blob.split('\n').map(str::trim).filter(|t| !t.is_empty()).map(|t| { lines += 1; t.to_string() }).collect();
+                if !texts.is_empty() { total += apply(&MemStore, NeuronOp::ObserveBulk { scope: sc.to_string(), texts }).wrote(); }
+            }
+            format!("{}\t{}", total, lines)
+        }
         // multi-hop recall: start at arg2 and follow each subsequent field as one relation. Walked
         // server-side in microseconds; abstains (final empty) if a relation doesn't actually appear.
         // Returns "<final>\t<step → step → …>".

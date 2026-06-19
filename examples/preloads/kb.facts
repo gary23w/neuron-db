@@ -1,0 +1,21 @@
+# A sample fact pack (.facts form): one declarative fact per line.
+# `# scope: <id>` sets the scope for the lines that follow it, until the next directive.
+# Load it:  neuron import app.db examples/preloads/kb.facts
+# Or seed an MCP server:  NEURON_MCP_PRELOAD=examples/preloads/kb.facts neuron-mcp
+
+# scope: solar-system
+The Sun contains about 99.8 percent of the mass of the solar system.
+Jupiter is the largest planet in the solar system.
+Mercury is the closest planet to the Sun.
+A year on Neptune lasts about 165 Earth years.
+
+# scope: chemistry
+Water is composed of two hydrogen atoms and one oxygen atom.
+Table salt is sodium chloride.
+The atomic number of carbon is 6.
+Helium is the second most abundant element in the universe.
+
+# scope: computing
+TCP provides reliable, ordered delivery; UDP does not.
+A hash map offers average constant-time lookups.
+The DNS system resolves domain names to IP addresses.
