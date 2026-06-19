@@ -277,9 +277,9 @@ fn acquire_lock(db: &str, force: bool) -> LockGuard {
 }
 
 // ---- streaming capture: pipe an app's output into a scope ----
-struct CapOpts { tee: bool, only: Option<String>, skip: Option<String>, max_line: usize }
+struct CapOpts { tee: bool, only: Option<String>, skip: Option<String>, max_line: usize, flush: usize }
 fn parse_cap_opts(args: &[String]) -> (CapOpts, Vec<String>) {
-    let mut o = CapOpts { tee: false, only: None, skip: None, max_line: 65536 };
+    let mut o = CapOpts { tee: false, only: None, skip: None, max_line: 65536, flush: 1 };
     let mut positional = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -289,6 +289,9 @@ fn parse_cap_opts(args: &[String]) -> (CapOpts, Vec<String>) {
             "--only" => { o.only = args.get(i + 1).cloned(); i += 2; }
             "--skip" => { o.skip = args.get(i + 1).cloned(); i += 2; }
             "--max-line" => { if let Some(n) = args.get(i + 1).and_then(|s| s.parse().ok()) { o.max_line = n; } i += 2; }
+            // batch the O(scope) blob rewrite every N facts — a huge speedup for bulk ingest, at the
+            // cost of losing up to N facts if the process is killed mid-stream (default 1 = durable).
+            "--flush" => { if let Some(n) = args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) { o.flush = n.max(1); } i += 2; }
             "--" => break,                                        // `run`'s command separator
             other if other.starts_with("--") => { i += 1; }      // unknown flag: ignore
             _ => { positional.push(args[i].clone()); i += 1; }
@@ -313,9 +316,9 @@ fn cap_line(d: &NeuronDB, scope: &str, only: &Option<String>, skip: &Option<Stri
 /// stdout first (byte-transparent) so neuron is invisible in a pipeline. Immediate-durable.
 fn capture(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
     use std::io::Write;
-    let (CapOpts { tee, only, skip, max_line }, _) = parse_cap_opts(args);
+    let (CapOpts { tee, only, skip, max_line, flush }, _) = parse_cap_opts(args);
     let _lock = acquire_lock(db, force);
-    let d = NeuronDB::open_with_flush(db, max, 1);
+    let d = NeuronDB::open_with_flush(db, max, flush);
     let mut splitter = LineSplitter::new(max_line);
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
@@ -329,6 +332,7 @@ fn capture(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
     }
     splitter.flush(&mut process);
     drop(process);
+    if flush > 1 { d.flush_all(); }   // persist the last partial batch explicitly (Drop also would)
     eprintln!("captured {} fact(s) into {}", count, scope);
 }
 
@@ -492,7 +496,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
   shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
-  capture <scope> [--tee] [--only S] [--skip S]   observe each stdin line (pipe an app in)\n\
+  capture <scope> [--tee] [--only S] [--skip S] [--flush N]   observe each stdin line (pipe an app in)\n\
   run     <scope> [--only S] -- <cmd...>           run a command, tee its output, record it\n\
   follow  <scope> [--from-start] <logfile>         tail a logfile into the scope\n\
   stats   <scope>                fact count + timestamps\n\
