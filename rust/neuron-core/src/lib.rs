@@ -181,14 +181,17 @@ pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub
 
 fn sentences(u: &str, cap: usize) -> Vec<String> {
     let mut parts = Vec::new(); let mut cur = String::new();
-    let chars: Vec<char> = u.trim().chars().collect();
-    for (i,&c) in chars.iter().enumerate() {
+    let trimmed = u.trim();
+    // stream the chars with one-char lookahead (peek) instead of materializing a Vec<char> — so a
+    // multi-MB paste isn't fully resident as a char vector during ingest.
+    let mut it = trimmed.chars().peekable();
+    while let Some(c) = it.next() {
         cur.push(c);
-        let brk = matches!(c, '.'|'!'|'?'|';') && chars.get(i+1).is_none_or(|n| n.is_whitespace());
+        let brk = matches!(c, '.'|'!'|'?'|';') && it.peek().is_none_or(|n| n.is_whitespace());
         if brk || c=='\n' { let t=cur.trim().to_string(); if !t.is_empty(){parts.push(t);} cur.clear(); }
     }
     let t = cur.trim().to_string(); if !t.is_empty() { parts.push(t); }
-    if parts.is_empty() { parts.push(u.trim().to_string()); }
+    if parts.is_empty() { parts.push(trimmed.to_string()); }
     parts.truncate(cap); parts
 }
 
@@ -298,7 +301,11 @@ impl Neuron {
 
     fn build_index(&mut self) {
         let mut idx: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i,e) in self.episodes.iter().enumerate() { for s in &e.s { idx.entry(s.clone()).or_default().push(i); } }
+        // clone a stem String only the first time it's seen (once per unique stem), not once per
+        // posting — at millions of facts this is ~unique-stems clones instead of ~total-postings.
+        for (i,e) in self.episodes.iter().enumerate() {
+            for s in &e.s { match idx.get_mut(s) { Some(v) => v.push(i), None => { idx.insert(s.clone(), vec![i]); } } }
+        }
         self.index = Some(idx); self.index_len = self.episodes.len();
     }
 
@@ -309,7 +316,7 @@ impl Neuron {
         match &mut self.index {
             Some(idx) if self.index_len <= self.episodes.len() => {
                 for i in self.index_len..self.episodes.len() {
-                    for s in &self.episodes[i].s { idx.entry(s.clone()).or_default().push(i); }
+                    for s in &self.episodes[i].s { match idx.get_mut(s) { Some(v) => v.push(i), None => { idx.insert(s.clone(), vec![i]); } } }
                 }
                 self.index_len = self.episodes.len();
             }
@@ -532,9 +539,15 @@ impl Neuron {
     /// Persistence: "<flag>\t<text>\t<strength>" per line; index rebuilt on load. Strength carries
     /// accumulated salience (e.g. a stance that intensified with repetition) durably across restarts.
     pub fn dump(&self) -> String {
-        self.episodes.iter()
-            .map(|e| format!("{}\t{}\t{}", if e.self_flag {1} else {0}, esc(&e.t), e.strength))
-            .collect::<Vec<_>>().join("\n")
+        use std::fmt::Write as _;
+        // one pass into a single pre-sized buffer (no intermediate Vec<String>, no join copy) — halves
+        // peak memory and the allocation count when persisting a million-fact scope.
+        let mut out = String::with_capacity(self.episodes.len().saturating_mul(48));
+        for (i, e) in self.episodes.iter().enumerate() {
+            if i > 0 { out.push('\n'); }
+            let _ = write!(out, "{}\t{}\t{}", if e.self_flag {1} else {0}, esc(&e.t), e.strength);
+        }
+        out
     }
     pub fn load(blob: &str, max_facts: usize) -> Self {
         let mut n = Neuron::new(max_facts);

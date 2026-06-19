@@ -175,8 +175,12 @@ impl NeuronDB {
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
             // exact-text dedup on the single-observe path (a model re-stating a fact across turns);
-            // the batch path stays un-deduped so bulk ingest stays O(n).
-            if e.n.episodes.iter().any(|ep| ep.t == text) { return 0; }
+            // the batch path stays un-deduped so bulk ingest stays O(n). Scan only a recent window so a
+            // single observe stays O(1) — not O(scope) — on a million-fact store (a re-statement that
+            // matters lands within a session's worth of facts, not a million ago).
+            const DEDUP_WINDOW: usize = 4096;
+            let recent = e.n.episodes.len().saturating_sub(DEDUP_WINDOW);
+            if e.n.episodes[recent..].iter().any(|ep| ep.t == text) { return 0; }
             w = e.n.observe(text);
             Self::touch(conn, nid, e, self.flush_every);   // write-behind aware (immediate when flush_every=1)
         }
