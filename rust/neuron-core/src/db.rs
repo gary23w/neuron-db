@@ -175,7 +175,10 @@ impl NeuronDB {
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
             let mut acc = 0; for t in texts { acc += e.n.observe(t); }
-            Self::persist(conn, nid, e); w = acc;
+            // mark dirty BEFORE persisting: if persist panics (e.g. SQLITE_FULL) and a later guard()
+            // de-poisons the lock, the entry stays dirty so flush_all/Drop re-persists it rather than
+            // silently keeping in-memory facts that never reach disk.
+            e.dirty = true; Self::persist_now(conn, nid, e); w = acc;
         }
         #[cfg(feature = "semantic")] { let mut s = self.sem.lock().unwrap(); for t in texts { s.train(t); } }
         w

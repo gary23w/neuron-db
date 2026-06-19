@@ -355,14 +355,12 @@ fn preload_into(db: &NeuronDB, pack: &str) -> io::Result<()> {
     use crate::preload::{parse_pack_line, resolve_scope, PackLine};
     let file = std::fs::File::open(pack)?;
     let force = std::env::var("NEURON_MCP_PRELOAD_FORCE").as_deref() == Ok("1");
-    let chunk: usize = std::env::var("NEURON_MCP_PRELOAD_CHUNK").ok().and_then(|s| s.parse().ok()).unwrap_or(2000).max(1);
-    let default_scope = std::env::var("NEURON_MCP_PRELOAD_SCOPE").ok().filter(|s| !s.is_empty())
-        .unwrap_or_else(|| preload_default_scope(pack));
-    let default_scope = Some(default_scope);
+    let default_scope = Some(std::env::var("NEURON_MCP_PRELOAD_SCOPE").ok().filter(|s| !s.is_empty())
+        .unwrap_or_else(|| preload_default_scope(pack)));
     let mut buffers: HashMap<String, Vec<String>> = HashMap::new();
     let mut decision: HashMap<String, bool> = HashMap::new();   // scope -> load(true)/skip(false)
     let mut directive: Option<String> = None;
-    let (mut stored, mut dropped, mut skipped_scopes) = (0usize, 0usize, 0usize);
+    let mut dropped = 0usize;
     for line in std::io::BufReader::new(file).lines() {
         let line = line?;
         match parse_pack_line(&line) {
@@ -376,18 +374,27 @@ fn preload_into(db: &NeuronDB, pack: &str) -> io::Result<()> {
                     else { if nonempty && force { apply(db, NeuronOp::Forget { scope: target.clone(), matching: None }); } true }
                 });
                 if !load { continue; }
-                buffers.entry(target.clone()).or_default().push(text);
-                if buffers.get(&target).map_or(0, |v| v.len()) >= chunk { stored += preload_flush(db, &mut buffers, &target); }
+                // buffer the WHOLE scope; it is written in ONE ObserveBulk at EOF (all-or-nothing), so a
+                // boot killed mid-preload leaves each scope either fully loaded or empty — never a
+                // partial scope that the next boot's non-empty guard would then skip forever.
+                buffers.entry(target).or_default().push(text);
             }
         }
     }
     let keys: Vec<String> = buffers.keys().cloned().collect();
-    for k in keys { stored += preload_flush(db, &mut buffers, &k); }
+    let loaded = keys.len();
+    let (mut stored, mut evicted) = (0usize, 0u64);
+    for k in &keys {
+        preload_flush(db, &mut buffers, k);
+        if let OpResult::Stats(s) = apply(db, NeuronOp::Stats { scope: k.clone() }) {
+            stored += s.facts;
+            if s.dropped > 0 { evicted += s.dropped; eprintln!("neuron-db preload: scope '{}' hit NEURON_MAX_FACTS; {} fact(s) evicted — raise it", k, s.dropped); }
+        }
+    }
     db.flush_all();
-    skipped_scopes += decision.values().filter(|&&v| !v).count();
-    let loaded = decision.values().filter(|&&v| v).count();
-    eprintln!("neuron-db preload: {} fact(s) into {} scope(s) from {} ({} scope(s) already loaded, {} line(s) dropped)",
-              stored, loaded, pack, skipped_scopes, dropped);
+    let skipped_scopes = decision.values().filter(|&&v| !v).count();
+    eprintln!("neuron-db preload: {} fact(s) into {} scope(s) from {} ({} already loaded, {} dropped, {} evicted)",
+              stored, loaded, pack, skipped_scopes, dropped, evicted);
     Ok(())
 }
 

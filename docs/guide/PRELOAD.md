@@ -33,14 +33,15 @@ isolates each document's context-relative facts and keeps recall sharp.
 ## Loading a pack
 
 ### CLI — `neuron import` (the durable path; build a db once, serve it anywhere)
+`--db` and `--max` are global flags (they come before the subcommand):
 ```sh
-neuron import app.db pack.jsonl                 # facts with per-line scopes
-neuron import app.db kb.facts --scope notes     # default scope for unscoped lines
-neuron import app.db big.jsonl --max 200000     # raise the per-scope cap for a large pack
-neuron import app.db pack.jsonl --replace       # clear each touched scope first (idempotent re-import)
-neuron import app.db pack.jsonl --dedup         # drop duplicate lines within the pack
-neuron export app.db notes -o notes.facts       # round-trip a scope back out to a pack
-neuron export app.db --all -o everything.facts
+neuron --db app.db import pack.jsonl                  # facts with per-line scopes
+neuron --db app.db import kb.facts --scope notes      # default scope for unscoped lines
+neuron --db app.db --max 200000 import big.jsonl      # raise the per-scope cap for a large pack
+neuron --db app.db import pack.jsonl --replace        # clear each touched scope first (idempotent re-import)
+neuron --db app.db import pack.jsonl --dedup          # drop duplicate (scope,fact) lines within the pack
+neuron --db app.db export notes -o notes.facts        # round-trip a scope back out to a pack
+neuron --db app.db export --all -o everything.facts
 ```
 Multi-scope packs are O(N); a single huge scope is fastest with `--flush 0` (one write).
 
@@ -56,11 +57,11 @@ Point any MCP client's `neuron` server at a pack with an env var:
   }
 }
 ```
-The pack loads **once, before the first request**. A restart with the env still set is a near no-op
-(scopes already loaded are skipped); set `NEURON_MCP_PRELOAD_FORCE=1` to re-seed. Optional:
-`NEURON_MCP_PRELOAD_SCOPE` (default scope), `NEURON_MCP_PRELOAD_CHUNK` (facts per write). For very
-large datasets, prefer building the db offline with `neuron import` and pointing `NEURON_MCP_DB` at
-it — the preload then costs nothing at boot.
+The pack loads **once, before the first request**, writing each scope all-or-nothing — so a boot
+killed mid-load leaves each scope either fully loaded or empty, and a restart with the env still set
+is a near no-op (fully-loaded scopes are skipped). Set `NEURON_MCP_PRELOAD_FORCE=1` to re-seed, or
+`NEURON_MCP_PRELOAD_SCOPE` to set the default scope. For very large datasets, prefer building the db
+offline with `neuron import` and pointing `NEURON_MCP_DB` at it — the preload then costs nothing at boot.
 
 ### WASM — pass the datalist from your script
 The `loadmany` op takes any number of scopes in **one** boundary crossing:
@@ -101,7 +102,7 @@ Fetching a remote dataset is CORS-gated — pre-pack it and serve the `.jsonl` f
 prose column sentence-split (abbreviation-guarded) into one fact per sentence.
 ```sh
 python examples/preloads/facts_to_pack.py examples.csv > pack.jsonl
-neuron import facts.db pack.jsonl --max 200000
+neuron --db facts.db --max 200000 import pack.jsonl
 ```
 
 ## The contract (read before loading untrusted or large data)
