@@ -378,7 +378,7 @@ function host_http(ptr, len){
 }
 async function loadWasm(){
   // http-enabled build: same mem() surface + a host_http import the WASM calls to make web requests
-  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=gary1"), { env: { host_http } });
+  const r = await WebAssembly.instantiateStreaming(fetch("demos/neuron_core_http.wasm?v=gary5"), { env: { host_http } });
   EX = r.instance.exports; EX.mem_reset();
 }
 function wstr(s){ const b = te.encode(s); const p = EX.alloc(b.length); new Uint8Array(EX.memory.buffer,p,b.length).set(b); return [p,b.length]; }
@@ -1057,14 +1057,18 @@ async function garyDispatch(text){
   const t0=performance.now(); let ans="";
   try{ const [p,l]=wstr([text, ...hits.slice(0,6)].join("\n")); ans=readBuf(EX.gary(p,l)).trim(); }catch(e){ return false; }
   const ms=Math.round(performance.now()-t0);
-  const abstained=/\b(don'?t|do not) have\b|\bnot in (my )?(memory|notes)\b|\bisn'?t in\b/i.test(ans) || ans.length<2;
-  const confident = hits.length>0 && a.coverage>=0.5 && !abstained;
+  // CLASSIFY the cortex's output, never show it raw. The cortex emits a routing token: a clean
+  // "ANSWER <value>" means memory answers it; ESCALATE / FETCH / STORE / any degenerate token means it
+  // can't — so we escalate to the host model. This is the binding's dispatch() rule: a non-ANSWER (or
+  // a degenerate generation) can never leak to the user as a reply.
+  const m=/^ANSWER\b\s*(.*)$/is.exec(ans); const value=m?m[1].trim():"";
+  const confident = !!value && value.length>=2 && hits.length>0;
   ev("note","🧠 dispatch · coverage "+Math.round(a.coverage*100)+"%",
      a.total?(a.covered+"/"+a.total+" cues in memory"):"no content cues",
      confident?("gary-neuron answers · "+ms+"ms"):(engine?"escalate → host model":"escalate → memory fallback"));
   if(!confident) return false;                      // ESCALATE — memory can't answer this confidently
-  bubble("a", enforce(ans), "assistant");
-  if(active){ active.messages.push({cls:"a", text:enforce(ans), who:"assistant"}); saveChats(); }
+  bubble("a", enforce(value), "assistant");
+  if(active){ active.messages.push({cls:"a", text:enforce(value), who:"assistant"}); saveChats(); }
   $("log").scrollTop=$("log").scrollHeight;
   return true;                                       // the middle layer handled it
 }
