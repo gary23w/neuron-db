@@ -1,0 +1,51 @@
+name: publish @gary23w/neuron-db
+
+# Publishes the js/ package to npm on every push to main that touches it. The job is version-gated:
+# it only publishes when js/package.json's version isn't already on npm, so a push without a version
+# bump is a clean no-op instead of an error (npm refuses to overwrite a published version). To cut a
+# release: bump the "version" in js/package.json, commit, and push to main.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "js/**"
+      - ".github/workflows/npm-publish.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance (--provenance)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Decide whether this version needs publishing
+        id: gate
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "package: $NAME@$VERSION"
+          if npm view "$NAME@$VERSION" version 2>/dev/null | grep -q .; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION is already on npm — skipping publish."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION is new — publishing."
+          fi
+
+      - name: Publish to npm
+        if: steps.gate.outputs.publish == 'true'
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
