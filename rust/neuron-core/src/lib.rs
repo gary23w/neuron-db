@@ -417,7 +417,12 @@ impl Neuron {
         let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let order = self.candidates(&cue, pet_query);
-        let mut scored: Vec<((i64,i64,i64,i64),usize)> = Vec::new();
+        // top-k via a bounded min-heap: O(candidates · log k) with k memory, instead of scoring then
+        // sorting the whole candidate set. The key carries Reverse(index) so equal scores break to the
+        // lower index — identical ordering to the previous stable sort + truncate.
+        use std::cmp::Reverse;
+        type Key = ((i64, i64, i64, i64), Reverse<usize>);
+        let mut heap: std::collections::BinaryHeap<Reverse<Key>> = std::collections::BinaryHeap::with_capacity(k + 1);
         for i in order {
             let e = &self.episodes[i];
             let ov = cue.iter().filter(|c| e.s.binary_search(c).is_ok()).count();
@@ -425,12 +430,15 @@ impl Neuron {
             let exact = qraw.iter().filter(|wd| e.raw.binary_search(wd).is_ok()).count() as i64;
             let spec = -(e.s.iter().filter(|s| !cue.contains(*s) && !stopval_s().contains(*s)).count() as i64);
             let first_cue = cue.iter()
-                .filter_map(|c| e.s.binary_search(c).ok().map(|k| e.pos[k] as i64))
+                .filter_map(|c| e.s.binary_search(c).ok().map(|kk| e.pos[kk] as i64))
                 .min().unwrap_or(9999);
-            scored.push(((exact, ov as i64, spec, -first_cue), i));
+            let key: Key = ((exact, ov as i64, spec, -first_cue), Reverse(i));
+            if heap.len() < k { heap.push(Reverse(key)); }
+            else if heap.peek().is_some_and(|Reverse(min)| key > *min) { heap.pop(); heap.push(Reverse(key)); }
         }
-        scored.sort_by_key(|e| std::cmp::Reverse(e.0));
-        scored.truncate(k);
+        let mut scored: Vec<((i64,i64,i64,i64), usize)> =
+            heap.into_iter().map(|Reverse((sc, Reverse(i)))| (sc, i)).collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));   // best first; ties -> ascending index
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let out: Vec<Recall> = scored.into_iter().map(|(sc,i)| {
             let e = &self.episodes[i];
@@ -624,8 +632,20 @@ impl Neuron {
     pub(crate) fn candidates(&mut self, cue: &HashSet<String>, pet_query: bool) -> Vec<usize> {
         self.ensure_index();
         let idx = self.index.as_ref().unwrap();
+        // df-aware gating: a stem in >25% of a large scope is a hub — gathering on it pulls O(scope)
+        // candidates. When the cue ALSO has a discriminative (rare) stem, skip the hub postings and
+        // gather only from the rare ones, so block recall is O(rare-df), not O(scope). A genuinely
+        // broad query (every cue stem is a hub) falls back to gathering all. The dfcap floor (64) keeps
+        // behavior byte-identical at small scope — only large scopes are gated.
+        let dfcap = ((self.episodes.len() as f64) * 0.25).max(64.0) as usize;
+        let has_rare = cue.iter().any(|s| idx.get(s).is_some_and(|v| v.len() <= dfcap));
         let mut cand: HashSet<usize> = HashSet::new();
-        for s in cue { if let Some(v) = idx.get(s) { cand.extend(v); } }
+        for s in cue {
+            if let Some(v) = idx.get(s) {
+                if has_rare && v.len() > dfcap { continue; }   // skip the hub posting; a rarer cue covers it
+                cand.extend(v);
+            }
+        }
         if pet_query { for s in pets() { if let Some(v) = idx.get(s) { cand.extend(v); } } }
         let mut order: Vec<usize> = cand.into_iter().collect(); order.sort(); order
     }

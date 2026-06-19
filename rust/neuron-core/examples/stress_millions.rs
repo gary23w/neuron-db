@@ -39,9 +39,11 @@ fn tag(i: usize) -> String {
     }
     String::from_utf8(s.to_vec()).unwrap()
 }
-// the unique tag is the discriminative cue; "registry" is the shared broad-query topic (block recall).
+// each fact carries: a unique cue tag(i), a value v{i}, a TOPIC tag shared by a block of 256 facts
+// (the discriminative block query), and "registry" in every fact (the hub / broad-query word).
+fn topic_tag(i: usize) -> String { tag(i / 256 + 0x4000_0000) }
 fn fact(i: usize) -> String {
-    format!("{} resolves to value v{} in the shared registry", tag(i), i)
+    format!("{} resolves to v{} in {} registry", tag(i), i, topic_tag(i))
 }
 
 fn main() {
@@ -83,31 +85,40 @@ fn main() {
         out!("{:>11}  {:>10.1}  {:>10.1}  {:>9.2}  {:>9.2}", n, fill, idx_ms, pct(&mut lat, 0.5), pct(&mut lat, 0.99));
     }
 
-    // ---------- B. block recall vs a whole-scope ("markdown dump") read ----------
-    // The coding/markdown scenario: pull the relevant block out of a huge scope, instead of loading
-    // the entire memory into context. recall_many(topic, k) returns the top-k; the "markdown" baseline
-    // serializes the WHOLE scope every turn.
-    out!("\n[B] block recall (top-20 on a shared topic) vs reading the whole scope (the markdown way)");
-    out!("{:>11}  {:>14}  {:>12}  {:>14}  {:>12}  {:>9}", "facts", "block us", "block KB", "wholescope us", "whole KB", "x bytes");
+    // ---------- B. block recall: discriminative (df-gated, flat) vs hub vs whole-scope read ----------
+    // A DISCRIMINATIVE query (a topic + the hub word) is df-gated to O(topic) and stays flat; a pure
+    // HUB query matches every fact (O(scope)); the "markdown" baseline serializes the WHOLE scope.
+    out!("\n[B] block recall: discriminative (flat) vs hub (O scope) vs whole-scope read (markdown)");
+    out!("{:>10}  {:>11}  {:>11}  {:>14}  {:>10}  {:>11}", "facts", "disc us", "hub us", "wholescope us", "block KB", "whole KB");
     for &n in &steps {
         let mut neu = Neuron::new(n + 16);
         for i in 0..n {
             neu.observe(&fact(i));
         }
-        let _ = neu.recall("k0"); // warm index
-        // block recall: top-20 facts mentioning the shared topic
-        let mut bl = Vec::with_capacity(30);
-        for _ in 0..30 {
+        let _ = neu.recall(&tag(0)); // warm index
+        let mut r = Lcg(0x5151 ^ n as u64);
+        // discriminative block: a topic (df = 256) + the hub word -> df-gating keeps it O(topic), flat
+        let mut disc = Vec::with_capacity(60);
+        for _ in 0..60 {
+            let q = format!("{} registry", topic_tag(r.next(n)));
             let t = Instant::now();
-            let hits = neu.recall_many("registry", 20);
-            bl.push(t.elapsed().as_nanos());
+            let hits = neu.recall_many(&q, 20);
+            disc.push(t.elapsed().as_nanos());
             std::hint::black_box(&hits);
         }
-        let block_bytes: usize = neu.recall_many("registry", 20).iter().map(|h| h.fact.len()).sum();
+        // hub-only block: every fact matches -> O(scope) scoring (the worst case)
+        let mut hub = Vec::with_capacity(15);
+        for _ in 0..15 {
+            let t = Instant::now();
+            let hits = neu.recall_many("registry", 20);
+            hub.push(t.elapsed().as_nanos());
+            std::hint::black_box(&hits);
+        }
+        let block_bytes: usize = neu.recall_many(&format!("{} registry", topic_tag(0)), 20).iter().map(|h| h.fact.len()).sum();
         // markdown baseline: serialize the whole scope (what a markdown-dump memory injects every turn)
-        let mut wd = Vec::with_capacity(10);
+        let mut wd = Vec::with_capacity(8);
         let mut whole_bytes = 0usize;
-        for _ in 0..10 {
+        for _ in 0..8 {
             let t = Instant::now();
             let blob = neu.dump();
             wd.push(t.elapsed().as_nanos());
@@ -115,13 +126,9 @@ fn main() {
             std::hint::black_box(&blob);
         }
         out!(
-            "{:>11}  {:>14.1}  {:>12.1}  {:>14.0}  {:>12.0}  {:>8.0}x",
-            n,
-            pct(&mut bl, 0.5),
-            block_bytes as f64 / 1024.0,
-            pct(&mut wd, 0.5),
-            whole_bytes as f64 / 1024.0,
-            (whole_bytes as f64 / (block_bytes.max(1) as f64))
+            "{:>10}  {:>11.1}  {:>11.1}  {:>14.0}  {:>10.1}  {:>11.0}",
+            n, pct(&mut disc, 0.5), pct(&mut hub, 0.5), pct(&mut wd, 0.5),
+            block_bytes as f64 / 1024.0, whole_bytes as f64 / 1024.0
         );
     }
 
