@@ -290,7 +290,8 @@ pub struct Neuron {
     pub max_facts: usize,
     index: Option<HashMap<String, Vec<usize>>>,
     index_len: usize,
-    pub dropped: u64,   // oldest facts evicted by the max_facts front-drain (else silent data loss)
+    pub dropped: u64,   // oldest facts evicted by the max_facts front-drain. Per-session: NOT persisted
+                        // by dump()/load(), so it resets on reload/eviction — read it right after a write.
 }
 impl Neuron {
     pub fn new(max_facts: usize) -> Self { Neuron { episodes: Vec::new(), max_facts, index: None, index_len: usize::MAX, dropped: 0 } }

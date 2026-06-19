@@ -59,7 +59,9 @@ Point any MCP client's `neuron` server at a pack with an env var:
 ```
 The pack loads **once, before the first request**, writing each scope all-or-nothing — so a boot
 killed mid-load leaves each scope either fully loaded or empty, and a restart with the env still set
-is a near no-op (fully-loaded scopes are skipped). Set `NEURON_MCP_PRELOAD_FORCE=1` to re-seed, or
+is a near no-op (fully-loaded scopes are skipped). Set `NEURON_MCP_PRELOAD_FORCE=1` to re-seed (this clears each
+touched scope first — including any variables, instructions, or stances stored under it, so
+FORCE-preload into **dedicated** scopes, not ones a live user also writes to), or
 `NEURON_MCP_PRELOAD_SCOPE` to set the default scope. For very large datasets, prefer building the db
 offline with `neuron import` and pointing `NEURON_MCP_DB` at it — the preload then costs nothing at boot.
 

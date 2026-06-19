@@ -401,13 +401,17 @@ fn follow(db: &str, max: usize, scope: &str, args: &[String], force: bool) {
 // scope's (durable fact count, evicted count) read WHILE IT IS STILL CACHED — so the totals stay
 // accurate even when a later scope evicts this one from the LRU cache (which would reset its
 // in-memory `dropped` to 0). On --replace, the scope is cleared the first time it is touched.
+// Returns None when the buffer is already empty (nothing flushed) so the EOF drain can't overwrite
+// a scope's real snapshot with (0,0) — otherwise a scope flushed mid-stream (a --flush chunk or the
+// GLOBAL_CAP) would re-flush empty at EOF and zero out its stored/evicted counts (and silence the
+// eviction warning). Some((facts, evicted)) read while the scope is still cached.
 fn flush_scope(d: &NeuronDB, buffers: &mut std::collections::HashMap<String, Vec<String>>, scope: &str,
-               cleared: &mut std::collections::HashSet<String>, replace: bool, global: &mut usize) -> (usize, u64) {
-    let texts = match buffers.get_mut(scope) { Some(v) if !v.is_empty() => std::mem::take(v), _ => return (0, 0) };
+               cleared: &mut std::collections::HashSet<String>, replace: bool, global: &mut usize) -> Option<(usize, u64)> {
+    let texts = match buffers.get_mut(scope) { Some(v) if !v.is_empty() => std::mem::take(v), _ => return None };
     *global -= texts.len();
     if replace && cleared.insert(scope.to_string()) { apply(d, NeuronOp::Forget { scope: scope.to_string(), matching: None }); }
     apply(d, NeuronOp::ObserveBulk { scope: scope.to_string(), texts });
-    match apply(d, NeuronOp::Stats { scope: scope.to_string() }) { OpResult::Stats(s) => (s.facts, s.dropped), _ => (0, 0) }
+    Some(match apply(d, NeuronOp::Stats { scope: scope.to_string() }) { OpResult::Stats(s) => (s.facts, s.dropped), _ => (0, 0) })
 }
 
 /// `neuron import <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]` — bulk-load a
@@ -445,7 +449,7 @@ fn import_cmd(db: &str, max: usize, args: &[String], json: bool, force: bool) {
     let mut final_state: HashMap<String, (usize, u64)> = HashMap::new();   // scope -> (durable facts, evicted) at its last flush
     let mut directive: Option<String> = None;
     let (mut global, mut submitted, mut skipped, mut rejected) = (0usize, 0usize, 0usize, 0usize);
-    macro_rules! flush { ($scope:expr) => {{ let fs = flush_scope(&d, &mut buffers, $scope, &mut cleared, replace, &mut global); final_state.insert($scope.to_string(), fs); }}; }
+    macro_rules! flush { ($scope:expr) => {{ if let Some(fs) = flush_scope(&d, &mut buffers, $scope, &mut cleared, replace, &mut global) { final_state.insert($scope.to_string(), fs); } }}; }
     for line in std::io::BufReader::new(file).lines() {
         let line = match line { Ok(l) => l, Err(e) => { eprintln!("import: read error (pack truncated?): {}", e); std::process::exit(1); } };
         match parse_pack_line(&line) {

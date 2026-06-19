@@ -55,10 +55,12 @@ pub struct NeuronDB {
 impl Drop for NeuronDB {
     /// Flush any write-behind buffers on shutdown so a clean exit never loses deferred writes.
     fn drop(&mut self) {
-        if let Ok(mut g) = self.inner.lock() {
-            let inner = &mut *g; let Inner { conn, cache, .. } = inner;
-            for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; } }
-        }
+        // Route through guard() (de-poisoning) rather than `if let Ok(lock())`: a prior persist panic
+        // (e.g. SQLITE_FULL) poisons the mutex, and the old form would silently SKIP this shutdown
+        // flush — dropping every dirty write-behind buffer. guard() never panics.
+        let mut g = self.guard();
+        let inner = &mut *g; let Inner { conn, cache, .. } = inner;
+        for (k, e) in cache.iter_mut() { if e.dirty { Self::persist(conn, k, e); e.dirty = false; } }
     }
 }
 

@@ -82,7 +82,10 @@ pub fn parse_pack_line(raw: &str) -> PackLine {
 /// Resolve the target scope for a fact: per-fact JSON scope → active `# scope:` directive → the
 /// caller's default. `None` only when no scope exists at any level (the caller errors on that).
 pub fn resolve_scope<'a>(per_fact: &'a Option<String>, directive: &'a Option<String>, default: &'a Option<String>) -> Option<&'a str> {
-    per_fact.as_deref().or_else(|| directive.as_deref()).or_else(|| default.as_deref())
+    // a blank/whitespace scope at ANY level is treated as absent (don't route into a degenerate ""
+    // scope) — it falls through to the next level instead.
+    let nonblank = |o: &'a Option<String>| o.as_deref().filter(|s| !s.trim().is_empty());
+    nonblank(per_fact).or_else(|| nonblank(directive)).or_else(|| nonblank(default))
 }
 
 #[cfg(test)]
@@ -114,5 +117,8 @@ mod tests {
         assert_eq!(resolve_scope(&None, &dir, &def), Some("dir"));
         assert_eq!(resolve_scope(&None, &None, &def), Some("def"));
         assert_eq!(resolve_scope(&None, &None, &None), None);
+        // a blank per-fact scope falls through instead of routing into ""
+        assert_eq!(resolve_scope(&Some("  ".to_string()), &dir, &def), Some("dir"));
+        assert_eq!(resolve_scope(&Some("".to_string()), &None, &def), Some("def"));
     }
 }
