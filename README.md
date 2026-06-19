@@ -25,9 +25,11 @@ DuckDuckGo, open-meteo) — **no proxy, no worker, nothing leaves your browser**
 
 ## The cortex: gary-neuron
 
-The browser lab runs a small model called gary-neuron as the middle layer between a host model
-and neuron-db. It is a ~7M-parameter int8 transformer baked into the WebAssembly build (no
-download, no GPU), and it works as a dispatcher: each turn it picks one route.
+A small model called gary-neuron (v5) is the middle layer between a host model and neuron-db. It
+is a ~7M-parameter int8 transformer baked into the WebAssembly/binary build (no download, no GPU),
+and it works as a dispatcher: each turn it picks one route. It is the front gate on **every** mount —
+`neuron route` on the CLI, the MCP `route` tool, and `route()` in the WASM binding — and a required
+feature of the `neuron` binary and the `mcp` build, so it is never bypassed.
 
 | route | meaning |
 |---|---|
@@ -36,11 +38,13 @@ download, no GPU), and it works as a dispatcher: each turn it picks one route.
 | `FETCH` | a live-world question; go to the web |
 | `STORE` | a declarative; remember it |
 
-On a held-out test it gets the ANSWER/ESCALATE/FETCH decision right 100% of the time, and
-answers grounded questions at 88–98% across working sets of 1 to 18 facts, with 100% two-hop
-chaining. A dispatch runs in about 54 ms in the browser after a SIMD128 pass over the matmuls,
-so the cheap path wins whenever memory can answer and the host model is only called when the
-turn actually needs it.
+On a held-out test (v5) it gets the ANSWER/ESCALATE/FETCH/STORE decision right 100% of the time
+(`router_bench` 500/500), with STORE routing fixed from 0% to 100%; it answers grounded questions at
+94–100% for working sets up to 12 facts, and an open-ended turn over on-topic facts resolves to a clean
+ESCALATE instead of a degenerate generation. A dispatch runs ~54 ms in the browser (SIMD128) or ~255 ms
+natively, so the cheap path wins whenever memory can answer and the host model is only called when the
+turn actually needs it. Raw model text never reaches the user — the binding/CLI/MCP return the typed
+`{type, value, facts}` decision, so a degenerate generation escalates rather than leaking.
 
 ## LLM memory: link infinite neurons, at flat cost
 

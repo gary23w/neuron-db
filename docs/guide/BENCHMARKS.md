@@ -438,38 +438,47 @@ reasoning tool-calling **~48%**; that is a harness finding, not an MCP cost.
 the model's context). A pure-paraphrase *miss* falls to the semantic scan at **~29 ms**, bounded by the
 4,000-fact fallback cap. Footprint **~5 MB**, dominated by the learned semantic space.
 
-## 12. gary-neuron v3 — the dispatcher cortex
+## 12. gary-neuron v5 — the dispatcher cortex
 
 gary-neuron is a small transformer that sits between a host model and neuron-db and
 picks what happens each turn. It is not a chat model you select. It is the always-on
 middle layer, and every turn it emits exactly one route: `ANSWER`, `ESCALATE`,
 `FETCH <topic>`, or `STORE <fact>`. On the `ANSWER` route the literal value comes from
 neuron-db's deterministic recall, not from the network: the cortex decides the route,
-and the store supplies the bytes.
+and the store supplies the bytes. The cortex is **never bypassed** — it is the front gate
+on every mount (CLI `neuron route`, the MCP `route` tool, the WASM binding's `route()`),
+and it is a required feature of the `neuron` binary and the `mcp` build.
 
 It is a ~7M-parameter (6,973,952) int8 transformer — `E=256`, `H=8`, `L=8`,
 `vocab=2048`, 512-token context. It is baked into the WebAssembly/binary build with
 `include_bytes`, so it runs on CPU with no GPU and no download.
 
-**Held-out accuracy.**
+**Held-out accuracy (v5).**
 
 | task | result |
 |---|---|
-| routing triage (`ANSWER` vs `ESCALATE` vs `FETCH`) | 100% on each route |
-| grounded `ANSWER` accuracy | 88–98% across working sets from 1 to 18 facts |
-| two-hop chaining | 100% |
-| numeric compare | ~chance (the one acknowledged limit) |
+| routing triage (`ANSWER` / `ESCALATE` / `FETCH` / `STORE`) | **100% on each route** (`router_bench`: 500/500) |
+| `STORE` routing | **0% → 100%** (v5 — the prior baseline never routed declaratives) |
+| grounded `ANSWER` accuracy | **94–100%** for working sets up to 12 facts; ~74% by 18 facts |
+| multi-hop chaining (2 and 3 hops) | 98–100% |
+| open-ended turns over on-topic context | clean **`ESCALATE`** — no degenerate output |
+| numeric compare | routes correctly; picking the right entity is ~50% (the one acknowledged limit) |
 
-The numeric-compare weakness (e.g. "is X larger than Y?") is the model deciding the
-route, not the store retrieving a value; it does not affect lookup or chaining accuracy.
+v5 closed two gaps from the prior cortex: `STORE` routing (0% → 100%) and degenerate
+output on open-ended turns (e.g. "tell me more about X" over recalled facts now resolves
+to a clean `ESCALATE` instead of a looping generation). Same shape, same footprint.
 
 **Performance.**
 
 | metric | result |
 |---|---|
+| `router_bench` (500 mixed-intent dispatches, 6-fact working set) | **500/500** · p50 **~255 ms** / p99 **~281 ms** native |
 | browser/WASM dispatch | 172 ms → **54 ms** after a SIMD128 pass over the matmuls |
-| neuron-db recall (10k queries, 7,000 facts, 1,000 scopes) | p50 **3.9 µs** / p99 **36 µs** |
+| neuron-db recall (`db_bench`, selective cue, 1k–50k facts) | **~4.2 µs/call, flat** across scope size |
+| neuron-db batch ingest (`db_bench`, `observe_many`) | **238k facts/s** |
+| multi-hop chain (`db_bench`) | **~11.9 µs/hop, flat** to 50 hops |
 
-The cortex is also fast natively. The two numbers measure different things: dispatch
-latency is the cortex deciding a route; recall latency is the store fetching the value
-once `ANSWER` is chosen.
+The two latency numbers measure different things: dispatch latency is the cortex deciding
+a route (a full forward pass per token); recall latency is the store fetching the value
+once `ANSWER` is chosen. The store is not the bottleneck — the cortex forward pass is, and
+it is inherent to the model (already SIMD-accelerated).
