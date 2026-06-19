@@ -14,5 +14,5 @@ fi
 echo "neuron-db -> http://localhost:8088   (db: $PWD/demo.db)"
 "$BIN" "$PWD/demo.db" 8088 & SV=$!
 sleep 1
-(xdg-open index.html 2>/dev/null || open index.html 2>/dev/null || echo "open examples/demo/index.html in your browser")
+(xdg-open index.html 2>/dev/null || open index.html 2>/dev/null || echo "open examples/browser-demo/index.html in your browser")
 echo "running (pid $SV). Ctrl-C to stop."; wait $SV

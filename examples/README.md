@@ -23,6 +23,14 @@ neuron-db is collecting** from the browser on the right (mouse/clicks/scroll/key
 Open `examples/browser-demo/index.html`, or run `examples/browser-demo/run.sh` / `run.ps1` /
 `start-demo.bat` to back it with the real local server. See [browser-demo/README.md](browser-demo/README.md).
 
+## TypeScript / npm demo (`examples/npm-demo/`)
+
+A Vite + TypeScript app that installs **[`@gary23w/neuron-db`](https://www.npmjs.com/package/@gary23w/neuron-db)**
+from npm and uses it as its only database: a PBKDF2 login (accounts stored as neuron-db variables) plus a
+memory console — `remember`, `recall` (coverage + µs timing), `assoc`, `chain`, `forget`, `stats`, and
+`ask`, which routes the turn through the gary-neuron **cortex**. `npm install && npm run dev` →
+http://localhost:8076. See [npm-demo/README.md](npm-demo/README.md).
+
 ## HTTP clients (`examples/http/`)
 
 For talking to a running `serve` instance from any language:

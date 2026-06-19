@@ -1,5 +1,5 @@
 {
-  "name": "neuron-db-console-demo",
+  "name": "neuron-db-npm-demo",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -12,7 +12,7 @@
     "preview": "vite preview --port 8077"
   },
   "dependencies": {
-    "@gary23w/neuron-db": "file:../js"
+    "@gary23w/neuron-db": "^0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

@@ -1,16 +1,18 @@
-# neuron-db console demo
+# neuron-db npm demo
 
-A small TypeScript app that uses **[neuron-db](../js)** as its database — a login flow plus a memory
-console. Accounts *and* every memory live in neuron-db itself; nothing else is involved.
+A small TypeScript app that installs **[`@gary23w/neuron-db`](https://www.npmjs.com/package/@gary23w/neuron-db)**
+from npm and uses it as its database — a login flow plus a memory console. Accounts *and* every memory
+live in neuron-db itself; nothing else is involved.
 
 ```bash
-cd demo
-npm install        # pulls vite + typescript and the local neuron-db package (file:../js)
+cd examples/npm-demo
+npm install        # pulls vite + typescript and @gary23w/neuron-db from npm
 npm run dev        # copies the cortex wasm, then serves on http://localhost:8076
 ```
 
-> The `@gary23w/neuron-db` dependency points at the local package (`file:../js`). Once it's published,
-> swap it for `"@gary23w/neuron-db": "^0.1.0"` and you're a real `npm install` away.
+> This example depends on the **published** package (`"@gary23w/neuron-db": "^0.1.0"`), so it's a real
+> `npm install` of what anyone else would get. The binding is the same code as the in-repo
+> [`js/`](../../js) source.
 
 ## What it shows
 
@@ -32,5 +34,5 @@ db.recallScored("user:ada", "deadline", 6);   // [{ fact, coverage, overlap }]
 db.route("user:ada", "what is the api key?");  // { type, value, facts }  (cortex)
 ```
 
-`ask` needs a cortex build of the wasm; `copy-wasm.mjs` grabs one from the repo. On a store-only build
-`db.hasCortex` is false and `ask` says so.
+`ask` needs a cortex build of the wasm; `copy-wasm.mjs` grabs one from the repo (the npm package bundles
+only the lean store-only build). On a store-only build `db.hasCortex` is false and `ask` says so.

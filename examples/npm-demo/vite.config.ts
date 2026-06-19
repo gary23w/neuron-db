@@ -1,12 +1,9 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  server: {
-    port: 8076,
-    // allow Vite to read the linked local package (file:../js) outside the demo root
-    fs: { allow: [".."] },
-  },
-  // the wasm lives in public/ (copied by copy-wasm.mjs) and is served at /neuron_core.wasm
+  // @gary23w/neuron-db is a normal npm dependency (installed under node_modules), and the wasm lives in
+  // public/ (copied there by copy-wasm.mjs), served at /neuron_core.wasm — so no fs.allow escape is needed.
+  server: { port: 8076 },
   assetsInclude: ["**/*.wasm"],
   // the binding's Node-only forNode() helper does `import("node:fs")`; the demo uses forBrowser(), so
   // mark node: builtins external to keep the browser build quiet (the dynamic import never runs here).
