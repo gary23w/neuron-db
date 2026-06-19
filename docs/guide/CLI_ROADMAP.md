@@ -454,11 +454,19 @@ machine, and there is no host on the wire today that advertises a richer-tool "t
 is deliberately shaped so the capability layer bolts on at one seam (a `handshake()` / `manifest()`
 method on each transport) **without touching `apply()`**. Staged path:
 
-**Real today — fold into the §1 dedup:**
-- Read the MCP client capabilities that `initialize` already receives (stop returning a static
+**Shipped (the real-today foundation, `src/caps.rs`):** the capability manifest — each capability
+tagged grounded or deferrable — plus `caps::resolve(host_has)`, the grounded-beats-tier decision as
+a pure function (a host that *claims* a grounded capability is still denied it). Advertised as a
+`caps` op on the wasm `mem()` surface, a hidden `caps` MCP tool, and a `neuron caps [host-caps…]`
+CLI command. MCP `initialize` now reads the client's advertised `sampling`/`roots` instead of
+returning a static `{}`. Tests pin the inverse-guard. The live wire + host-function ABI below remain
+the gated future.
+
+**Real today — done:**
+- ✅ Read the MCP client capabilities that `initialize` already receives (stop returning a static
   `{}`).
 - Keep `host_call` WASM-local (the one place the poll model is genuinely needed).
-- `Listed | Hidden` tool visibility — reflect what the wire actually carries, nothing invented.
+- ✅ `Listed | Hidden` tool visibility — reflect what the wire actually carries, nothing invented.
 
 **The rule that makes deferral safe — grounded-beats-tier:** when a host advertises a richer tool,
 neuron defers **only** the capabilities that don't need the store — summarize, embed, normalize,
