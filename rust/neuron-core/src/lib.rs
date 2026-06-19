@@ -614,6 +614,7 @@ pub mod plastic;
 pub mod router;
 pub mod turn;
 pub mod stream;   // line-splitting for piping app output into a scope (capture/run/follow)
+pub mod affect;   // the one shared mood + stance + humanize-directive layer (db.rs and wasm both use it)
 #[cfg(feature = "sqlite")] pub mod db;
 #[cfg(feature = "sqlite")] pub mod op;     // the one op vocabulary + apply() every transport routes through
 #[cfg(feature = "secure")] pub mod secure;

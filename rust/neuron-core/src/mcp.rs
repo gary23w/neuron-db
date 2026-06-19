@@ -285,7 +285,11 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             if emo.is_empty() { (tool_text(id, "(mood cleared; back to auto)"), 0) }
             else { (tool_text(id, &format!("now feeling {}", emo)), 1) }
         }
-        "humanize" => (tool_text(id, &apply(db, NeuronOp::Affect { scope: scope.clone() }).text()), 1),
+        "humanize" => {
+            // optional topic biases the persona toward the asked-about stance (else the strongest)
+            let topic = json_field(body, "topic").filter(|t| !t.trim().is_empty());
+            (tool_text(id, &apply(db, NeuronOp::Affect { scope: scope.clone(), topic }).text()), 1)
+        }
         other => (tool_err(id, &format!("unknown tool: {}", other)), 0),
     };
     synapse_log(&name, &scope, db, returned, t0.elapsed().as_micros());

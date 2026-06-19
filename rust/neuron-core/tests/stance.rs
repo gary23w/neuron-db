@@ -66,14 +66,14 @@ fn disposition_colors_mood_then_fades_when_neglected() {
     for f in ["this matters more than shipping", "still the hill i die on", "non-negotiable"] {
         db.note_stance("agent::stance", "ai safety", f);                  // -> strength 3.0
     }
-    assert!(db.affect("agent").contains("ai safety"),
-            "a disposition built up over time must color the mood: {}", db.affect("agent"));
+    assert!(db.affect("agent", None).contains("ai safety"),
+            "a disposition built up over time must color the mood: {}", db.affect("agent", None));
     // pour energy into other topics; each new feeling decays the neglected ai-safety stance (0.9x)
     for t in ["coffee", "weather", "sports", "music"] {
         db.note_stance("agent::stance", t, "a passing thought");
         db.note_stance("agent::stance", t, "thought about twice");
     }
-    let a = db.affect("agent");
+    let a = db.affect("agent", None);
     assert!(!a.contains("ai safety"),
             "a neglected disposition decays below the threshold and stops dominating: {a}");
     rm(&path);

@@ -200,14 +200,7 @@ impl MemDB {
 static mut MEM: Option<MemDB> = None;
 fn memdb() -> &'static mut MemDB { unsafe { MEM.get_or_insert_with(MemDB::new) } }
 
-/// Match a stored stance topic against an asked-about topic by whole word / exact phrase — never a
-/// bare substring, so "rust" does not fire for "trust" and an empty topic never matches anything.
-fn topic_matches(stored: &str, asked: &str) -> bool {
-    if stored.is_empty() || asked.is_empty() { return false; }
-    stored == asked
-        || asked.split_whitespace().any(|w| w == stored)
-        || stored.split_whitespace().any(|w| w == asked)
-}
+use crate::affect::topic_matches;   // the one shared whole-word topic matcher
 
 /// Reset the whole in-browser database (all scopes, vars, instructions).
 #[no_mangle] pub extern "C" fn mem_reset() { unsafe { MEM = Some(MemDB::new()); } }
@@ -350,34 +343,22 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
             if topic.is_empty() || !topic.chars().any(|c| c.is_alphanumeric()) { "0".into() }   // no empty/punctuation topics
             else {
                 let v = db.stances.entry(scope.clone()).or_default();
-                for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * 0.9).max(0.5); } }   // neglected views fade
+                for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * crate::affect::STANCE_DECAY).max(crate::affect::STANCE_FLOOR); } }   // neglected views fade
                 match v.iter_mut().find(|s| s.0 == topic) {
-                    Some(s) => { s.2 += 1.0; s.1 = feeling; format!("{:.0}", s.2) }
-                    None => { v.push((topic, feeling, 1.0)); "1".into() }
+                    Some(s) => { s.2 += crate::affect::STANCE_BUMP; s.1 = feeling; format!("{:.0}", s.2) }
+                    None => { v.push((topic, feeling, crate::affect::STANCE_BUMP)); "1".into() }
                 }
             }
         }
         "humanize" => {
             let topic = arg(2).trim().to_lowercase();   // optional: bias toward the asked-about topic's stance
-            let mut body = String::new();
-            if let Some(m) = db.moods.get(&scope) {
-                body.push_str(&format!(" Right now you feel {}; let it drive your tone, energy and word choice.", m));
-            }
-            let pick = db.stances.get(&scope).and_then(|v| {
-                if !topic.is_empty() {
-                    if let Some(s) = v.iter().find(|s| topic_matches(&s.0, &topic)) { return Some(s); }
-                }
-                v.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-            });
-            if let Some(s) = pick {
-                let asked = topic_matches(&s.0, &topic);
-                if s.2 >= 1.5 || asked {   // express a hardened view always; a budding one only when asked about it
-                    body.push_str(&format!(" You hold a real opinion, built up over time, about {} (intensity x{:.0}): \"{}\" — let it bias how you react to anything related.", s.0, s.2, s.1));
-                }
-            }
-            // only assert a persona when there is genuine affect to express — a neutral session stays neutral
-            if body.is_empty() { String::new() }
-            else { format!("You are NOT a neutral assistant — you have genuine opinions and feelings, and they show in how you write.{body}") }
+            let mood = db.moods.get(&scope).map(|s| s.as_str());
+            let empty = Vec::new();
+            let stances = db.stances.get(&scope).unwrap_or(&empty);
+            let asked = if topic.is_empty() { None } else { Some(topic.as_str()) };
+            let body = crate::affect::directive_body(mood, stances, asked);
+            // a neutral session stays neutral — only assert the persona when there is real affect
+            if body.is_empty() { String::new() } else { format!("{}{}", crate::affect::FRAME, body) }
         }
         "mood" => db.moods.get(&scope).cloned().unwrap_or_default(),
         "topstance" => db.stances.get(&scope)

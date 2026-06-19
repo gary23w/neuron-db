@@ -27,7 +27,7 @@ pub enum NeuronOp {
     VarGet { scope: String, key: String },
     Stance { scope: String, topic: String, feeling: String },
     Mood { scope: String, emotion: String },
-    Affect { scope: String },
+    Affect { scope: String, topic: Option<String> },     // topic = optional stance to bias the persona toward
     Turn { scope: String, message: String },
     Forget { scope: String, matching: Option<String> },
     Stats { scope: String },
@@ -103,7 +103,7 @@ pub fn apply(db: &NeuronDB, op: NeuronOp) -> OpResult {
             OpResult::Stance { intensity, created }
         }
         NeuronOp::Mood { scope, emotion } => { db.set_mood(&scope, &emotion); OpResult::Ok }
-        NeuronOp::Affect { scope } => OpResult::Text(db.affect(&scope)),
+        NeuronOp::Affect { scope, topic } => OpResult::Text(db.affect(&scope, topic.as_deref())),
         NeuronOp::Turn { scope, message } => OpResult::Turned(db.turn(&scope, &message)),
         NeuronOp::Forget { scope, matching } => {
             let (forgot, remaining) = db.forget(&scope, matching.as_deref());

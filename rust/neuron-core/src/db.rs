@@ -287,8 +287,8 @@ impl NeuronDB {
     /// The humanize basis for a scope: an always-on directive to respond with genuine feeling,
     /// plus the current mood (the override variable if set) and the strongest accumulated stance
     /// (the disposition built up over time). This is how the store colors the model's tone.
-    pub fn affect(&self, nid: &str) -> String {
-        let (mood, strongest) = {
+    pub fn affect(&self, nid: &str, asked_topic: Option<&str>) -> String {
+        let (mood, stances) = {
             let mut g = self.inner.lock().unwrap(); let inner = &mut *g;
             let asub = format!("{}::affect", nid);
             Self::ensure(inner, &asub, self.max_facts, self.cap);
@@ -296,21 +296,14 @@ impl NeuronDB {
                 .find_map(|e| e.t.strip_prefix("mood is ").map(|m| m.trim().to_string()));
             let ssub = format!("{}::stance", nid);
             Self::ensure(inner, &ssub, self.max_facts, self.cap);
-            let strongest = inner.cache.get(&ssub).unwrap().n.episodes.iter()
-                .max_by(|a, b| a.strength.partial_cmp(&b.strength).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|e| (e.t.clone(), e.strength));
-            (mood, strongest)
+            // each stance Episode is stored as "topic: feeling" (reinforce_prefix), strength accumulates
+            let stances: Vec<(String, String, f32)> = inner.cache.get(&ssub).unwrap().n.episodes.iter()
+                .map(|e| { let (t, f) = e.t.split_once(": ").unwrap_or(("", e.t.as_str())); (t.to_string(), f.to_string(), e.strength) })
+                .collect();
+            (mood, stances)
         };
-        let mut s = String::from("You are NOT a neutral assistant. You have genuine feelings and a point of view, and they show in how you write.");
-        if let Some(m) = &mood {
-            s.push_str(&format!(" Right now you feel {m}, and you let it drive everything — your tone, energy, word choice, how blunt or warm or guarded you are. Do not write a flat, hedged textbook answer; sound like a real person who genuinely feels {m}.", m = m));
-        }
-        if let Some((feeling, strength)) = &strongest {
-            if *strength >= 1.5 {   // a disposition that built up (and hasn't decayed away) colors the mood
-                s.push_str(&format!(" You also hold a hardened view, built up over time (intensity x{}): \"{}\" — let it bias how you react to anything related.", *strength as i64, feeling));
-            }
-        }
-        s
+        // db.rs shows the persona frame even when neutral (a baseline directive the harness can lean on)
+        format!("{}{}", crate::affect::FRAME, crate::affect::directive_body(mood.as_deref(), &stances, asked_topic))
     }
     /// Record/intensify a stance about `topic`. Re-stating the same topic accumulates its strength
     /// (a disposition that deepens with repetition), persisted durably. Returns (new_strength, new).
@@ -320,10 +313,10 @@ impl NeuronDB {
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
-            let r = e.n.reinforce_prefix(topic, feeling, 1.0);
+            let r = e.n.reinforce_prefix(topic, feeling, crate::affect::STANCE_BUMP);
             // neglected dispositions fade as new feelings form, so the active "culture" can shift
             // over time rather than monotonically hardening on whatever was felt first.
-            e.n.decay_prefix_others(topic, 0.9, 0.5);
+            e.n.decay_prefix_others(topic, crate::affect::STANCE_DECAY, crate::affect::STANCE_FLOOR);
             Self::persist(conn, nid, e);
             r
         };
