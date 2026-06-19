@@ -30,7 +30,7 @@
 const SENTINEL = String.fromCharCode(1); // mem() prefixes an unknown-op error with this; never appears in real output.
 
 /** The binding version (matches the npm package). */
-export const VERSION = "0.1.1";
+export const VERSION = "0.1.2";
 
 export class NeuronDB {
   /** Wrap an already-instantiated wasm `exports`. Prefer fromModule / fromBytes. */
@@ -89,12 +89,15 @@ export class NeuronDB {
         const url = td.decode(new Uint8Array(ex.memory.buffer, ptr, len));
         const t = ++tok;
         Promise.resolve(handler(url)).then((body) => {
+          if (typeof ex.http_deliver !== "function") {
+            throw new Error("host_http fired but this wasm lacks http_deliver — build the core with --features http");
+          }
           const b = te.encode(String(body == null ? "" : body));
           const p = ex.alloc(b.length);
           new Uint8Array(ex.memory.buffer, p, b.length).set(b);
           ex.http_deliver(t, p, b.length);
           if (ex.dealloc) ex.dealloc(p, b.length);
-        }).catch(() => {});
+        }).catch((e) => { try { console.error("[neuron-db] http delivery failed:", (e && e.message) || e); } catch {} });
         return t;
       };
     }
