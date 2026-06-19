@@ -15,6 +15,14 @@ MCP tools, including a reasoning model deliberating over which tool to call. And
 **selective recall stays flat (~µs) as a scope grows**, exact recall is unbounded by total size, and
 the fuzzy/semantic fallback is bounded so a large scope never makes a miss expensive.
 
+The whole surface is also a **CLI**: `neuron shell` (an interactive store — recall, spreading
+assoc, multi-hop chain, vars), `capture` / `run` / `follow` (pipe any app's output into a scope
+with a transparent tee + filters), `chat`, `mount claude`, single-writer locking, and scriptable
+exit codes (a miss exits 3). Crucially the CLI, the MCP server, the HTTP server, and the in-browser
+wasm now all dispatch through **one shared op vocabulary** (`op::apply` over a `Store` trait), so
+behavior is identical wherever you drive it. Design + full command surface:
+[CLI_ROADMAP.md](CLI_ROADMAP.md).
+
 ### Public MCP tools
 | tool | what it does |
 |---|---|
@@ -34,7 +42,7 @@ HTTP server + `serve` · `neuron-mcp` (stdio MCP). Default build is zero-depende
 
 ## Latest verified numbers (release, 2026-06-15)
 
-- **Unit suite:** 133 tests, 0 failures.
+- **Unit suite:** 156 tests across the full feature matrix, 0 failures.
 - **Write:** single `observe` 3.3k/s; batch `observe_many` 235k/s; opt-in write-behind closes the
   single-observe gap on a growing scope (default stays immediately durable).
 - **Recall:** selective cue **~4.2 µs, flat 1k→50k facts**; `recall_chain` ~12 µs/hop (flat to 50 hops);
