@@ -151,3 +151,8 @@ required-features = ["sqlite", "semantic"]
 [[example]]
 name = "vs_vectors"
 required-features = ["sqlite", "semantic"]
+
+# scale + stress: millions of facts, large blocks, durable write throughput, dump/load serialization
+[[example]]
+name = "stress_millions"
+required-features = ["sqlite"]
