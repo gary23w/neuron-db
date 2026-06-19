@@ -1,0 +1,4 @@
+node_modules
+dist
+public/neuron_core.wasm
+package-lock.json

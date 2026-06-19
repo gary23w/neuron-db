@@ -1,0 +1,21 @@
+{
+  "name": "neuron-db-console-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A small TypeScript demo: a login flow + a memory console, with neuron-db as the database.",
+  "scripts": {
+    "predev": "node copy-wasm.mjs",
+    "prebuild": "node copy-wasm.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 8077"
+  },
+  "dependencies": {
+    "@gary23w/neuron-db": "file:../js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}
