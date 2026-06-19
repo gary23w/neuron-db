@@ -201,6 +201,73 @@ static mut MEM: Option<MemDB> = None;
 fn memdb() -> &'static mut MemDB { unsafe { MEM.get_or_insert_with(MemDB::new) } }
 
 use crate::affect::topic_matches;   // the one shared whole-word topic matcher
+use crate::op::{apply, NeuronOp, OpResult};
+
+/// Drives the in-browser MemDB through the shared op::apply vocabulary. A zero-sized handle: the
+/// real store is the single-threaded `memdb()` global, reached inside each method (the same access
+/// the raw mem() arms use), so no interior-mutability wrapper is needed. Each method makes exactly
+/// ONE memdb() call so two `&mut MemDB` are never live at once.
+struct MemStore;
+impl crate::op::Store for MemStore {
+    fn observe(&self, scope: &str, text: &str) -> usize { memdb().n(scope).observe(text) }
+    fn observe_bulk(&self, scope: &str, texts: &[String]) -> usize {
+        let n = memdb().n(scope);
+        texts.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).map(|t| n.observe(t)).sum()
+    }
+    fn recall_one(&self, scope: &str, query: &str) -> Option<crate::Recall> { memdb().n(scope).recall(query) }
+    // the in-browser store is lexical only — semantic/across are durable-store concepts
+    fn recall_block(&self, scope: &str, query: &str, k: usize, _semantic: bool, _across: bool) -> Vec<crate::Recall> { memdb().n(scope).recall_many(query, k) }
+    fn recall_value(&self, scope: &str, query: &str) -> Option<String> { memdb().n(scope).recall(query).map(|r| r.value) }
+    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<crate::Spread> { memdb().n(scope).recall_spreading(query, k, hops) }
+    fn recall_chain(&self, scope: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>) {
+        let n = memdb().n(scope);
+        let mut current = start.trim().to_string();
+        let mut trail = vec![current.clone()];
+        for rel in path {
+            let rel_words: Vec<&str> = rel.split_whitespace().filter(|w| w.len() >= 3).collect();
+            match n.recall(&format!("{} {}", current, rel)) {
+                Some(h) if rel_words.is_empty()
+                    || rel_words.iter().any(|rw| h.fact.split_whitespace().any(|w| crate::rel_matches(w, rw))) => {
+                    current = h.value.clone(); trail.push(current.clone());
+                }
+                _ => return (None, trail),   // a broken relation abstains instead of drifting
+            }
+        }
+        (Some(current), trail)
+    }
+    fn var_set(&self, scope: &str, key: &str, value: &str) -> usize { memdb().vars.entry(scope.to_string()).or_default().insert(key.to_string(), value.to_string()); 1 }
+    fn var_get(&self, scope: &str, key: &str) -> Option<String> { memdb().vars.get(scope).and_then(|m| m.get(key)).cloned() }
+    fn note_stance(&self, scope: &str, topic: &str, feeling: &str) -> (f32, bool) {
+        let v = memdb().stances.entry(scope.to_string()).or_default();
+        for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * crate::affect::STANCE_DECAY).max(crate::affect::STANCE_FLOOR); } }
+        match v.iter_mut().find(|s| s.0 == topic) {
+            Some(s) => { s.2 += crate::affect::STANCE_BUMP; s.1 = feeling.to_string(); (s.2, false) }
+            None => { v.push((topic.to_string(), feeling.to_string(), crate::affect::STANCE_BUMP)); (crate::affect::STANCE_BUMP, true) }
+        }
+    }
+    fn set_mood(&self, scope: &str, emotion: &str) {
+        if emotion.is_empty() { memdb().moods.remove(scope); } else { memdb().moods.insert(scope.to_string(), emotion.to_string()); }
+    }
+    fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String {
+        let db = memdb();
+        let empty = Vec::new();
+        let body = crate::affect::directive_body(db.moods.get(scope).map(|s| s.as_str()), db.stances.get(scope).unwrap_or(&empty), asked_topic);
+        if body.is_empty() { String::new() } else { format!("{}{}", crate::affect::FRAME, body) }
+    }
+    fn turn(&self, _scope: &str, _message: &str) -> crate::TurnOut { crate::TurnOut::default() }   // the in-browser store has no turn engine
+    fn forget(&self, scope: &str, matching: Option<&str>) -> (usize, usize) {
+        let n = memdb().n(scope);
+        let before = n.fact_count();
+        match matching { None => n.episodes.clear(), Some(m) => { let needle = m.to_lowercase(); n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&needle)); } }
+        n.invalidate_index();
+        let after = n.fact_count();
+        (before - after, after)
+    }
+    fn stats(&self, scope: &str) -> crate::Stats {
+        crate::Stats { facts: memdb().scopes.get(scope).map(|n| n.fact_count()).unwrap_or(0), max_facts: 1_000_000, ..Default::default() }
+    }
+    fn scopes(&self) -> Vec<String> { let mut v: Vec<String> = memdb().scopes.keys().cloned().collect(); v.sort(); v }
+}
 
 /// Reset the whole in-browser database (all scopes, vars, instructions).
 #[no_mangle] pub extern "C" fn mem_reset() { unsafe { MEM = Some(MemDB::new()); } }
@@ -235,31 +302,28 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
     let scope = f.get(1).copied().unwrap_or("default").to_string();
     let arg = |i: usize| f.get(i).copied().unwrap_or("");
     let num = |i: usize, d: usize| f.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
-    let db = memdb();
+    // routed arms go through op::apply (the one vocabulary, generic over Store); wasm-specific arms
+    // reach memdb() directly. Each path touches one &mut MemDB at a time, never two at once.
     let out: String = match op {
-        "observe" => {
-            let before = db.n(&scope).fact_count();
-            db.n(&scope).observe(arg(2));
-            (db.n(&scope).fact_count() - before).to_string()
-        }
-        "recall" => db.n(&scope).recall_many(arg(2), num(3, 6))
-            .into_iter().map(|r| r.fact).collect::<Vec<_>>().join("\n"),
-        "value" => db.n(&scope).recall(arg(2)).map(|r| r.value).unwrap_or_default(),
-        "assoc" => db.n(&scope).recall_spreading(arg(2), num(4, 8), num(3, 2))
-            .into_iter().map(|s| s.fact).collect::<Vec<_>>().join("\n"),
-        "setvar" => { db.vars.entry(scope).or_default().insert(arg(2).to_string(), arg(3).to_string()); "ok".into() }
-        "getvar" => db.vars.get(&scope).and_then(|m| m.get(arg(2))).cloned().unwrap_or_default(),
+        "observe" => apply(&MemStore, NeuronOp::Observe { scope, text: arg(2).to_string() }).wrote().to_string(),
+        "recall" => apply(&MemStore, NeuronOp::Recall { scope, query: arg(2).to_string(), k: num(3, 6), semantic: false, across: false })
+            .hits().into_iter().map(|r| r.fact).collect::<Vec<_>>().join("\n"),
+        "value" => apply(&MemStore, NeuronOp::RecallValue { scope, query: arg(2).to_string() }).value().unwrap_or_default(),
+        "assoc" => apply(&MemStore, NeuronOp::RecallAssoc { scope, query: arg(2).to_string(), k: num(4, 8), hops: num(3, 2) })
+            .assoc().into_iter().map(|s| s.fact).collect::<Vec<_>>().join("\n"),
+        "setvar" => { apply(&MemStore, NeuronOp::VarSet { scope, key: arg(2).to_string(), value: arg(3).to_string() }); "ok".into() }
+        "getvar" => apply(&MemStore, NeuronOp::VarGet { scope, key: arg(2).to_string() }).value().unwrap_or_default(),
         "addinstr" => {
-            let v = db.instrs.entry(scope).or_default();
+            let v = memdb().instrs.entry(scope).or_default();
             let t = arg(2).to_string();
             if !t.is_empty() && !v.contains(&t) { v.push(t); }
             "ok".into()
         }
-        "instrs" => db.instrs.get(&scope).map(|v| v.join("\n")).unwrap_or_default(),
+        "instrs" => memdb().instrs.get(&scope).map(|v| v.join("\n")).unwrap_or_default(),
         // remove every standing instruction whose text contains the (case-insensitive) needle; returns count removed
         "delinstr" => {
             let needle = arg(2).trim().to_lowercase();
-            match db.instrs.get_mut(&scope) {
+            match memdb().instrs.get_mut(&scope) {
                 Some(v) if !needle.is_empty() => {
                     let before = v.len();
                     v.retain(|i| !i.to_lowercase().contains(&needle));
@@ -269,54 +333,29 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
             }
         }
         // drop all standing instructions for the scope; returns count removed
-        "clearinstr" => db.instrs.get_mut(&scope).map(|v| { let n = v.len(); v.clear(); n.to_string() }).unwrap_or_else(|| "0".into()),
-        // remove every fact whose text CONTAINS the (case-insensitive) needle — the same substring
-        // semantics the MCP/db `forget` uses (an empty needle clears the scope)
-        "forget" => {
-            let needle = arg(2).to_lowercase();
-            let n = db.n(&scope);
-            let before = n.fact_count();
-            if needle.is_empty() { n.episodes.clear(); } else { n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&needle)); }
-            n.invalidate_index();
-            (before - n.fact_count()).to_string()
-        }
-        "stats" => db.scopes.get(&scope).map(|n| n.fact_count()).unwrap_or(0).to_string(),
+        "clearinstr" => memdb().instrs.get_mut(&scope).map(|v| { let n = v.len(); v.clear(); n.to_string() }).unwrap_or_else(|| "0".into()),
+        // empty needle clears the scope; otherwise drops facts containing it (same substring semantics as the MCP/db forget)
+        "forget" => match apply(&MemStore, NeuronOp::Forget { scope, matching: { let m = arg(2); if m.is_empty() { None } else { Some(m.to_string()) } } }) {
+            OpResult::Forgot { forgot, .. } => forgot.to_string(), _ => "0".into(),
+        },
+        "stats" => match apply(&MemStore, NeuronOp::Stats { scope }) { OpResult::Stats(s) => s.facts.to_string(), _ => "0".into() },
         // the scope's stored episode texts, in insertion order — so a caller's ordered view matches
         // exactly what was stored (the JS sentence splitter and Rust's differ, e.g. on ';')
-        "episodes" => db.scopes.get(&scope)
+        "episodes" => memdb().scopes.get(&scope)
             .map(|n| n.episodes.iter().map(|e| e.t.clone()).collect::<Vec<_>>().join("\n"))
             .unwrap_or_default(),
         // batch ingest: arg2 is a newline-joined block. One wasm crossing for a whole document
         // instead of N — fewer boundary hops + encodes. Returns the count of newly-stored facts.
-        "obsmany" => {
-            let n = db.n(&scope);
-            let before = n.fact_count();
-            for line in arg(2).split('\n') { let t = line.trim(); if !t.is_empty() { n.observe(t); } }
-            (n.fact_count() - before).to_string()
-        }
-        // multi-hop recall: start at arg2 and follow each subsequent field as one relation, resolving
-        // "<current> <relation>" by recall at every hop — server-side, microseconds, no model round
-        // trips. Only advances if the relation actually appears in the recalled fact (morph/stem
-        // tolerant via rel_matches), so a broken chain abstains instead of drifting. Returns
-        // "<final>\t<step → step → …>" (final empty if the chain broke).
+        "obsmany" => apply(&MemStore, NeuronOp::ObserveBulk { scope, texts: arg(2).split('\n').map(|l| l.to_string()).collect() }).wrote().to_string(),
+        // multi-hop recall: start at arg2 and follow each subsequent field as one relation. Walked
+        // server-side in microseconds; abstains (final empty) if a relation doesn't actually appear.
+        // Returns "<final>\t<step → step → …>".
         "chain" => {
             let path: Vec<String> = f.iter().skip(3).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let n = db.n(&scope);
-            let mut current = arg(2).trim().to_string();
-            let mut trail = vec![current.clone()];
-            let mut broke = false;
-            for rel in &path {
-                let rel_words: Vec<&str> = rel.split_whitespace().filter(|w| w.len() >= 3).collect();
-                match n.recall(&format!("{} {}", current, rel)) {
-                    Some(h) if rel_words.is_empty()
-                        || rel_words.iter().any(|rw| h.fact.split_whitespace().any(|w| crate::rel_matches(w, rw))) => {
-                        current = h.value.clone();
-                        trail.push(current.clone());
-                    }
-                    _ => { broke = true; break; }
-                }
+            match apply(&MemStore, NeuronOp::RecallChain { scope, start: arg(2).trim().to_string(), path }) {
+                OpResult::Chain { value, trail } => format!("{}\t{}", value.unwrap_or_default(), trail.join(" → ")),
+                _ => String::new(),
             }
-            format!("{}\t{}", if broke { String::new() } else { current }, trail.join(" → "))
         }
         // --- opt-in web fetch (feature "http"): the guest INITIATES an HTTP GET through the host
         // transport and gets a token; poll `fetched <token>` until the host delivers the body ---
@@ -331,42 +370,27 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
             let token: i32 = arg(2).parse().unwrap_or(-1);
             httpmap().get(&token).cloned().unwrap_or_else(|| "pending".into())
         }
-        // --- affective layer: a transient mood + accumulating, decaying stances + the humanize basis ---
-        "feel" => {
-            let e = arg(2).trim();
-            if e.is_empty() { db.moods.remove(&scope); } else { db.moods.insert(scope.clone(), e.to_string()); }
-            "ok".into()
-        }
+        // --- affective layer: mood + stance writes route through apply (its Store impl owns the
+        // accumulation); the read-only accessors below stay direct ---
+        "feel" => { apply(&MemStore, NeuronOp::Mood { scope, emotion: arg(2).trim().to_string() }); "ok".into() }
         "stance" => {
             let topic = arg(2).trim().to_lowercase();
-            let feeling = arg(3).trim().to_string();
             if topic.is_empty() || !topic.chars().any(|c| c.is_alphanumeric()) { "0".into() }   // no empty/punctuation topics
-            else {
-                let v = db.stances.entry(scope.clone()).or_default();
-                for s in v.iter_mut() { if s.0 != topic { s.2 = (s.2 * crate::affect::STANCE_DECAY).max(crate::affect::STANCE_FLOOR); } }   // neglected views fade
-                match v.iter_mut().find(|s| s.0 == topic) {
-                    Some(s) => { s.2 += crate::affect::STANCE_BUMP; s.1 = feeling; format!("{:.0}", s.2) }
-                    None => { v.push((topic, feeling, crate::affect::STANCE_BUMP)); "1".into() }
-                }
-            }
+            else { match apply(&MemStore, NeuronOp::Stance { scope, topic, feeling: arg(3).trim().to_string() }) {
+                OpResult::Stance { intensity, .. } => format!("{:.0}", intensity), _ => "0".into(),
+            } }
         }
         "humanize" => {
             let topic = arg(2).trim().to_lowercase();   // optional: bias toward the asked-about topic's stance
-            let mood = db.moods.get(&scope).map(|s| s.as_str());
-            let empty = Vec::new();
-            let stances = db.stances.get(&scope).unwrap_or(&empty);
-            let asked = if topic.is_empty() { None } else { Some(topic.as_str()) };
-            let body = crate::affect::directive_body(mood, stances, asked);
-            // a neutral session stays neutral — only assert the persona when there is real affect
-            if body.is_empty() { String::new() } else { format!("{}{}", crate::affect::FRAME, body) }
+            apply(&MemStore, NeuronOp::Affect { scope, topic: if topic.is_empty() { None } else { Some(topic) } }).text()
         }
-        "mood" => db.moods.get(&scope).cloned().unwrap_or_default(),
-        "topstance" => db.stances.get(&scope)
+        "mood" => memdb().moods.get(&scope).cloned().unwrap_or_default(),
+        "topstance" => memdb().stances.get(&scope)
             .and_then(|v| v.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)))
             .map(|s| format!("{}\t{}\t{:.1}", s.0, s.1, s.2)).unwrap_or_default(),
         "stanceof" => {
             let topic = arg(2).trim().to_lowercase();
-            db.stances.get(&scope)
+            memdb().stances.get(&scope)
                 .and_then(|v| v.iter().find(|s| topic_matches(&s.0, &topic)))
                 .map(|s| format!("{}\t{}\t{:.1}", s.0, s.1, s.2)).unwrap_or_default()
         }
@@ -376,7 +400,7 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         // Returns "coverage\toverlap\texact\tn_hits\thas_value\tbest_fact".
         "assess" => {
             let q = arg(2);
-            let n = db.n(&scope);
+            let n = memdb().n(&scope);
             let n_hits = n.recall_many(q, 8).iter().filter(|r| r.overlap > 0 || r.coverage > 0.0).count();
             match n.recall(q) {
                 Some(r) => format!("{:.4}\t{}\t{}\t{}\t{}\t{}", r.coverage, r.overlap, r.exact, n_hits, (!r.value.is_empty()) as u8, r.fact),
@@ -384,26 +408,26 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
             }
         }
         // recall WITH per-hit confidence: "fact\tcoverage\toverlap" lines, best first (so the lab can rank + show how sure it is)
-        "recallscored" => db.n(&scope).recall_many(arg(2), num(3, 6))
+        "recallscored" => memdb().n(&scope).recall_many(arg(2), num(3, 6))
             .into_iter().map(|r| format!("{}\t{:.4}\t{}", r.fact, r.coverage, r.overlap)).collect::<Vec<_>>().join("\n"),
         // list every variable as "key\tvalue" lines (sorted, for a deterministic view)
-        "vars" => db.vars.get(&scope).map(|m| { let mut v: Vec<String> = m.iter().map(|(k,val)| format!("{}\t{}", k, val)).collect(); v.sort(); v.join("\n") }).unwrap_or_default(),
+        "vars" => memdb().vars.get(&scope).map(|m| { let mut v: Vec<String> = m.iter().map(|(k,val)| format!("{}\t{}", k, val)).collect(); v.sort(); v.join("\n") }).unwrap_or_default(),
         // delete one variable; returns "1" if it existed else "0"
-        "delvar" => db.vars.get_mut(&scope).map(|m| if m.remove(arg(2)).is_some() { "1" } else { "0" }).unwrap_or("0").to_string(),
+        "delvar" => memdb().vars.get_mut(&scope).map(|m| if m.remove(arg(2)).is_some() { "1" } else { "0" }).unwrap_or("0").to_string(),
         // serialize the scope's facts to a portable blob (Neuron::dump) — the host persists it and restores
         // with `load`, so a tab can rehydrate its whole memory in ONE crossing instead of replaying every observe
-        "dump" => db.scopes.get(&scope).map(|n| n.dump()).unwrap_or_default(),
+        "dump" => memdb().scopes.get(&scope).map(|n| n.dump()).unwrap_or_default(),
         // restore a scope's facts from a dump blob (replaces the scope); returns the fact count loaded.
         // The blob carries its own tabs, which the protocol split — rejoin fields 2.. to reconstruct it.
         "load" => {
             let blob = f.iter().skip(2).copied().collect::<Vec<_>>().join("\t");
             let n = crate::Neuron::load(&blob, 1_000_000);
             let c = n.fact_count();
-            db.scopes.insert(scope, n);
+            memdb().scopes.insert(scope, n);
             c.to_string()
         }
         // overview: every live scope as "scope\tfactcount" lines (sorted) — for debugging / a memory map
-        "scopes" => { let mut v: Vec<String> = db.scopes.iter().map(|(k,n)| format!("{}\t{}", k, n.fact_count())).collect(); v.sort(); v.join("\n") }
+        "scopes" => { let mut v: Vec<String> = memdb().scopes.iter().map(|(k,n)| format!("{}\t{}", k, n.fact_count())).collect(); v.sort(); v.join("\n") }
         _ => String::new(),
     };
     put(&out)
