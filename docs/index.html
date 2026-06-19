@@ -913,17 +913,26 @@
         </div>
 
         <div class="qs-panel" data-qs="cli">
-          <h3>CLI: query the file from your shell</h3>
-          <p>The <span class="mono">neuron</span> CLI opens the SQLite file directly, no server required. The db path comes from <span class="mono">--db</span> or <span class="mono">$NEURON_DB</span>.</p>
+          <h3>CLI: a Unix front door to the store</h3>
+          <p>The <span class="mono">neuron</span> binary opens the SQLite file directly, no server required. The CLI, the MCP server, the HTTP server, and the in-browser wasm all route through <span class="mono">one</span> shared op vocabulary, so behavior is identical wherever you drive it.</p>
           <div class="terminal codeblock"><button class="copy">copy</button>
             <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="ttl">neuron</span></div>
-<pre><code><span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">observe</span> user:42 <span class="tok-s">"the plan is pro"</span>      <span class="tok-c"># INSERT</span>
-<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">get</span>     user:42 <span class="tok-s">"what plan am i on?"</span>   <span class="tok-c"># -&gt;</span> <span class="tok-r">pro</span>
-<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">recall</span>  user:42 <span class="tok-s">"what plan?"</span>          <span class="tok-c"># value + fact + coverage</span>
-<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">turn</span>    user:42 <span class="tok-s">"my color is teal"</span>    <span class="tok-c"># store or answer</span>
-<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">forget</span>  user:42 <span class="tok-s">"plan"</span>               <span class="tok-c"># DELETE matching facts</span>
-<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-k">list</span>                                 <span class="tok-c"># all scope ids</span>
-<span class="tok-p">neuron</span> <span class="tok-f">--db</span> app.db <span class="tok-f">--json</span> <span class="tok-k">get</span> user:42 <span class="tok-s">"what plan?"</span>      <span class="tok-c"># {"value":"pro"}</span>
+<pre><code><span class="tok-c"># state &amp; recall; '-' reads stdin; a miss exits 3, so recall composes in a shell</span>
+<span class="tok-p">echo</span> <span class="tok-s">"the launch is Friday"</span> | <span class="tok-p">neuron</span> <span class="tok-k">observe</span> user -
+<span class="tok-p">neuron</span> <span class="tok-k">get</span> user <span class="tok-s">"when is the launch"</span>          <span class="tok-c"># -&gt;</span> <span class="tok-r">Friday</span>
+<span class="tok-p">neuron</span> <span class="tok-k">get</span> user <span class="tok-s">"gate code"</span> || <span class="tok-p">research</span> ...    <span class="tok-c"># routes on the knowledge gap</span>
+
+<span class="tok-c"># interactive shell: recall, spreading assoc, multi-hop chain, vars</span>
+<span class="tok-p">neuron</span> <span class="tok-k">shell</span> case
+  case&gt; chain Lena Marsh -&gt; partner -&gt; creditor
+  <span class="tok-r">Eliza Crowe</span>  (via Lena Marsh -&gt; Marcus Vane -&gt; Eliza Crowe)
+
+<span class="tok-c"># pipe ANY app's output into a scope (transparent tee + substring filters)</span>
+my-service 2&gt;&amp;1 | <span class="tok-p">neuron</span> <span class="tok-k">capture</span> logs <span class="tok-f">--tee</span> <span class="tok-f">--only</span> ERROR
+<span class="tok-p">neuron</span> <span class="tok-k">run</span> build <span class="tok-f">--</span> cargo test       <span class="tok-c"># spawn, tee, record, keep its exit code</span>
+
+<span class="tok-c"># mount neuron-db as Claude Code's memory (never clobbers a config)</span>
+<span class="tok-p">neuron</span> <span class="tok-k">mount</span> claude
 </code></pre>
           </div>
         </div>

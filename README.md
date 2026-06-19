@@ -141,6 +141,40 @@ unlimited, storage-bound memory that stays fast at any size. Full mechanism:
 - **HTTP server + `serve` binary** — one endpoint per scope (`--features server`).
 - **`neuron-mcp`** — stdio MCP server so any LLM mounts neuron-db as memory (`--features mcp`).
 
+## The CLI
+
+`cargo install` builds the **`neuron`** binary — a Unix-composable front door to a neuron-db
+file. The CLI, the MCP server, the HTTP server, and the in-browser WebAssembly all route
+through **one shared op vocabulary** (`op::apply`), so behavior is identical wherever you drive
+it.
+
+```sh
+# state and recall facts; '-' reads stdin; a miss exits 3, so recall composes in a shell
+echo "the launch is on Friday" | neuron --db demo.db observe user -
+neuron --db demo.db get user "when is the launch"          # -> Friday
+neuron --db demo.db get user "the gate code" || research "gate code"   # routes on the knowledge gap
+
+# an interactive shell over the whole store — recall, spreading assoc, multi-hop chain, vars
+neuron shell case
+  case> observe Lena Marsh's partner was Marcus Vane
+  case> observe Marcus Vane's creditor was Eliza Crowe
+  case> chain Lena Marsh -> partner -> creditor
+  Eliza Crowe  (via Lena Marsh -> Marcus Vane -> Eliza Crowe)
+
+# pipe ANY app's output straight into a scope (transparent tee + substring filters)
+my-service 2>&1 | neuron capture logs --tee --only ERROR
+neuron run build -- cargo test           # spawn it, tee its output, record it, keep its exit code
+neuron follow app /var/log/app.log       # tail a logfile into memory
+
+# mount neuron-db as Claude Code's memory (writes the mcpServers entry; never clobbers a config)
+neuron mount claude
+```
+
+Long-lived modes (`shell` / `chat` / `capture` / `run` / `follow`) take a single-writer lock and
+are immediate-durable; keys stay off the process args (`--keyfile` / `NEURON_SECRET_FILE`). Full
+surface: `neuron --help`, with the design + roadmap in
+**[docs/guide/CLI_ROADMAP.md](docs/guide/CLI_ROADMAP.md)**.
+
 ## Why it's interesting
 
 - **Tiny.** A fact's retrieval state is stems and scalars, not a dense vector — about 48
