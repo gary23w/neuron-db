@@ -172,6 +172,13 @@ pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub 
 #[derive(Debug, Clone)]
 pub struct Spread { pub fact: String, pub value: String, pub seed: bool, pub act: f64 }
 
+// Result shapes for a conversational turn and a scope's stats. Defined at the crate root (not in the
+// sqlite-gated db.rs) so the op vocabulary + the Store trait can name them in a no-sqlite wasm build.
+#[derive(Debug, Clone, Default)]
+pub struct TurnOut { pub reply: String, pub kind: String, pub wrote: usize, pub facts: usize, pub capacity_reached: bool }
+#[derive(Debug, Clone, Default)]
+pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub updated: i64, pub turns: i64 }
+
 fn sentences(u: &str, cap: usize) -> Vec<String> {
     let mut parts = Vec::new(); let mut cur = String::new();
     let chars: Vec<char> = u.trim().chars().collect();
@@ -616,7 +623,7 @@ pub mod turn;
 pub mod stream;   // line-splitting for piping app output into a scope (capture/run/follow)
 pub mod affect;   // the one shared mood + stance + humanize-directive layer (db.rs and wasm both use it)
 #[cfg(feature = "sqlite")] pub mod db;
-#[cfg(feature = "sqlite")] pub mod op;     // the one op vocabulary + apply() every transport routes through
+pub mod op;     // the one op vocabulary + apply() every transport routes through (std-only, generic over Store)
 #[cfg(feature = "secure")] pub mod secure;
 #[cfg(feature = "server")] pub mod server;
 #[cfg(feature = "mcp")] pub mod mcp;

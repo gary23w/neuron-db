@@ -1,14 +1,37 @@
 //! One op vocabulary for the neuron-db store, and the single function — `apply` — that every
 //! transport routes its store access through. A dispatcher's job shrinks to `translate` (its wire
-//! format -> NeuronOp) and `render` (OpResult -> its wire format); the op SEMANTICS — which db
-//! method, the clamps, the recall-rank choice, the recall_value cross-scope fallback — live here,
-//! once, instead of being re-derived in each of the CLI / MCP / HTTP dispatchers.
+//! format -> NeuronOp) and `render` (OpResult -> its wire format).
 //!
-//! Step 1 is concrete over the durable `NeuronDB` (sqlite). A later step generalizes `apply` over a
-//! `Store` trait so the in-browser `MemDB` (wasm) shares the exact same vocabulary and the affective
-//! layer stops being implemented twice.
-use crate::db::{NeuronDB, Stats, TurnOut};
-use crate::{Recall, Spread};
+//! `apply` is generic over the `Store` trait, so BOTH the durable `NeuronDB` (sqlite, in db.rs) and
+//! the in-browser `MemDB` (wasm, in wasm.rs) share the exact same vocabulary and dispatch. Each
+//! backend owns the op SEMANTICS that differ between them — the recall rank choice, the
+//! recall_value fallback — inside its own `Store` impl, so they can't drift here. This module is
+//! std-only and not feature-gated, so the no-sqlite wasm build compiles it too.
+use crate::{Recall, Spread, Stats, TurnOut};
+
+/// The store surface `apply` needs. Implemented by `NeuronDB` (durable) and `MemDB` (in-browser);
+/// `&self` because both stores use interior mutability (a Mutex / a RefCell), which also lets a
+/// shared `&NeuronDB` (e.g. the HTTP server's Arc) drive it.
+pub trait Store {
+    fn observe(&self, scope: &str, text: &str) -> usize;
+    fn observe_bulk(&self, scope: &str, texts: &[String]) -> usize;
+    fn recall_one(&self, scope: &str, query: &str) -> Option<Recall>;
+    /// Top-k block; the backend picks the ranking (NeuronDB honors semantic/across, MemDB is lexical).
+    fn recall_block(&self, scope: &str, query: &str, k: usize, semantic: bool, across: bool) -> Vec<Recall>;
+    /// A single value for a direct question; the backend owns any cross-scope fallback.
+    fn recall_value(&self, scope: &str, query: &str) -> Option<String>;
+    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<Spread>;
+    fn recall_chain(&self, scope: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>);
+    fn var_set(&self, scope: &str, key: &str, value: &str) -> usize;
+    fn var_get(&self, scope: &str, key: &str) -> Option<String>;
+    fn note_stance(&self, scope: &str, topic: &str, feeling: &str) -> (f32, bool);
+    fn set_mood(&self, scope: &str, emotion: &str);
+    fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String;
+    fn turn(&self, scope: &str, message: &str) -> TurnOut;
+    fn forget(&self, scope: &str, matching: Option<&str>) -> (usize, usize);
+    fn stats(&self, scope: &str) -> Stats;
+    fn scopes(&self) -> Vec<String>;
+}
 
 /// A single store operation, parsed from a transport's wire format. Scopes arrive already resolved:
 /// a caller that uses sub-scopes — e.g. the MCP `note` tool's `::var` / `::instr` / `::stance`
@@ -17,7 +40,7 @@ use crate::{Recall, Spread};
 pub enum NeuronOp {
     Observe { scope: String, text: String },
     ObserveMany { scope: String, texts: Vec<String> },   // per-fact observe (dedups exact restatements)
-    ObserveBulk { scope: String, texts: Vec<String> },   // db.observe_many (bulk ingest, no dedup)
+    ObserveBulk { scope: String, texts: Vec<String> },   // bulk ingest, no dedup
     Recall { scope: String, query: String, k: usize, semantic: bool, across: bool },
     RecallOne { scope: String, query: String },
     RecallValue { scope: String, query: String },
@@ -64,52 +87,27 @@ impl OpResult {
     pub fn text(self) -> String { if let OpResult::Text(t) = self { t } else { String::new() } }
 }
 
-/// Execute one op against the durable store — the ONLY place a transport reaches `db.rs` store
-/// methods, so the rank choice, the cross-scope value fallback, and the clamps can't drift between
-/// the CLI and the MCP server.
-pub fn apply(db: &NeuronDB, op: NeuronOp) -> OpResult {
+/// Execute one op against any `Store`. The ONLY place a transport reaches the store, so the clamps
+/// live here once and the per-backend semantics live in each `Store` impl.
+pub fn apply<S: Store + ?Sized>(db: &S, op: NeuronOp) -> OpResult {
     match op {
         NeuronOp::Observe { scope, text } => OpResult::Wrote(db.observe(&scope, &text)),
-        // observe() per fact (dedups exact restatements) — matches the MCP `remember` path; bulk
-        // ingest that wants speed over dedup calls db.observe_many directly, not this.
+        // per-fact observe (dedups exact restatements) — matches the MCP `remember` path
         NeuronOp::ObserveMany { scope, texts } => OpResult::Wrote(texts.iter().map(|t| db.observe(&scope, t)).sum()),
-        NeuronOp::ObserveBulk { scope, texts } => OpResult::Wrote(db.observe_many(&scope, &texts)),
-        NeuronOp::Recall { scope, query, k, semantic, across } => {
-            let k = k.clamp(1, 50);
-            #[cfg(feature = "semantic")]
-            let hits = if across { db.recall_many_across(&scope, &query, k) }
-                       else if semantic { db.recall_blended(&scope, &query, k) }
-                       else { db.recall_many(&scope, &query, k) };
-            #[cfg(not(feature = "semantic"))]
-            let hits = { let _ = semantic; if across { db.recall_many_across(&scope, &query, k) } else { db.recall_many(&scope, &query, k) } };
-            OpResult::Hits(hits)
-        }
-        NeuronOp::RecallOne { scope, query } => OpResult::Hit(db.recall(&scope, &query)),
-        // main scope first; on a miss, fall back across the user's document sub-scopes so a direct
-        // question still finds a value the user filed inside a shared document.
-        NeuronOp::RecallValue { scope, query } => OpResult::Value(
-            db.get(&scope, &query).or_else(|| db.recall_many_across(&scope, &query, 1).into_iter().next().map(|h| h.value))
-        ),
-        NeuronOp::RecallAssoc { scope, query, k, hops } =>
-            OpResult::Assoc(db.recall_associative(&scope, &query, k.clamp(1, 50), hops.clamp(1, 4))),
-        NeuronOp::RecallChain { scope, start, path } => {
-            let (value, trail) = db.recall_chain(&scope, &start, &path);
-            OpResult::Chain { value, trail }
-        }
+        NeuronOp::ObserveBulk { scope, texts } => OpResult::Wrote(db.observe_bulk(&scope, &texts)),
+        NeuronOp::Recall { scope, query, k, semantic, across } => OpResult::Hits(db.recall_block(&scope, &query, k.clamp(1, 50), semantic, across)),
+        NeuronOp::RecallOne { scope, query } => OpResult::Hit(db.recall_one(&scope, &query)),
+        NeuronOp::RecallValue { scope, query } => OpResult::Value(db.recall_value(&scope, &query)),
+        NeuronOp::RecallAssoc { scope, query, k, hops } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 50), hops.clamp(1, 4))),
+        NeuronOp::RecallChain { scope, start, path } => { let (value, trail) = db.recall_chain(&scope, &start, &path); OpResult::Chain { value, trail } }
         NeuronOp::VarSet { scope, key, value } => OpResult::Wrote(db.var_set(&scope, &key, &value)),
         NeuronOp::VarGet { scope, key } => OpResult::Value(db.var_get(&scope, &key)),
-        NeuronOp::Stance { scope, topic, feeling } => {
-            let (intensity, created) = db.note_stance(&scope, &topic, &feeling);
-            OpResult::Stance { intensity, created }
-        }
+        NeuronOp::Stance { scope, topic, feeling } => { let (intensity, created) = db.note_stance(&scope, &topic, &feeling); OpResult::Stance { intensity, created } }
         NeuronOp::Mood { scope, emotion } => { db.set_mood(&scope, &emotion); OpResult::Ok }
         NeuronOp::Affect { scope, topic } => OpResult::Text(db.affect(&scope, topic.as_deref())),
         NeuronOp::Turn { scope, message } => OpResult::Turned(db.turn(&scope, &message)),
-        NeuronOp::Forget { scope, matching } => {
-            let (forgot, remaining) = db.forget(&scope, matching.as_deref());
-            OpResult::Forgot { forgot, remaining }
-        }
+        NeuronOp::Forget { scope, matching } => { let (forgot, remaining) = db.forget(&scope, matching.as_deref()); OpResult::Forgot { forgot, remaining } }
         NeuronOp::Stats { scope } => OpResult::Stats(db.stats(&scope)),
-        NeuronOp::List => OpResult::Scopes(db.neurons()),
+        NeuronOp::List => OpResult::Scopes(db.scopes()),
     }
 }

@@ -12,10 +12,36 @@ use crate::turn::turn;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS neurons (id TEXT PRIMARY KEY, facts TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0);";
 fn now_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64 }
 
-#[derive(Debug, Clone)]
-pub struct TurnOut { pub reply: String, pub kind: String, pub wrote: usize, pub facts: usize, pub capacity_reached: bool }
-#[derive(Debug, Clone)]
-pub struct Stats { pub facts: usize, pub max_facts: usize, pub created: i64, pub updated: i64, pub turns: i64 }
+pub use crate::{Stats, TurnOut};   // defined at the crate root so a no-sqlite wasm build can name them too
+
+// NeuronDB speaks the shared op vocabulary: each method delegates to its inherent counterpart, with
+// the rank choice and the recall_value cross-scope fallback (the durable-store-specific semantics)
+// living here so apply() stays a thin generic dispatcher.
+impl crate::op::Store for NeuronDB {
+    fn observe(&self, scope: &str, text: &str) -> usize { NeuronDB::observe(self, scope, text) }
+    fn observe_bulk(&self, scope: &str, texts: &[String]) -> usize { self.observe_many(scope, texts) }
+    fn recall_one(&self, scope: &str, query: &str) -> Option<crate::Recall> { self.recall(scope, query) }
+    fn recall_block(&self, scope: &str, query: &str, k: usize, semantic: bool, across: bool) -> Vec<crate::Recall> {
+        #[cfg(feature = "semantic")]
+        { if across { self.recall_many_across(scope, query, k) } else if semantic { self.recall_blended(scope, query, k) } else { self.recall_many(scope, query, k) } }
+        #[cfg(not(feature = "semantic"))]
+        { let _ = semantic; if across { self.recall_many_across(scope, query, k) } else { self.recall_many(scope, query, k) } }
+    }
+    fn recall_value(&self, scope: &str, query: &str) -> Option<String> {
+        self.get(scope, query).or_else(|| self.recall_many_across(scope, query, 1).into_iter().next().map(|h| h.value))
+    }
+    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<crate::Spread> { self.recall_associative(scope, query, k, hops) }
+    fn recall_chain(&self, scope: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>) { NeuronDB::recall_chain(self, scope, start, path) }
+    fn var_set(&self, scope: &str, key: &str, value: &str) -> usize { NeuronDB::var_set(self, scope, key, value) }
+    fn var_get(&self, scope: &str, key: &str) -> Option<String> { NeuronDB::var_get(self, scope, key) }
+    fn note_stance(&self, scope: &str, topic: &str, feeling: &str) -> (f32, bool) { NeuronDB::note_stance(self, scope, topic, feeling) }
+    fn set_mood(&self, scope: &str, emotion: &str) { NeuronDB::set_mood(self, scope, emotion) }
+    fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String { NeuronDB::affect(self, scope, asked_topic) }
+    fn turn(&self, scope: &str, message: &str) -> TurnOut { NeuronDB::turn(self, scope, message) }
+    fn forget(&self, scope: &str, matching: Option<&str>) -> (usize, usize) { NeuronDB::forget(self, scope, matching) }
+    fn stats(&self, scope: &str) -> Stats { NeuronDB::stats(self, scope) }
+    fn scopes(&self) -> Vec<String> { self.neurons() }
+}
 
 struct Entry { n: Neuron, created: i64, turns: i64, used: u64, dirty: bool, writes: u32 }
 struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
