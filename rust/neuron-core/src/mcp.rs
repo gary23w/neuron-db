@@ -229,7 +229,8 @@ fn host_deferrable(line: &str) -> Vec<&'static str> {
 // tools/list payload. Each entry MUST be a single line: MCP stdio framing is one JSON
 // message per physical line, so a response may never contain a raw newline. Names use
 // snake_case for broad client compatibility.
-const TOOL_DEFS: [&str; 9] = [
+const TOOL_DEFS: [&str; 10] = [
+r#"{"name":"route","description":"Route a turn through the gary-neuron cortex — the cheap front gate. It recalls the working set for the query, then decides ONE route: answer (memory answers it; value is the answer), escalate (memory can't — hand the turn to YOUR model, using the returned facts as context), fetch (a live-world lookup; value is the topic to search), or store (a declarative to remember; value is the fact). Returns {type,value,facts}. Call this first each turn; only invoke your own model when type is escalate.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"the user's turn"},"k":{"type":"integer","description":"facts to recall as the working set (default 6)"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier. Ranks by associative cue overlap; pass rank='semantic' for broad/narrative topics; pass documents=true to also search this user's stored documents.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc - isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"},"rank":{"type":"string","enum":["lexical","semantic"],"description":"ranking strategy; default lexical (associative). Use semantic only for broad/narrative recall."},"documents":{"type":"boolean","description":"also search the user's stored document sub-scopes, not just the main scope (default false)"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_associative","description":"Spreading-activation recall: starts from facts that match the query, then follows shared-entity links to surface RELATED facts that may share no words with the query. Use for 'what's connected to X' or to gather context around a topic.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"the topic or entity to activate from"},"k":{"type":"integer","description":"max facts to return (default 8)"},"hops":{"type":"integer","description":"link hops to spread (default 2)"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}}"#,
@@ -436,6 +437,20 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             // optional topic biases the persona toward the asked-about stance (else the strongest)
             let topic = json_field(body, "topic").filter(|t| !t.trim().is_empty());
             (tool_text(id, &apply(db, NeuronOp::Affect { scope: scope.clone(), topic }).text()), 1)
+        }
+        // the cortex route — recall the working set, then dispatch the turn through gary-neuron. Returns
+        // {type, value, facts}; the client acts on type (escalate -> its own model, with facts as
+        // context). The cheap front gate so the host LLM runs only when memory genuinely can't answer.
+        // (`mcp` requires the `cortex` feature, so this is always present — parity with CLI + WASM.)
+        "route" => {
+            let query = json_field(body, "query").unwrap_or_default();
+            if query.trim().is_empty() { (tool_err(id, "missing required argument: query"), 0) }
+            else {
+                let k = json_num(body, "k").map(|n| n.max(1) as usize).unwrap_or(6);
+                let r = crate::route::route(db, &scope, &query, k);
+                let facts = r.facts.iter().map(|f| format!("\"{}\"", json_escape(f))).collect::<Vec<_>>().join(",");
+                (tool_text(id, &format!("{{\"type\":\"{}\",\"value\":\"{}\",\"facts\":[{}]}}", r.kind, json_escape(&r.value), facts)), r.facts.len())
+            }
         }
         other => (tool_err(id, &format!("unknown tool: {}", other)), 0),
     };
@@ -752,9 +767,24 @@ mod tests {
     fn tools_list_has_all_tools() {
         let db = NeuronDB::open(&tmp(), 500);
         let r = handle_line(&db, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").unwrap();
-        for t in ["recall","recall_associative","recall_value","recall_chain","remember","note","recall_var","forget","stats"] {
+        for t in ["route","recall","recall_associative","recall_value","recall_chain","remember","note","recall_var","forget","stats"] {
             assert!(r.contains(&format!("\"name\":\"{}\"", t)), "missing tool {}", t);
         }
+    }
+
+    #[test]
+    fn route_tool_dispatches_through_the_cortex() {
+        // the cortex route on the MCP wire: recall the working set, then gary-neuron decides the route.
+        // An extractive question over a stored fact answers from memory; an open-ended one escalates.
+        let db = NeuronDB::open(&tmp(), 500);
+        handle_line(&db, "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"remember\",\"arguments\":{\"scope\":\"u\",\"text\":\"the api key is zeta-9931\"}}}");
+        let ans = handle_line(&db, "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"route\",\"arguments\":{\"scope\":\"u\",\"query\":\"what is the api key?\"}}}").unwrap();
+        assert!(ans.contains("\\\"type\\\":\\\"answer\\\"") && ans.contains("zeta-9931"), "extractive query should answer from memory, got {}", ans);
+        let esc = handle_line(&db, "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"route\",\"arguments\":{\"scope\":\"u\",\"query\":\"write a short poem about the sea\"}}}").unwrap();
+        assert!(esc.contains("\\\"type\\\":\\\"escalate\\\""), "an open-ended ask must escalate, got {}", esc);
+        // missing query is a clean error, never a cortex call
+        let err = handle_line(&db, "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"route\",\"arguments\":{\"scope\":\"u\"}}}").unwrap();
+        assert!(err.contains("missing required argument: query"), "got {}", err);
     }
 
     #[test]

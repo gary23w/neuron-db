@@ -20,7 +20,7 @@ cortex = []                    # bakes the gary-neuron cortex into the wasm (run
 sqlite = ["dep:rusqlite"]
 secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:getrandom"]
 server = ["sqlite"]
-mcp = ["sqlite", "semantic"]   # the MCP server ships with semantic-ranked recall by default
+mcp = ["sqlite", "semantic", "cortex"]   # semantic-ranked recall + the cortex (the `route` tool); never bypassed
 semantic = []
 compress = []                  # opt-in: lossless token-Huffman codec over the dump() blob (std-only, wasm-safe)
 http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
@@ -36,7 +36,7 @@ getrandom = { version = "0.2", optional = true }
 [[bin]]
 name = "neuron"
 path = "src/cli.rs"
-required-features = ["sqlite"]
+required-features = ["sqlite", "cortex"]   # the CLI always carries the cortex (neuron route); never store-only
 
 [[bin]]
 name = "serve"

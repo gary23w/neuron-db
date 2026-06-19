@@ -637,5 +637,6 @@ pub mod op;     // the one op vocabulary + apply() every transport routes throug
 pub mod cortex;
 pub mod bpe;
 pub mod model;
+#[cfg(feature = "cortex")] pub mod route;   // the shared recall→cortex-dispatch path (CLI/MCP/WASM parity)
 
 pub mod wasm;

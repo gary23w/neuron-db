@@ -85,6 +85,19 @@ fn main() {
                 if json { println!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{}}}", esc(&t.reply), t.kind, t.wrote, t.facts); }
                 else { println!("{}", t.reply); }
             } }
+        // the cortex route — recall a working set, then dispatch the turn through gary-neuron (parity
+        // with the WASM binding's route() and the MCP `route` tool). Prints the typed decision; on
+        // escalate the host model should answer, with the recalled facts (--json) as context.
+        #[cfg(feature = "cortex")]
+        "route" => { need_scope("route"); let d = NeuronDB::open(&db, max);
+            let q = body(rest());
+            if q.is_empty() { eprintln!("usage: neuron --db <db> route <scope> <query>"); std::process::exit(2); }
+            let r = neuron_core::route::route(&d, &scope, &q, 6);
+            if json {
+                let facts: Vec<String> = r.facts.iter().map(|f| format!("\"{}\"", esc(f))).collect();
+                println!("{{\"type\":\"{}\",\"value\":\"{}\",\"facts\":[{}]}}", r.kind, esc(&r.value), facts.join(","));
+            } else if r.value.is_empty() { println!("{}", r.kind); } else { println!("{}\t{}", r.kind, r.value); }
+        }
         "chat" => { need_scope("chat"); chat(&db, max, &scope, force); }
         "shell" => { shell(&db, max, &scope, force); }
         "capture" => { need_scope("capture"); capture(&db, max, &scope, pos.get(2..).unwrap_or(&[]), force); }
@@ -641,6 +654,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
+  route   <scope> <query...>     cortex dispatch: recall + gary-neuron -> answer|escalate|fetch|store\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
   shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
   capture <scope> [--tee] [--only S] [--skip S] [--flush N]   observe each stdin line (pipe an app in)\n\
