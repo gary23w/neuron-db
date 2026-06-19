@@ -69,7 +69,7 @@ export class NeuronDB {
   }
   /** Node convenience: read a .wasm file and instantiate — `await NeuronDB.forNode("./neuron_core.wasm")`. */
   static async forNode(path, opts = {}) {
-    const { readFileSync } = await import("node:fs");
+    const { readFileSync } = await import(/* @vite-ignore */ "node:fs"); // @vite-ignore: keep browser bundlers quiet
     return NeuronDB.fromBytes(readFileSync(path), opts);
   }
   /** Browser / Deno convenience: fetch a .wasm URL and instantiate. */

@@ -6,7 +6,7 @@ dependency-free ES module that turns the raw `mem(ptr, len)` byte-FFI into a typ
 API. Runs anywhere WebAssembly does: Cloudflare Workers, the browser, Node, Deno, Bun.
 
 ```bash
-npm i neuron-db
+npm i @gary23w/neuron-db
 ```
 
 The package bundles a lean **store-only** `neuron_core.wasm` (~352 KB) — recall, associative recall,
@@ -16,14 +16,14 @@ build (see [Cortex](#cortex) below).
 ## Quickstart
 
 ```js
-import { NeuronDB } from "neuron-db";
+import { NeuronDB } from "@gary23w/neuron-db";
 
 // Node:
-const db = await NeuronDB.forNode(new URL("neuron-db/wasm", import.meta.url).pathname);
+const db = await NeuronDB.forNode(new URL("@gary23w/neuron-db/wasm", import.meta.url).pathname);
 // Browser / Deno:
-const db = await NeuronDB.forBrowser(new URL("neuron-db/wasm", import.meta.url));
+const db = await NeuronDB.forBrowser(new URL("@gary23w/neuron-db/wasm", import.meta.url));
 // Cloudflare Workers (CompiledWasm import — see wrangler config):
-import wasm from "neuron-db/wasm";
+import wasm from "@gary23w/neuron-db/wasm";
 const db = NeuronDB.fromModule(wasm);
 
 db.observeMany("session:42", [
@@ -83,7 +83,7 @@ other wasm; `db.hasCortex` tells you whether the build you mounted has it.
 | **cortex** | `route(scope, q, {k?})` · `dispatch(q, facts?)` · `hasCortex` |
 | **introspect** | `listOps()` · `supports(op)` · `caps()` · `resolveCaps(hostCaps?)` |
 
-Full TypeScript types ship with the package (`index.d.ts`).
+Full TypeScript types ship with the package (`index.d.mts`).
 
 ## License
 
