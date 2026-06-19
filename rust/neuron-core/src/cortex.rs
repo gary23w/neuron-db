@@ -51,12 +51,15 @@ impl Cortex {
         for line in manifest.lines() {
             if line.starts_with("#cfg") {
                 let p: Vec<&str> = line.split('\t').collect();
-                cfg = Cfg { e: p[1].parse().unwrap(), h: p[2].parse().unwrap(), l: p[3].parse().unwrap(),
-                            blk: p[4].parse().unwrap(), vocab: p[5].parse().unwrap() };
+                if p.len() >= 6 {
+                    cfg = Cfg { e: p[1].parse().unwrap(), h: p[2].parse().unwrap(), l: p[3].parse().unwrap(),
+                                blk: p[4].parse().unwrap(), vocab: p[5].parse().unwrap() };
+                }
                 continue;
             }
             if line.is_empty() { continue; }
             let p: Vec<&str> = line.split('\t').collect();
+            if p.len() < 6 { continue; }   // skip a malformed manifest line instead of indexing out of bounds
             let (name, qtype, off, rows, cols) =
                 (p[0], p[1], p[2].parse::<usize>().unwrap(), p[4].parse::<usize>().unwrap(), p[5].parse::<usize>().unwrap());
             let mut data = vec![0f32; rows * cols];
@@ -133,6 +136,7 @@ impl Cortex {
         let mut x = vec![0f32; e];
         let mut logits = vec![0f32; vocab];
         let mut sc = vec![0f32; self.cfg.blk.max(8)];   // attention scores, hoisted out of the per-head/token loop
+        if ids.is_empty() { return logits; }            // empty prompt -> neutral logits, no len()-1 underflow
         let last = ids.len() - 1;
         for (n, &id) in ids.iter().enumerate() {
             let posi = cache.len;                       // absolute position of this token

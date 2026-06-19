@@ -33,8 +33,9 @@ fn is_greet(u: &str) -> bool {
     let head = squeeze_tail(&first_word(&t));
     GREET_ROOTS.contains(&head.as_str())
 }
-fn starts_any(u: &str, pres: &[&str]) -> bool { let t = lc(u); pres.iter().any(|p| t.starts_with(p)) }
-fn contains_any(u: &str, subs: &[&str]) -> bool { let t = lc(u); subs.iter().any(|s| t.contains(s)) }
+// callers pass an already-lowercased string (lowercased once in turn()), so these don't re-allocate.
+fn starts_any(t: &str, pres: &[&str]) -> bool { pres.iter().any(|p| t.starts_with(p)) }
+fn contains_any(t: &str, subs: &[&str]) -> bool { subs.iter().any(|s| t.contains(s)) }
 
 // arithmetic: a space-delimited "<int> <op> <int>" (so dates like 2026-06-13 are NOT math)
 fn find_math(s: &str) -> Option<(i64, char, i64)> {
@@ -59,32 +60,33 @@ fn find_math(s: &str) -> Option<(i64, char, i64)> {
 
 pub fn turn(n: &mut Neuron, u: &str) -> Turn {
     let u = u.trim();
+    let lu = lc(u);                       // lowercase once; every case below reuses it
     let uw = words(u);
     let first = first_word(u);
     let mut questionish = u.contains('?') || QWORDS.contains(&first.as_str());
     let about = (uw.contains("your") || uw.contains("you") || uw.contains("yours"))
         && !(uw.contains("my") || uw.contains("i") || uw.contains("im") || uw.contains("mine"));
-    let yn = YNWORDS.contains(&first.as_str()) || lc(u).contains("yes or no");
+    let yn = YNWORDS.contains(&first.as_str()) || lu.contains("yes or no");
     if yn { questionish = true; }
 
-    if about && contains_any(u, &["what's your name","what is your name","whats your name","who are you"]) {
+    if about && contains_any(&lu, &["what's your name","what is your name","whats your name","who are you"]) {
         return rr("i'm a neuron -- an associative memory. you're the one i remember things about.", "self");
     }
-    if about && contains_any(u, &["real person","human","alive","robot"," ai ","sentient","a machine"]) {
+    if about && contains_any(&lu, &["real person","human","alive","robot"," ai ","sentient","a machine"]) {
         return rr("i'm a tiny memory, not a person. but i'll remember what you tell me.", "self");
     }
     if is_greet(u) { return rr(GREETS[n.fact_count() % GREETS.len()], "smalltalk"); }
-    if starts_any(u, &["lol","lmao","haha","hehe"]) { return rr("glad that landed.", "smalltalk"); }
-    if starts_any(u, &["thanks","thank you","thx","ty "]) || lc(u) == "ty" { return rr("anytime.", "smalltalk"); }
-    if starts_any(u, &["bye","goodbye","later","gtg","good night","goodnight"]) { return rr("later. i'll remember.", "smalltalk"); }
-    if questionish && contains_any(u, &["how's it going","how is it going","how are you","how you doing","how are things"]) {
+    if starts_any(&lu, &["lol","lmao","haha","hehe"]) { return rr("glad that landed.", "smalltalk"); }
+    if starts_any(&lu, &["thanks","thank you","thx","ty "]) || lu == "ty" { return rr("anytime.", "smalltalk"); }
+    if starts_any(&lu, &["bye","goodbye","later","gtg","good night","goodnight"]) { return rr("later. i'll remember.", "smalltalk"); }
+    if questionish && contains_any(&lu, &["how's it going","how is it going","how are you","how you doing","how are things"]) {
         return rr("running fine -- all of it yours.", "smalltalk");
     }
     if COMMANDS.contains(&first.as_str()) && !(uw.contains("my")||uw.contains("i")||uw.contains("im")||uw.contains("mine")) {
         return rr("i can't do that -- i remember facts and do arithmetic.", "smalltalk");
     }
 
-    if !lc(u).contains('=') {
+    if !lu.contains('=') {
         if let Some((a, op, b)) = find_math(u) {
             let reply = match op {
                 '+' => Some(format!("{} + {} = {}", a, b, a + b)),
@@ -100,7 +102,7 @@ pub fn turn(n: &mut Neuron, u: &str) -> Turn {
     if questionish {
         let cw = content(u);
         let hit = if !cw.is_empty() { n.recall(u) }
-                  else if lc(u).contains("who am i") { n.recall("name") }
+                  else if lu.contains("who am i") { n.recall("name") }
                   else { None };
         if yn && !cw.is_empty() {
             return match &hit {

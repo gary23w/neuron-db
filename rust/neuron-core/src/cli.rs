@@ -615,7 +615,7 @@ fn mount_claude(db: &str, args: &[String]) {
     let path = target.unwrap_or_else(|| {
         if global {
             let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-            format!("{}/.claude.json", home)
+            claude_global_path(&home)
         } else { ".mcp.json".to_string() }
     });
     let occupied = std::path::Path::new(&path).exists()
@@ -633,9 +633,19 @@ fn mount_claude(db: &str, args: &[String]) {
     }
 }
 
+/// `~/.claude.json` built with the platform's own separator (PathBuf::join, not a hard-coded `/`).
+fn claude_global_path(home: &str) -> String {
+    std::path::PathBuf::from(home).join(".claude.json").to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::claude_entry;
+    use super::{claude_entry, claude_global_path};
+    #[test]
+    fn global_path_uses_native_separator() {
+        assert_eq!(claude_global_path("HOME_DIR"),
+                   format!("HOME_DIR{}.claude.json", std::path::MAIN_SEPARATOR));
+    }
     #[test]
     fn entry_escapes_windows_paths() {
         let e = claude_entry(r"C:\bin\neuron-mcp.exe", r"C:\data\my.db");

@@ -92,10 +92,12 @@ impl Bpe {
     fn bpe(&self, token: &str) -> Vec<String> {
         let mut word: Vec<String> = token.chars().map(|c| c.to_string()).collect();
         if word.len() < 2 { return word; }
+        let mut key = String::new();   // reused each probe so the merge loop doesn't allocate per pair
         loop {
             let mut best = u32::MAX; let mut bi = usize::MAX;
             for i in 0..word.len()-1 {
-                if let Some(&rk) = self.ranks.get(&format!("{} {}", word[i], word[i+1])) {
+                key.clear(); key.push_str(&word[i]); key.push(' '); key.push_str(&word[i+1]);
+                if let Some(&rk) = self.ranks.get(key.as_str()) {
                     if rk < best { best = rk; bi = i; }
                 }
             }

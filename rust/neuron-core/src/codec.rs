@@ -39,6 +39,7 @@ fn put_uvarint(out: &mut Vec<u8>, mut x: u64) {
 fn get_uvarint(b: &[u8], pos: &mut usize) -> u64 {
     let (mut x, mut shift) = (0u64, 0u32);
     loop {
+        if *pos >= b.len() { break; }   // truncated varint: stop instead of indexing out of bounds
         let byte = b[*pos]; *pos += 1;
         x |= ((byte & 0x7f) as u64) << shift;
         if byte & 0x80 == 0 { break; }
@@ -158,6 +159,7 @@ pub fn decompress(b: &[u8]) -> String {
     if nsym == 0 { return String::new(); }
     if nsym == 1 {
         let bl = get_uvarint(b, &mut pos) as usize;
+        if pos + bl > b.len() { return String::new(); }   // truncated single-symbol payload
         let tok = std::str::from_utf8(&b[pos..pos + bl]).unwrap_or("");
         return tok.repeat(ntok);
     }
@@ -165,8 +167,10 @@ pub fn decompress(b: &[u8]) -> String {
     let mut lens = Vec::with_capacity(nsym);
     let mut toks: Vec<String> = Vec::with_capacity(nsym);
     for _ in 0..nsym {
+        if pos >= b.len() { return String::new(); }       // truncated symbol table
         let l = b[pos]; pos += 1;
         let bl = get_uvarint(b, &mut pos) as usize;
+        if pos + bl > b.len() { return String::new(); }
         toks.push(String::from_utf8_lossy(&b[pos..pos + bl]).into_owned());
         pos += bl;
         lens.push(l);
@@ -179,7 +183,7 @@ pub fn decompress(b: &[u8]) -> String {
     let mut code = 0u64;
     let mut prev = lens[0];
     for k in 0..nsym {
-        if k > 0 { code = (code + 1) << (lens[k] - prev); prev = lens[k]; }
+        if k > 0 { code = (code + 1).checked_shl(lens[k].saturating_sub(prev) as u32).unwrap_or(0); prev = lens[k]; }
         // insert token k at path `code` of length lens[k]
         let (mut node, l) = (0usize, lens[k]);
         let mut bit = l;
@@ -201,7 +205,9 @@ pub fn decompress(b: &[u8]) -> String {
     'outer: for &byte in &b[pos..] {
         for s in (0..8).rev() {
             let go1 = (byte >> s) & 1 == 1;
-            node = (if go1 { c1[node] } else { c0[node] }) as usize;
+            let child = if go1 { c1[node] } else { c0[node] };
+            if child < 0 { break 'outer; }   // malformed bitstream: no such branch — stop, don't index OOB
+            node = child as usize;
             if leaf[node] >= 0 {
                 out.push_str(&toks[leaf[node] as usize]);
                 node = 0; produced += 1;
@@ -217,6 +223,17 @@ mod tests {
     use super::*;
 
     fn rt(s: &str) { assert_eq!(decompress(&compress(s)), s, "round-trip failed for {:?}", s); }
+
+    #[test]
+    fn decompress_malformed_never_panics() {
+        // truncated / garbage inputs must return cleanly, never panic on an out-of-bounds index
+        let cases: [&[u8]; 7] = [&[], &[0x00], &[MAGIC], &[MAGIC, 0xFF], &[MAGIC, 0xFF, 0xFF],
+                                 &[MAGIC, 0x02, 0x01], &[MAGIC, 0x03, 0x05, 0x09, b'a']];
+        for bad in cases { let _ = decompress(bad); }
+        // a valid blob with its tail chopped at every offset must also not panic
+        let full = compress("the quick brown fox jumps over the lazy dog 12345");
+        for cut in 0..=full.len() { let _ = decompress(&full[..cut]); }
+    }
 
     #[test]
     fn roundtrip_lossless_varied() {

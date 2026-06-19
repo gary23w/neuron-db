@@ -215,6 +215,11 @@ impl PlasticNeuron {
         let mut new_eps = Vec::new();
         for i in 0..self.base.episodes.len() { if survivor_set.contains(&i) { new_eps.push(self.base.episodes[i].clone()); } }
         self.base.episodes = new_eps;
+        // drop any link edge that points at a merged-away or pruned id — both endpoints must still be
+        // alive — so spreading recall never chases a dangling neighbor (incoming refs, not just outgoing).
+        let alive: HashSet<i64> = self.base.episodes.iter().map(|e| e.id).collect();
+        self.links.retain(|id, _| alive.contains(id));
+        for nbrs in self.links.values_mut() { nbrs.retain(|nid, _| alive.contains(nid)); }
         self.base.invalidate_index();
         (merged, pruned, self.base.episodes.len())
     }
