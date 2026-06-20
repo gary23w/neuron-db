@@ -469,40 +469,86 @@ impl NeuronDB {
     /// plus the current mood (the override variable if set) and the strongest accumulated stance
     /// (the disposition built up over time). This is how the store colors the model's tone.
     pub fn affect(&self, nid: &str, asked_topic: Option<&str>) -> String {
-        let (mood, stances) = {
-            let mut g = self.shard(nid); let inner = &mut *g;
-            let asub = format!("{}::affect", nid);
-            Self::ensure(inner, &asub, self.max_facts, self.cap);
-            let mood = inner.cache.get(&asub).unwrap().n.episodes.iter()
-                .find_map(|e| e.t.strip_prefix("mood is ").map(|m| m.trim().to_string()));
-            let ssub = format!("{}::stance", nid);
-            Self::ensure(inner, &ssub, self.max_facts, self.cap);
-            // each stance Episode is stored as "topic: feeling" (reinforce_prefix), strength accumulates
-            let stances: Vec<(String, String, f32)> = inner.cache.get(&ssub).unwrap().n.episodes.iter()
-                .map(|e| { let (t, f) = e.t.split_once(": ").unwrap_or(("", e.t.as_str())); (t.to_string(), f.to_string(), e.strength) })
-                .collect();
-            (mood, stances)
-        };
+        let (mood, stances) = self.affect_state(nid);
         // db.rs shows the persona frame even when neutral (a baseline directive the harness can lean on)
         format!("{}{}", crate::affect::FRAME, crate::affect::directive_body(mood.as_deref(), &stances, asked_topic))
+    }
+    /// Load the current mood + accumulated stances for a scope (the raw material both the neutral and the
+    /// persona-colored directive build from).
+    fn affect_state(&self, nid: &str) -> (Option<String>, Vec<(String, String, f32)>) {
+        let mut g = self.shard(nid); let inner = &mut *g;
+        let asub = format!("{}::affect", nid);
+        Self::ensure(inner, &asub, self.max_facts, self.cap);
+        let mood = inner.cache.get(&asub).unwrap().n.episodes.iter()
+            .find_map(|e| e.t.strip_prefix("mood is ").map(|m| m.trim().to_string()));
+        let ssub = format!("{}::stance", nid);
+        Self::ensure(inner, &ssub, self.max_facts, self.cap);
+        // each stance Episode is stored as "topic: feeling" (reinforce_prefix), strength accumulates
+        let stances: Vec<(String, String, f32)> = inner.cache.get(&ssub).unwrap().n.episodes.iter()
+            .map(|e| { let (t, f) = e.t.split_once(": ").unwrap_or(("", e.t.as_str())); (t.to_string(), f.to_string(), e.strength) })
+            .collect();
+        (mood, stances)
+    }
+    /// The affect directive COLORED by an explicitly-attached persona: OCEAN styles the voice and modulates
+    /// the threshold at which a budding stance hardens. Opt-in — the neutral `affect` is untouched, and a
+    /// neutral persona produces the same text.
+    #[cfg(feature = "personality")]
+    pub fn affect_with(&self, nid: &str, asked_topic: Option<&str>, persona: &crate::persona::Persona) -> String {
+        let (mood, stances) = self.affect_state(nid);
+        let style = persona.style();
+        let threshold = persona.stance_threshold(crate::affect::STANCE_THRESHOLD);
+        format!("{}{}", crate::affect::FRAME,
+            crate::affect::directive_body_styled(mood.as_deref(), &stances, asked_topic, Some(&style), threshold))
     }
     /// Record/intensify a stance about `topic`. Re-stating the same topic accumulates its strength
     /// (a disposition that deepens with repetition), persisted durably. Returns (new_strength, new).
     pub fn note_stance(&self, nid: &str, topic: &str, feeling: &str) -> (f32, bool) {
+        self.note_stance_tuned(nid, topic, feeling, crate::affect::STANCE_BUMP, crate::affect::STANCE_DECAY, crate::affect::STANCE_FLOOR)
+    }
+    /// Same as `note_stance` but the reinforcement bump, others-decay, and floor come from the dials —
+    /// `note_stance` passes the base constants; `note_stance_with` passes a persona's modulated values.
+    fn note_stance_tuned(&self, nid: &str, topic: &str, feeling: &str, bump: f32, decay: f32, floor: f32) -> (f32, bool) {
         let out = {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
-            let r = e.n.reinforce_prefix(topic, feeling, crate::affect::STANCE_BUMP);
+            let r = e.n.reinforce_prefix(topic, feeling, bump);
             // neglected dispositions fade as new feelings form, so the active "culture" can shift
             // over time rather than monotonically hardening on whatever was felt first.
-            e.n.decay_prefix_others(topic, crate::affect::STANCE_DECAY, crate::affect::STANCE_FLOOR);
+            e.n.decay_prefix_others(topic, decay, floor);
             Self::snapshot(conn, nid, e);
             r
         };
         #[cfg(feature = "semantic")] self.sem_guard().train(feeling);
         out
+    }
+    /// Record a stance with the reactivity of an explicitly-attached persona: high Neuroticism (and a hot
+    /// temperament) makes the disposition spike harder and linger; opt-in, `note_stance` is unchanged.
+    #[cfg(feature = "personality")]
+    pub fn note_stance_with(&self, nid: &str, topic: &str, feeling: &str, persona: &crate::persona::Persona) -> (f32, bool) {
+        self.note_stance_tuned(nid, topic, feeling,
+            persona.stance_bump(crate::affect::STANCE_BUMP),
+            persona.stance_decay(crate::affect::STANCE_DECAY),
+            persona.stance_floor(crate::affect::STANCE_FLOOR))
+    }
+    /// Attach a persona to a scope, persisted in the `<scope>::persona` sub-scope (one var per trait). The
+    /// store is otherwise neutral; nothing reads this unless a caller asks for a persona-aware op.
+    #[cfg(feature = "personality")]
+    pub fn set_persona(&self, nid: &str, persona: &crate::persona::Persona) {
+        let sub = format!("{}::persona", nid);
+        for (k, v) in persona.to_pairs() { self.var_set(&sub, &k, &v); }
+    }
+    /// Load a scope's attached persona, or None if it was never set.
+    #[cfg(feature = "personality")]
+    pub fn get_persona(&self, nid: &str) -> Option<crate::persona::Persona> {
+        let sub = format!("{}::persona", nid);
+        let facts = self.scope_facts(&sub);
+        if facts.is_empty() { return None; }
+        let pairs: Vec<(String, String)> = facts.iter()
+            .filter_map(|f| f.split_once(" is ").map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+            .collect();
+        Some(crate::persona::Persona::from_pairs(&pairs))
     }
     pub fn get(&self, nid: &str, query: &str) -> Option<String> { self.recall(nid, query).map(|h| h.value) }
     /// Multi-hop traversal, server-side: start at `start` and follow each relation in `path`,

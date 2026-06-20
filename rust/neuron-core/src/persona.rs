@@ -66,16 +66,7 @@ impl Default for Temperament {
     fn default() -> Self { Temperament { baseline: BigFive::default(), reactivity: 1.0 } }
 }
 
-/// The presentation knobs OCEAN hands to the affective layer to color the humanize directive. Plain
-/// scalars so `affect.rs` stays personality-agnostic — it consumes a `Style`, it never imports a Persona.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Style {
-    pub energy: f32,      // extraversion — terse+calm .. animated+expansive
-    pub warmth: f32,      // agreeableness — blunt+guarded .. warm+cooperative
-    pub volatility: f32,  // neuroticism — even-keeled .. reactive+intense
-    pub curiosity: f32,   // openness — concrete+literal .. exploratory+associative
-    pub structure: f32,   // conscientiousness — loose .. orderly+deliberate
-}
+pub use crate::affect::Style;   // the presentation knobs OCEAN hands the affect layer (defined there so affect stays persona-agnostic)
 
 /// The attached mind. `traits` is the live (drifting) state; `temperament` is the innate anchor; `values`
 /// are canonical morals/meaning (name -> weight) that bias judgment.

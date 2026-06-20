@@ -24,11 +24,54 @@ pub fn topic_matches(stored: &str, asked: &str) -> bool {
         || stored.split_whitespace().any(|w| w == asked)
 }
 
+/// Presentation knobs the OPTIONAL personality layer (persona.rs) hands in to color the directive prose,
+/// each in `0.0..=1.0` with `0.5` neutral. Defined here so this module stays personality-agnostic — it
+/// consumes a `Style`, it never imports a `Persona`. A neutral/`None` style adds nothing, so the base
+/// directive is unchanged when no persona is attached.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Style {
+    pub energy: f32,      // extraversion: spare+measured .. animated+expansive
+    pub warmth: f32,      // agreeableness: blunt+guarded .. warm+generous
+    pub volatility: f32,  // neuroticism: even-keeled .. reactions run hot
+    pub curiosity: f32,   // openness: concrete+literal .. chases tangents
+    pub structure: f32,   // conscientiousness: loose+spontaneous .. organized+deliberate
+}
+
+fn join_and(parts: &[&str]) -> String {
+    match parts.len() {
+        0 => String::new(),
+        1 => parts[0].to_string(),
+        2 => format!("{} and {}", parts[0], parts[1]),
+        _ => format!("{}, and {}", parts[..parts.len() - 1].join(", "), parts[parts.len() - 1]),
+    }
+}
+
+/// The "voice" sentence OCEAN adds — only the axes that are notably high/low (so an average persona is
+/// silent and reproduces the base directive exactly).
+fn style_line(s: &Style) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if s.energy >= 0.66 { parts.push("animated and expansive"); } else if s.energy <= 0.34 { parts.push("spare and measured"); }
+    if s.warmth >= 0.66 { parts.push("warm and generous"); } else if s.warmth <= 0.34 { parts.push("blunt and guarded"); }
+    if s.curiosity >= 0.66 { parts.push("curious, chasing tangents and connecting ideas"); } else if s.curiosity <= 0.34 { parts.push("concrete and literal"); }
+    if s.structure >= 0.66 { parts.push("organized and deliberate"); } else if s.structure <= 0.34 { parts.push("loose and spontaneous"); }
+    let mut line = if parts.is_empty() { String::new() } else { format!(" Your voice is {}.", join_and(&parts)) };
+    if s.volatility >= 0.66 { line.push_str(" Your reactions run hot and shift quickly."); }
+    else if s.volatility <= 0.34 { line.push_str(" You stay even-keeled, slow to rattle."); }
+    line
+}
+
 /// Build the directive BODY — the mood line plus the most relevant stance line — or "" if there is
 /// neither. The relevant stance is the one matching `asked_topic` if given, else the strongest; a
 /// hardened stance (>= THRESHOLD) is expressed unprompted, a budding one only when asked about.
 /// Stances are `(topic, feeling, strength)`, the shape both backends can produce.
 pub fn directive_body(mood: Option<&str>, stances: &[(String, String, f32)], asked_topic: Option<&str>) -> String {
+    directive_body_styled(mood, stances, asked_topic, None, STANCE_THRESHOLD)
+}
+
+/// As `directive_body`, but the optional personality layer passes a `Style` (to color the voice) and a
+/// persona-modulated `threshold` (Openness raises the bar at which a budding stance hardens). With
+/// `style = None` and `threshold = STANCE_THRESHOLD` this is byte-identical to `directive_body`.
+pub fn directive_body_styled(mood: Option<&str>, stances: &[(String, String, f32)], asked_topic: Option<&str>, style: Option<&Style>, threshold: f32) -> String {
     let asked = asked_topic.unwrap_or("").trim().to_lowercase();
     let mut body = String::new();
     if let Some(m) = mood.map(str::trim).filter(|m| !m.is_empty()) {
@@ -38,10 +81,11 @@ pub fn directive_body(mood: Option<&str>, stances: &[(String, String, f32)], ask
     let pick = asked_pick.or_else(|| stances.iter().max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)));
     if let Some((topic, feeling, strength)) = pick {
         let is_asked = !asked.is_empty() && topic_matches(&topic.to_lowercase(), &asked);
-        if *strength >= STANCE_THRESHOLD || is_asked {
+        if *strength >= threshold || is_asked {
             body.push_str(&format!(" You also hold a hardened view, built up over time, about {} (intensity x{:.0}): \"{}\" — let it bias how you react to anything related.", topic, strength, feeling));
         }
     }
+    if let Some(s) = style { body.push_str(&style_line(s)); }
     body
 }
 
@@ -73,5 +117,30 @@ mod tests {
     #[test] fn whole_word_topic_match_not_substring() {
         assert!(topic_matches("rust", "i love rust"));
         assert!(!topic_matches("rust", "i trust you"));
+    }
+
+    fn neutral_style() -> Style { Style { energy: 0.5, warmth: 0.5, volatility: 0.5, curiosity: 0.5, structure: 0.5 } }
+
+    #[test] fn neutral_style_reproduces_base_directive() {
+        let st = [s("ci", "flaky", 2.0)];
+        let base = directive_body(Some("tired"), &st, None);
+        let styled = directive_body_styled(Some("tired"), &st, None, Some(&neutral_style()), STANCE_THRESHOLD);
+        assert_eq!(base, styled, "an average persona must add nothing");
+    }
+
+    #[test] fn style_colors_the_voice() {
+        let warm_open = Style { energy: 0.9, warmth: 0.9, volatility: 0.9, curiosity: 0.9, structure: 0.5 };
+        let d = directive_body_styled(None, &[], None, Some(&warm_open), STANCE_THRESHOLD);
+        assert!(d.contains("animated") && d.contains("warm") && d.contains("curious") && d.contains("run hot"), "{d}");
+        let cold_blunt = Style { energy: 0.1, warmth: 0.1, volatility: 0.1, curiosity: 0.1, structure: 0.1 };
+        let d2 = directive_body_styled(None, &[], None, Some(&cold_blunt), STANCE_THRESHOLD);
+        assert!(d2.contains("spare") && d2.contains("blunt") && d2.contains("even-keeled"), "{d2}");
+    }
+
+    #[test] fn openness_threshold_gates_unprompted_hardening() {
+        let st = [s("climate", "furious", 1.2)];
+        // a low (rigid) threshold lets the 1.2-strength view harden unprompted; a high (open) one hides it
+        assert!(directive_body_styled(None, &st, None, None, 1.0).contains("hardened view"), "low threshold should surface it");
+        assert!(!directive_body_styled(None, &st, None, None, 2.0).contains("hardened view"), "high threshold should keep it budding");
     }
 }
