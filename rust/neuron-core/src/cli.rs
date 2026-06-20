@@ -122,9 +122,14 @@ fn main() {
             let topic = pos.get(2).cloned().unwrap_or_default();
             let feeling = pos.get(3..).map(|s| s.join(" ")).unwrap_or_default();
             if topic.is_empty() || feeling.is_empty() { eprintln!("usage: neuron --db <db> stance <scope> <topic> <feeling…>"); std::process::exit(2); }
-            if let OpResult::Stance { intensity, created } = apply(&d, NeuronOp::Stance { scope: format!("{}::stance", scope), topic: topic.clone(), feeling: feeling.clone() }) {
-                if json { println!("{{\"topic\":\"{}\",\"feeling\":\"{}\",\"intensity\":{:.3},\"new\":{}}}", esc(&topic), esc(&feeling), intensity, created); }
-                else { println!("{} stance [{}] {} (intensity {:.2})", if created { "formed" } else { "intensified" }, topic, feeling, intensity); } }
+            let sub = format!("{}::stance", scope);
+            // if a persona is attached to the scope, its reactivity modulates the bump/decay; else neutral
+            #[cfg(feature = "personality")]
+            let (intensity, created) = match d.get_persona(&scope) { Some(p) => d.note_stance_with(&sub, &topic, &feeling, &p), None => d.note_stance(&sub, &topic, &feeling) };
+            #[cfg(not(feature = "personality"))]
+            let (intensity, created) = d.note_stance(&sub, &topic, &feeling);
+            if json { println!("{{\"topic\":\"{}\",\"feeling\":\"{}\",\"intensity\":{:.3},\"new\":{}}}", esc(&topic), esc(&feeling), intensity, created); }
+            else { println!("{} stance [{}] {} (intensity {:.2})", if created { "formed" } else { "intensified" }, topic, feeling, intensity); }
         }
         "mood" => { need_scope("mood"); let d = NeuronDB::open(&db, max);
             let emotion = rest();
@@ -134,7 +139,30 @@ fn main() {
         }
         "affect" => { need_scope("affect"); let d = NeuronDB::open(&db, max);
             let topic = pos.get(2..).map(|s| s.join(" ")).filter(|s| !s.is_empty());
-            if let OpResult::Text(t) = apply(&d, NeuronOp::Affect { scope: scope.clone(), topic }) { println!("{}", t); }
+            // an attached persona colors the voice + modulates the harden threshold; else the neutral directive
+            #[cfg(feature = "personality")]
+            let out = match d.get_persona(&scope) { Some(p) => d.affect_with(&scope, topic.as_deref(), &p), None => d.affect(&scope, topic.as_deref()) };
+            #[cfg(not(feature = "personality"))]
+            let out = d.affect(&scope, topic.as_deref());
+            println!("{}", out);
+        }
+        #[cfg(feature = "personality")]
+        "persona" => { need_scope("persona"); let d = NeuronDB::open(&db, max);
+            // `persona <scope> <O> <C> <E> <A> <N> [reactivity]` (each 0..1) to attach; no values to show.
+            let vals: Vec<f32> = pos.get(2..).unwrap_or(&[]).iter().filter_map(|s| s.parse().ok()).collect();
+            if vals.len() >= 5 {
+                let t = neuron_core::persona::BigFive { openness: vals[0], conscientiousness: vals[1], extraversion: vals[2], agreeableness: vals[3], neuroticism: vals[4] };
+                let mut p = neuron_core::persona::Persona::from_traits(t);
+                if let Some(r) = vals.get(5) { p.temperament.reactivity = r.clamp(0.0, 2.0); }
+                d.set_persona(&scope, &p);
+                if json { let pr = p.to_pairs().iter().map(|(k, v)| format!("\"{}\":\"{}\"", esc(k), esc(v))).collect::<Vec<_>>().join(","); println!("{{{}}}", pr); }
+                else { println!("persona set on {}: {} (reactivity {:.2})", scope, p.describe(), p.temperament.reactivity); }
+            } else {
+                match d.get_persona(&scope) {
+                    Some(p) => println!("{}: {} (reactivity {:.2})", scope, p.describe(), p.temperament.reactivity),
+                    None => { eprintln!("(no persona on '{}'); attach with: neuron persona <scope> <O> <C> <E> <A> <N> [reactivity]  (each 0..1)", scope); std::process::exit(3); }
+                }
+            }
         }
         "why" => { need_scope("why"); let d = NeuronDB::open(&db, max);
             let topic = rest();
@@ -707,6 +735,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   mood    <scope> [emotion...]   set (or clear, if empty) the override mood\n\
   affect  <scope> [topic...]     render the current persona directive (mood + dominant stance)\n\
   why     <scope> <topic...>     a stance + the facts grounding it (what made it feel this way)\n\
+  persona <scope> [O C E A N [r]]  attach/show a Big-Five persona (0..1) — needs the `personality` feature\n\
   route   <scope> <query...>     cortex dispatch: recall + gary-neuron -> answer|escalate|fetch|store\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
   shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
