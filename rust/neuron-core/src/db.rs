@@ -21,6 +21,11 @@ fn now_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_mi
 
 pub use crate::{Stats, TurnOut};   // defined at the crate root so a no-sqlite wasm build can name them too
 
+/// The grounding behind a stance: the feeling, its accumulated intensity, and the facts the store holds
+/// about the topic as evidence — so "why do I feel this?" has an answer, not just a free-text label.
+#[derive(Clone, Debug)]
+pub struct Why { pub topic: String, pub feeling: String, pub intensity: f32, pub evidence: Vec<String> }
+
 // NeuronDB speaks the shared op vocabulary: each method delegates to its inherent counterpart, with
 // the rank choice and the recall_value cross-scope fallback (the durable-store-specific semantics)
 // living here so apply() stays a thin generic dispatcher.
@@ -510,15 +515,18 @@ impl NeuronDB {
     /// Same as `note_stance` but the reinforcement bump, others-decay, and floor come from the dials —
     /// `note_stance` passes the base constants; `note_stance_with` passes a persona's modulated values.
     fn note_stance_tuned(&self, nid: &str, topic: &str, feeling: &str, bump: f32, decay: f32, floor: f32) -> (f32, bool) {
+        // canonicalize the topic (collapse whitespace) so spacing variants reinforce ONE disposition
+        // instead of fragmenting into separate stances; reinforce_prefix already case-folds the key.
+        let topic: String = topic.split_whitespace().collect::<Vec<_>>().join(" ");
         let out = {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
-            let r = e.n.reinforce_prefix(topic, feeling, bump);
+            let r = e.n.reinforce_prefix(&topic, feeling, bump);
             // neglected dispositions fade as new feelings form, so the active "culture" can shift
             // over time rather than monotonically hardening on whatever was felt first.
-            e.n.decay_prefix_others(topic, decay, floor);
+            e.n.decay_prefix_others(&topic, decay, floor);
             Self::snapshot(conn, nid, e);
             r
         };
@@ -551,6 +559,19 @@ impl NeuronDB {
             .filter_map(|f| f.split_once(" is ").map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
             .collect();
         Some(crate::persona::Persona::from_pairs(&pairs))
+    }
+    /// Answer "why do I feel this about <topic>?" — the current stance plus the facts the store holds about
+    /// that topic as its grounding. This connects a feeling (in `<scope>::stance`) to its likely cause (facts
+    /// in the base scope), which a bare "topic: feeling" label can't. None if there is no stance on the topic.
+    pub fn why(&self, nid: &str, topic: &str) -> Option<Why> {
+        let topic: String = topic.split_whitespace().collect::<Vec<_>>().join(" ");
+        let stances = self.affect_state(nid).1; // (topic, feeling, strength)
+        let (feeling, intensity) = stances.into_iter()
+            .find(|(t, _, _)| crate::affect::topic_matches(&t.to_lowercase(), &topic.to_lowercase()))
+            .map(|(_, f, s)| (f, s))?;
+        // evidence: the facts the base scope holds about the topic — the likely cause of the feeling
+        let evidence: Vec<String> = self.recall_many(nid, &topic, 3).into_iter().map(|h| h.fact).collect();
+        Some(Why { topic, feeling, intensity, evidence })
     }
     pub fn get(&self, nid: &str, query: &str) -> Option<String> { self.recall(nid, query).map(|h| h.value) }
     /// Multi-hop traversal, server-side: start at `start` and follow each relation in `path`,

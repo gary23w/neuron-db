@@ -136,6 +136,23 @@ fn main() {
             let topic = pos.get(2..).map(|s| s.join(" ")).filter(|s| !s.is_empty());
             if let OpResult::Text(t) = apply(&d, NeuronOp::Affect { scope: scope.clone(), topic }) { println!("{}", t); }
         }
+        "why" => { need_scope("why"); let d = NeuronDB::open(&db, max);
+            let topic = rest();
+            if topic.is_empty() { eprintln!("usage: neuron --db <db> why <scope> <topic…>"); std::process::exit(2); }
+            match d.why(&scope, &topic) {
+                Some(w) => {
+                    if json {
+                        let ev: Vec<String> = w.evidence.iter().map(|f| format!("\"{}\"", esc(f))).collect();
+                        println!("{{\"topic\":\"{}\",\"feeling\":\"{}\",\"intensity\":{:.3},\"evidence\":[{}]}}", esc(&w.topic), esc(&w.feeling), w.intensity, ev.join(","));
+                    } else {
+                        println!("you feel \"{}\" about {} (intensity {:.2})", w.feeling, w.topic, w.intensity);
+                        if w.evidence.is_empty() { println!("  (no grounding facts found in this scope)"); }
+                        else { println!("  because:"); for f in &w.evidence { println!("    - {}", f); } }
+                    }
+                }
+                None => { eprintln!("(no stance on '{}')", topic); std::process::exit(3); }
+            }
+        }
         "list" => { let d = NeuronDB::open(&db, max);
             if let OpResult::Scopes(ids) = apply(&d, NeuronOp::List) {
                 if json { let items: Vec<String> = ids.iter().map(|s| format!("\"{}\"", esc(s))).collect(); println!("{{\"scopes\":[{}]}}", items.join(",")); }
@@ -689,6 +706,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   stance  <scope> <topic> <feeling...>   accumulate a disposition toward a topic (deepens on repeat)\n\
   mood    <scope> [emotion...]   set (or clear, if empty) the override mood\n\
   affect  <scope> [topic...]     render the current persona directive (mood + dominant stance)\n\
+  why     <scope> <topic...>     a stance + the facts grounding it (what made it feel this way)\n\
   route   <scope> <query...>     cortex dispatch: recall + gary-neuron -> answer|escalate|fetch|store\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
   shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
