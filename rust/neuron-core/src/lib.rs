@@ -428,6 +428,58 @@ impl Neuron {
         Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, exact: bk.0 as usize, echo })
     }
 
+    /// Score the `order` candidates against the cue and return the top-k (best first; ties -> lower
+    /// index). On a large candidate set (a broad "everything about X" block query) the scoring is split
+    /// across the available cores with scoped threads — each scores a chunk into a local top-k heap, then
+    /// the heaps merge. Bit-identical to a single-threaded scan: chunks partition `order` and the
+    /// Reverse(index) tiebreak is deterministic. Single-threaded below the threshold and on wasm.
+    fn top_k(&self, order: &[usize], cue: &HashSet<String>, qraw: &HashSet<String>, k: usize) -> Vec<((i64, i64, i64, i64), usize)> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        type Key = ((i64, i64, i64, i64), Reverse<usize>);
+        let eps = &self.episodes;
+        let score = |i: usize| -> Option<Key> {
+            let e = &eps[i];
+            let ov = cue.iter().filter(|c| has_stem(&e.s, c)).count();
+            if ov < 1 { return None; }
+            let exact = qraw.iter().filter(|wd| has_stem(&e.raw, wd)).count() as i64;
+            let spec = -(e.s.iter().filter(|s| !cue.contains(s.as_ref()) && !stopval_s().contains(s.as_ref())).count() as i64);
+            let first_cue = cue.iter().filter_map(|c| stem_pos(&e.s, c).map(|kk| e.pos[kk] as i64)).min().unwrap_or(9999);
+            Some(((exact, ov as i64, spec, -first_cue), Reverse(i)))
+        };
+        let merge = |heap: &mut BinaryHeap<Reverse<Key>>, key: Key| {
+            if heap.len() < k { heap.push(Reverse(key)); }
+            else if heap.peek().is_some_and(|Reverse(m)| key > *m) { heap.pop(); heap.push(Reverse(key)); }
+        };
+        let finish = |heap: BinaryHeap<Reverse<Key>>| -> Vec<((i64, i64, i64, i64), usize)> {
+            let mut v: Vec<_> = heap.into_iter().map(|Reverse((s, Reverse(i)))| (s, i)).collect();
+            v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));   // best first; ties -> ascending index
+            v
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            const PAR_MIN: usize = 50_000;   // below this, a single pass is faster than spawning threads
+            let nthreads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
+            if k > 0 && order.len() >= PAR_MIN && nthreads > 1 {
+                let chunk = order.len().div_ceil(nthreads);
+                let (score, merge) = (&score, &merge);   // shared refs (Copy) so each thread can `move` its own
+                let partials: Vec<BinaryHeap<Reverse<Key>>> = std::thread::scope(|sc| {
+                    order.chunks(chunk).map(|ch| sc.spawn(move || {
+                        let mut h: BinaryHeap<Reverse<Key>> = BinaryHeap::with_capacity(k + 1);
+                        for &i in ch { if let Some(key) = score(i) { merge(&mut h, key); } }
+                        h
+                    })).collect::<Vec<_>>().into_iter().map(|t| t.join().unwrap()).collect()
+                });
+                let mut heap: BinaryHeap<Reverse<Key>> = BinaryHeap::with_capacity(k + 1);
+                for part in partials { for Reverse(key) in part { merge(&mut heap, key); } }
+                return finish(heap);
+            }
+        }
+        let mut heap: BinaryHeap<Reverse<Key>> = BinaryHeap::with_capacity(k + 1);
+        for &i in order { if let Some(key) = score(i) { merge(&mut heap, key); } }
+        finish(heap)
+    }
+
     /// Top-k relevant facts (richest first), for building a memory block. Same scoring as
     /// recall, but returns several hits instead of one.
     pub fn recall_many(&mut self, query: &str, k: usize) -> Vec<Recall> {
@@ -437,28 +489,9 @@ impl Neuron {
         let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let order = self.candidates(&cue, pet_query);
-        // top-k via a bounded min-heap: O(candidates · log k) with k memory, instead of scoring then
-        // sorting the whole candidate set. The key carries Reverse(index) so equal scores break to the
-        // lower index — identical ordering to the previous stable sort + truncate.
-        use std::cmp::Reverse;
-        type Key = ((i64, i64, i64, i64), Reverse<usize>);
-        let mut heap: std::collections::BinaryHeap<Reverse<Key>> = std::collections::BinaryHeap::with_capacity(k + 1);
-        for i in order {
-            let e = &self.episodes[i];
-            let ov = cue.iter().filter(|c| has_stem(&e.s, c)).count();
-            if ov < 1 { continue; }
-            let exact = qraw.iter().filter(|wd| has_stem(&e.raw, wd)).count() as i64;
-            let spec = -(e.s.iter().filter(|s| !cue.contains(s.as_ref()) && !stopval_s().contains(s.as_ref())).count() as i64);
-            let first_cue = cue.iter()
-                .filter_map(|c| stem_pos(&e.s, c).map(|kk| e.pos[kk] as i64))
-                .min().unwrap_or(9999);
-            let key: Key = ((exact, ov as i64, spec, -first_cue), Reverse(i));
-            if heap.len() < k { heap.push(Reverse(key)); }
-            else if heap.peek().is_some_and(|Reverse(min)| key > *min) { heap.pop(); heap.push(Reverse(key)); }
-        }
-        let mut scored: Vec<((i64,i64,i64,i64), usize)> =
-            heap.into_iter().map(|Reverse((sc, Reverse(i)))| (sc, i)).collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));   // best first; ties -> ascending index
+        // top-k by candidate score (bounded min-heap, k memory); scoring fans out across cores on a large
+        // candidate set — see top_k(). Identical ordering to a single-threaded stable sort + truncate.
+        let scored = self.top_k(&order, &cue, &qraw, k);
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let out: Vec<Recall> = scored.into_iter().map(|(sc,i)| {
             let e = &self.episodes[i];
