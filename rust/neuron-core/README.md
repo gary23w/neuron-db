@@ -25,6 +25,7 @@ cargo run --release --bin bench                              # microbenchmark
 | `server` | HTTP server + `serve` | one endpoint per scope over a std `TcpListener` |
 | `mcp` | `neuron-mcp` | stdio MCP server: `recall` / `recall_chain` / `remember` / `forget` / `stats` |
 | `semantic` | `SemanticSpace` | corpus-distributional fuzzy recall (Random Indexing, no model, no deps) |
+| `personality` | `Persona` | opt-in Big-Five + temperament that modulate affect/stance — OFF by default, inert until attached |
 
 Tests live in `tests/` (recall, db_tier, secure_tier, router, turn, plastic, inference,
 db_comprehensive, semantic_tier). Server-side multi-hop (`recall_chain`), the book-ingestion

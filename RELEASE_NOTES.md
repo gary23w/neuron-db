@@ -4,6 +4,23 @@ An associative memory you can run anywhere — and the flat-cost long-term memor
 Pure-Rust core (zero deps, compiles to WebAssembly); durable storage, encryption, an HTTP
 server, and an MCP server are opt-in. This is the first tagged release.
 
+## Unreleased — performance & capabilities
+
+- **Sharded concurrency.** The durable cache + its connection are partitioned by top-level scope
+  family, so independent tenants recall in parallel: cache-hot recall scales ~8× across 16 cores
+  (it was flat under one global lock). `examples/concurrency_bench`.
+- **Append-log durable writes.** A single `observe()` is now one O(new) INSERT, not a whole-scope
+  blob rewrite — single durable writes go ~3,300 → ~25,000/s and stay **flat as a scope grows to
+  millions**; batch ingest ~235k/s.
+- **Hybrid recall, fused with RRF.** `recall_blended` now fuses lexical + semantic rankings via
+  Reciprocal Rank Fusion: best hit@3 (97%) and MRR (0.84) in a coder-memory A/B vs grep and a
+  pure-vector ranker, at ~4× lower latency. `examples/coder_bench`.
+- **Bounded semantic recall** (windowed, capped embed cache), **stem interning** (~2× less per-fact
+  stem RAM), and a **df-aware + parallel** recall path keep large-scope recall flat.
+- **Opt-in personality layer** (`personality` feature, OFF by default): a Big-Five + temperament
+  `Persona` that, when explicitly attached, modulates the affect/stance dynamics. A neutral persona
+  is byte-identical to none. New CLI: `stance` / `mood` / `affect`.
+
 ## Highlights
 
 ### gary-neuron v3: a ~7M-parameter dispatcher baked into the build

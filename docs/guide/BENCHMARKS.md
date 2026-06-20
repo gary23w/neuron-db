@@ -6,8 +6,10 @@ the bugs it surfaced and the patches applied, the measured performance
 characteristics, and recommendations.
 
 NeuronDB is the durable tier: a database of neurons in one SQLite file
-(`rusqlite`, bundled), thread-safe via one connection plus an in-memory LRU cache
-behind a `Mutex`. It is feature-gated behind `sqlite`.
+(`rusqlite`, bundled). The in-memory LRU cache and its connection are **sharded by
+top-level scope family** (each shard its own `Mutex` + WAL connection), so independent
+tenants recall in parallel; durable writes are an **append-log** INSERT, not a whole-blob
+rewrite. It is feature-gated behind `sqlite`.
 
 ---
 
@@ -168,19 +170,25 @@ recall accuracy (N=500, distinct keys): 500/500
 ### 5.2 NeuronDB tier (`db_bench` example, release)
 
 ```
-1) single observe(), fresh scope each ............ 3,326 writes/sec
+1) single observe(), fresh scope each ............ 14,392 writes/sec
 2) single observe() into ONE growing scope:
-     first  2,000 facts ........................... 2,125 writes/sec
-     second 2,000 facts ........................... 1,314 writes/sec   (blob-rewrite cost)
-3) batch observe_many() 50,000 facts ............. 266,570 writes/sec
+     first  2,000 facts ........................... 36,035 writes/sec
+     second 2,000 facts ........................... 33,289 writes/sec   (append-log: O(new), flat with scope)
+3) batch observe_many() 50,000 facts ............. 234,794 writes/sec
 4) recall latency vs scope size:
-     scope  1,000 facts: selective 3.30 us/call | broad/shared cue   263 us/call
-     scope 10,000 facts: selective 3.42 us/call | broad/shared cue 2,647 us/call
-     scope 50,000 facts: selective 3.54 us/call | broad/shared cue 13,228 us/call
-5) cache hit 53 us/call ; cold reload (200 facts from sqlite) 687 us/call
-6) reopen + first-recall a 50,000-fact scope (load + index) ... 0.206 s
-7) concurrent observe, 8 threads x 2,000 writes .. 2,185 writes/sec (lock-serialized)
+     scope  1,000 facts: selective 4.16 us/call | broad/shared cue      209 us/call
+     scope 10,000 facts: selective 4.30 us/call | broad/shared cue    2,194 us/call
+     scope 50,000 facts: selective 5.26 us/call | broad/shared cue   11,021 us/call
+5) cache hit 47 us/call ; cold reload (200 facts from sqlite) 68 us/call
+6) reopen + first-recall a 50,000-fact scope (load + index) ... 0.371 s
+7) concurrent observe, 8 threads x 2,000 writes (one hot scope) .. 27,699 writes/sec
+8) recall_chain: ~13 us/hop, flat to 50 hops (50 hops = 666 us total)
 ```
+
+A durable single `observe()` is now an **append-log INSERT** — one row of just the new facts, not a rewrite
+of the whole scope blob — so write throughput is ~4–12× the old figures above and stays flat as a scope
+grows into the millions (see §5.5). Writes to *different* scopes run in parallel across CPU cores (§5.6);
+writes to one hot scope serialize but at ~28k/s, not the old ~2k/s.
 
 ### 5.3 User-testing benchmark (`scenario_bench` example, release)
 
@@ -230,6 +238,41 @@ the top-8 injectable block stay **100% accurate**, and needle latency is **flat 
 haystack, which is what lets external memory sidestep the context-window limit. The
 "broad cue" column (a word shared by every fact) is the one O(N) failure mode; give
 each memory a distinct subject to avoid it.
+
+### 5.5 Concurrency: sharded recall (`concurrency_bench` example, release)
+
+The in-memory cache and its SQLite connection are **sharded by top-level scope family**, so independent
+tenants recall in parallel instead of serializing on one global lock. Cache-hot recall, 64 tenant scopes ×
+1,500 facts, on a 16-core machine:
+
+```
+threads   recalls/sec   scaling
+   1          983        baseline
+   2        1,983        2.0×
+   4        3,904        4.0×
+   8        6,529        6.6×
+  16        8,023        8.2×
+```
+
+Recall throughput **scales with cores** — it was flat at 1× under the old single lock. Writes to distinct
+scopes parallelize too; writes to one hot scope still serialize on SQLite's single WAL writer (~33k/s, flat).
+
+### 5.6 Hybrid recall quality: coder-memory A/B (`coder_bench` example, release)
+
+A realistic codebase-memory corpus (file locations, commands, configs, conventions, dependency chains) with
+five query slices that each honestly favor a different approach, A/B'd against grep, a pure-cosine vector
+ranker, and dumping the whole memory into the prompt. Accuracy first (higher is better):
+
+```
+approach          hit@1   hit@3     MRR    latency
+grep              77.8%   81.0%    0.791     3 us
+vector (cosine)   69.8%   90.5%    0.788    84 us
+neuron-blended    73.0%   96.8%    0.839    20 us   <- lexical + semantic, fused
+```
+
+`recall_blended` fuses the lexical and semantic rankings with **Reciprocal Rank Fusion**, taking the best
+hit@3 and MRR in the set at ~4× lower latency than the vector ranker — and a targeted recall ships ~33× less
+context than dumping the whole store into the prompt.
 
 ---
 

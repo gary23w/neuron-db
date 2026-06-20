@@ -485,7 +485,7 @@
       <div class="trust">
         <span class="chip"><b>gary-neuron v5</b> ~7M-param dispatcher, in every build</span>
         <span class="chip"><b>route()</b> on CLI · MCP · WASM</span>
-        <span class="chip"><b>~3.9 µs</b> recall p50 · flat to 1M facts</span>
+        <span class="chip"><b>~4 µs</b> recall p50 · flat as the store grows</span>
         <span class="chip"><b>0</b> deps in the default build</span>
         <span class="chip">MIT licensed</span>
       </div>
@@ -593,7 +593,7 @@
     <div class="sec-head reveal">
       <div class="kicker">Tiers &amp; capabilities</div>
       <h2 class="title">One core, every tier opt-in. Add only what you need.</h2>
-      <p>Every tier shares the same associative store. Plasticity, sharding, durability, encryption, a network server, embedding-free semantic recall, and an MCP mount are opt-in Cargo features, so the default build stays std-only and wasm-clean.</p>
+      <p>Every tier shares the same associative store. Plasticity, sharding, durability, encryption, a network server, embedding-free semantic recall, an optional Big-Five <b>personality</b> layer, and an MCP mount are opt-in Cargo features, so the default build stays std-only and wasm-clean.</p>
     </div>
     <div class="grid cols-3">
       <div class="card reveal">
@@ -617,7 +617,7 @@
       <div class="card reveal">
         <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" class="ico-svg"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></div>
         <h3>NeuronDB <span class="tagm">sqlite</span></h3>
-        <p>A durable database of scopes in one SQLite file, WAL mode behind a process-wide lock. Each write persists immediately; concurrent threads are safe. Ships the <span class="mono">neuron</span> CLI.</p>
+        <p>A durable database of scopes in one SQLite file, WAL mode, <b>sharded by scope</b> so independent tenants recall and write in parallel — recall scales ~8× across 16 cores. Each write is a durable <b>append-log</b> INSERT (~25k/s, flat as a scope grows). Ships the <span class="mono">neuron</span> CLI.</p>
         <div class="feat-code">let db = NeuronDB::open("app.db", 500);<br>db.turn("user:42", "my color is teal");</div>
       </div>
       <div class="card reveal">
@@ -797,7 +797,7 @@
           <tr><td><b>1,000,000</b></td><td class="num-cell winner">~6 µs</td><td class="num-cell">~0.4 s</td><td class="num-cell">·</td></tr>
         </tbody>
       </table></div>
-      <p class="bm-note">Recall cost is <b class="accent">the frequency of the queried words</b>, not the fact count. A <b>selective cue</b> (a distinctive word) hits ~1 fact via the stem→fact inverted index, so it stays <b class="accent">flat at ~5-6 µs from 1k to 1,000,000 facts</b>. A <b>broad cue</b> (a word in every fact) scans the whole scope (O(N)). A 2025 pass made the candidate scan ~4× faster (binary-search over sorted stems + precomputed positions) and made the index incremental, so appending a fact then recalling it stays ~10 µs/turn even at 1M facts. Give each memory a distinct subject, or shard with the router.</p>
+      <p class="bm-note">Recall cost is <b class="accent">the frequency of the queried words</b>, not the fact count. A <b>selective cue</b> (a distinctive word) hits ~1 fact via the stem→fact inverted index, so it stays <b class="accent">flat at ~5-6 µs from 1k to 1,000,000 facts</b> (it does not grow with scope). A <b>broad cue</b> (a word in every fact) scans the whole scope (O(N)). A 2025 pass made the candidate scan ~4× faster (binary-search over sorted stems + precomputed positions) and made the index incremental, so appending a fact then recalling it stays ~10 µs/turn even at 1M facts. Give each memory a distinct subject, or shard with the router.</p>
     </div>
 
     <div class="panel-bm" data-bm="overtime">

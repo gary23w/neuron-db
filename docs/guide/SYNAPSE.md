@@ -93,9 +93,9 @@ positions — made recall **~4× faster across the board**. With it, the synapse
 tighten further, and two scaling properties hold on the optimized core (measured via the
 Rust `db_bench` / `context_scale` examples):
 
-- **Selective recall is flat at ~6 µs** from **10,000 to 1,000,000 facts** — a distinctive
-  cue resolves in microseconds regardless of store size, sub-linear via the stem→fact
-  inverted index. Store growth does not cost recall.
+- **Selective recall is flat at ~6 µs** from **10,000 to 1,000,000 facts** (5.3 µs at 10k → 6.3 µs
+  at 1M — it does not grow with scope) — a distinctive cue resolves in microseconds regardless of
+  store size, sub-linear via the stem→fact inverted index. Store growth does not cost recall.
 - **`recall_chain` multi-hop is ~12.6 µs per hop, flat** (down from ~39 µs before the
   optimization). A 50-hop chain walks server-side in ~0.63 ms total — and is still just
   **2 model calls** (one to form the path, one to phrase the answer). Depth is paid in
@@ -173,10 +173,9 @@ the query doesn't share words with how facts were stored. Mitigations, in order:
 For an LLM using neuron-db as memory:
 
 - **Speed is a non-issue.** Recall fires in tens of microseconds and round-trips in
-  ~0.2 ms — ~40,000–86,000× faster than the model call. On the optimized build (a ~4×
-  recall speedup), selective recall stays **flat at ~6 µs from 10,000 to 1,000,000 facts**,
-  and multi-hop `recall_chain` is **~12.6 µs per hop, flat** — so depth and store size are
-  both microsecond costs (`BENCHMARKS.md` §5.4).
+  ~0.2 ms — ~40,000–86,000× faster than the model call. Selective recall stays **flat at ~6 µs from
+  10,000 to 1,000,000 facts**, and multi-hop `recall_chain` is **~13 µs per hop, flat** — so depth
+  and store size are both microsecond costs (`BENCHMARKS.md` §5.4–5.6).
 - **Accuracy is high on cued recall** — direct fields, multi-fact blocks, numeric values,
   updates (with field-matched phrasing), and abstention all worked.
 - **The limitation is lexical, not performance.** Abstract/paraphrased queries that don't

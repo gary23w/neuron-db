@@ -49,10 +49,11 @@ The floor is the facts themselves — you can't recall what you never stored.
 
 ## The database
 
-`NeuronDB` keeps one row per neuron in SQLite: `(id, facts, created, updated, turns)`.
-Each call loads the neuron's blob, rebuilds it, runs, and saves. Access is serialized
-with a lock so the threaded HTTP server shares one connection safely. There is no query
-that returns all the values of a neuron — only `recall`, which returns one.
+`NeuronDB` keeps one row per neuron in SQLite: `(id, facts, created, updated, turns)`, plus a
+per-scope `fact_log` append-log so a single write is one O(new) INSERT, not a blob rewrite. The
+in-memory cache + connection are **sharded by top-level scope family** (each shard its own lock +
+WAL connection), so the threaded HTTP server runs independent tenants in parallel. There is no
+query that returns all the values of a neuron — only `recall`, which returns one.
 
 ## Porting the engine elsewhere
 

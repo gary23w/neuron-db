@@ -79,8 +79,9 @@ The markdown-dump reinjects the whole memory every turn and eventually overruns 
 neuron-db injects only what it recalled — flat cost, no ceiling, matching or beating
 accuracy. Measured to **50,000 facts**, neuron-db answers at **100%** on ~1.1k tokens of
 context while the equivalent markdown memory (~447k tokens) can't fit a 128k window at all;
-selective recall stays **flat ~6 µs out to 1,000,000 facts** (38 MB), and appending a fact
-then recalling it costs ~10 µs/turn even at that size (incremental indexing). Full numbers:
+a selective cue stays **flat at ~6 µs out to 1,000,000 facts** (~40 MB, ~40 bytes/fact, no
+embeddings). Durable writes are an append-log INSERT, **~25k/s and flat as a scope grows**; the
+cache is **sharded by scope so recall scales with cores** (~8× across 16 threads). Full numbers:
 **[docs/guide/COMPARISON.md](docs/guide/COMPARISON.md)** · how fast recall fires:
 **[docs/guide/SYNAPSE.md](docs/guide/SYNAPSE.md)** · scale + raw metrics:
 **[docs/guide/BENCHMARKS.md](docs/guide/BENCHMARKS.md)**.
