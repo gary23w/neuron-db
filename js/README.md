@@ -1,7 +1,7 @@
 # neuron-db
 
 The official host binding for **[neuron-db](https://github.com/gary23w/neuron-db)** — a pure-Rust
-associative memory plus the **gary-neuron** dispatcher cortex, compiled to WebAssembly. One
+associative memory plus the **gary-neuron** dispatcher hippocampus, compiled to WebAssembly. One
 dependency-free ES module that turns the raw `mem(ptr, len)` byte-FFI into a typed, self-validating
 API. Runs anywhere WebAssembly does: Cloudflare Workers, the browser, Node, Deno, Bun.
 
@@ -10,8 +10,8 @@ npm i @gary23w/neuron-db
 ```
 
 The package bundles a lean **store-only** `neuron_core.wasm` (~352 KB) — recall, associative recall,
-multi-hop chains, variables, dump/load. For the **cortex** (`route()` / `dispatch()`), mount a cortex
-build (see [Cortex](#cortex) below).
+multi-hop chains, variables, dump/load. For the **hippocampus** (`route()` / `dispatch()`), mount a
+cortex build (see [The hippocampus](#the-hippocampus) below).
 
 ## Quickstart
 
@@ -45,9 +45,9 @@ answer_ptr → dealloc memory dance (once), the per-op encode/decode/parse, the 
 queries), and a **self-describing surface** — it reads the build's `ops` at load and *fails loud* on an
 op the build doesn't expose, instead of the silent empty string the raw FFI returns.
 
-## Cortex
+## The hippocampus
 
-The cortex (gary-neuron) is the dispatcher: each turn it routes `answer` / `escalate` / `fetch` /
+The hippocampus (gary-neuron) is the dispatcher: each turn it routes `answer` / `escalate` / `fetch` /
 `store` over the recalled working set. On a **cortex build**, `route()` is the headline — recall +
 dispatch in one call:
 
@@ -67,7 +67,7 @@ Raw model text never reaches the user — a degenerate generation resolves to `e
 A cortex build is ~7.6 MB (the int8 model is baked in with `include_bytes!`). It's available from the
 [neuron-db repo](https://github.com/gary23w/neuron-db) (`worker/neuron_core.wasm`) or build it:
 `cargo build --lib --release --target wasm32-unknown-unknown` in `rust/neuron-core`. Load it like any
-other wasm; `db.hasCortex` tells you whether the build you mounted has it.
+other wasm; `db.hasCortex` tells you whether the build you mounted has the hippocampus.
 
 ## API
 
@@ -80,7 +80,7 @@ other wasm; `db.hasCortex` tells you whether the build you mounted has it.
 | **read** | `recall(scope, q, k?)` · `recallScored(scope, q, k?)` · `recallValue(scope, q)` · `assess(scope, q)` · `assoc(scope, q, k?, hops?)` · `chain(scope, start, path)` |
 | **vars** | `setVar` · `getVar` · `vars(scope)` · `delVar` |
 | **lifecycle** | `forget(scope, match?)` · `stats(scope)` · `scopes()` · `dump(scope)` · `load(scope, blob)` |
-| **cortex** | `route(scope, q, {k?})` · `dispatch(q, facts?)` · `hasCortex` |
+| **hippocampus** | `route(scope, q, {k?})` · `dispatch(q, facts?)` · `hasCortex` |
 | **introspect** | `listOps()` · `supports(op)` · `caps()` · `resolveCaps(hostCaps?)` |
 
 Full TypeScript types ship with the package (`index.d.mts`).

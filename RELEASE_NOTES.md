@@ -27,16 +27,17 @@ server, and an MCP server are opt-in. This is the first tagged release.
 gary-neuron is a 6,973,952-parameter int8 transformer (E=256, H=8, L=8, vocab=2048, 512-token
 context). It ships inside the WebAssembly/binary build via `include_bytes`, runs on CPU with no
 GPU and no download. It is not a selectable chat model. It is the always-on middle layer between
-a host model and neuron-db: each turn the cortex emits exactly one route — `ANSWER`, `ESCALATE`,
-`FETCH <topic>`, or `STORE <fact>`. On `ANSWER` the literal value comes from neuron-db's
-deterministic recall: the cortex decides the route, the store grounds the bytes.
+a host model (the reasoning neocortex it escalates to) and neuron-db: each turn the hippocampus
+emits exactly one route — `ANSWER`, `ESCALATE`, `FETCH <topic>`, or `STORE <fact>`. On `ANSWER`
+the literal value comes from neuron-db's deterministic recall: the hippocampus decides the route,
+the store grounds the bytes.
 
 Held-out results: routing triage (ANSWER vs ESCALATE vs FETCH) is 100% on each class; grounded
 ANSWER accuracy is 88–98% across working sets from 1 to 18 facts; two-hop chaining is 100%.
 Numeric comparison is the acknowledged limit, sitting near chance.
 
 A browser/WASM dispatch is about 54 ms after a SIMD128 pass over the matmuls, down from ~172 ms;
-the cortex is also fast natively. neuron-db recall under that load measures p50 ~3.9 µs and
+the hippocampus is also fast natively. neuron-db recall under that load measures p50 ~3.9 µs and
 p99 ~36 µs over 10k queries against 7000 facts across 1000 scopes (indexed recall plus a
 write-behind store).
 

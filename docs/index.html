@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>neuron-db · an associative memory you can run anywhere</title>
-<meta name="description" content="neuron-db is a tiny, dependency-free associative memory in pure Rust. Write facts in plain language, recall them by meaning. ~130× denser than a vector store, microsecond recall, no model or GPU required, with an optional emergence cortex that thinks over what it recalls.">
+<meta name="description" content="neuron-db is a tiny, dependency-free associative memory in pure Rust. Write facts in plain language, recall them by meaning. ~130× denser than a vector store, microsecond recall, no model or GPU required, with an optional emergence hippocampus that thinks over what it recalls.">
 <meta name="author" content="gary23w">
 <meta name="theme-color" content="#0a0c12">
 <meta property="og:type" content="website">
 <meta property="og:title" content="neuron-db: an associative memory you can run anywhere">
-<meta property="og:description" content="Pure-Rust associative memory. Plain-language facts, microsecond recall, ~130× the density of a float32 vector store, plus an emergence cortex that thinks over what it recalls.">
+<meta property="og:description" content="Pure-Rust associative memory. Plain-language facts, microsecond recall, ~130× the density of a float32 vector store, plus an emergence hippocampus that thinks over what it recalls.">
 <meta property="og:url" content="https://gary23w.github.io/neuron-db/">
 <meta property="og:image" content="https://gary23w.github.io/neuron-db/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -437,7 +437,7 @@
     </a>
     <nav class="nav-links" id="navlinks">
       <a class="navlink" href="#synapse">Memory</a>
-      <a class="navlink" href="#cortex">Cortex</a>
+      <a class="navlink" href="#cortex">Hippocampus</a>
       <a class="navlink" href="#benchmarks">Benchmarks</a>
       <a class="navlink" href="#quickstart">Quickstart</a>
       <span class="nav-sep" aria-hidden="true"></span>
@@ -467,7 +467,7 @@
         <a class="btn" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">Star on GitHub</a>
         <button class="btn ghost" id="openDocs2" type="button">Read the docs</button>
       </div>
-      <p class="dim" style="font-size:13px;margin:10px 0 0">The model reasons over a knowledge-gap signal: when the store can't answer, it routes to a web fetch and grounds the reply in what it pulls back. Core is pure Rust with zero dependencies in a 1&nbsp;MB wasm worker; durable storage, encryption, an HTTP server, and the cortex are opt-in.</p>
+      <p class="dim" style="font-size:13px;margin:10px 0 0">The model reasons over a knowledge-gap signal: when the store can't answer, it routes to a web fetch and grounds the reply in what it pulls back. Core is pure Rust with zero dependencies in a 1&nbsp;MB wasm worker; durable storage, encryption, an HTTP server, and the hippocampus are opt-in.</p>
     </div>
     <div class="hero-terminal">
       <div class="terminal">
@@ -654,7 +654,7 @@
     <div class="sec-head reveal">
       <div class="kicker">Beyond a lookup table</div>
       <h2 class="title">A memory that <span class="grad">thinks and grows.</span></h2>
-      <p>Most stores are key-value lookups. neuron-db adds a second tier: a <b class="pink">dispatcher cortex</b> that reads what the store recalled and decides what to do with it, plus a plastic tier that adapts in the moment without gradient descent. The store stays fast because the cortex only ever sees the small working set, not the whole database.</p>
+      <p>Most stores are key-value lookups. neuron-db adds a second tier: a <b class="pink">dispatcher hippocampus</b> that reads what the store recalled, decides what to do with it, and escalates to the host model (the reasoning neocortex) when memory can't answer, plus a plastic tier that adapts in the moment without gradient descent. The store stays fast because the hippocampus only ever sees the small working set, not the whole database.</p>
     </div>
 
     <div class="brain">
@@ -680,7 +680,7 @@
           <div class="arrow">▼</div>
           <div class="layer l-sleep">
             <div class="lt">③ SLEEP &nbsp;<span class="pink">consolidation</span> · off the hot path</div>
-            folds new episodes into cortex weights; merges &amp; prunes the store.<br>
+            folds new episodes into hippocampus weights; merges &amp; prunes the store.<br>
             <span class="dim">the model keeps learning; the store stays lean.</span>
           </div>
         </div>
@@ -711,7 +711,7 @@
           </div>
         </div>
         <div class="callout" style="margin-top:18px">
-          <b>gary-neuron v5 — the dispatcher cortex.</b> A ~7M-parameter int8 transformer baked into every build with <span class="mono">include_bytes!</span>: no download, no GPU, no network to load it. Each turn it routes to <span class="mono">ANSWER</span> / <span class="mono">ESCALATE</span> / <span class="mono">FETCH</span> / <span class="mono">STORE</span> over the recalled working set. On a held-out test the routing triage is <b class="accent">100%</b> on each class (<span class="mono">router_bench</span> 500/500), with STORE routing fixed <b class="accent">0→100%</b>; grounded answers land <b class="accent">94–100%</b> for working sets up to 12 facts, and an open-ended turn over on-topic facts resolves to a clean <span class="mono">ESCALATE</span> — no degenerate output. A dispatch runs in <b class="accent">~54 ms</b> in the browser (SIMD128) or <b class="accent">~255 ms</b> natively. It is the front gate on <b>every</b> mount — <span class="mono">neuron route</span> on the CLI, the MCP <span class="mono">route</span> tool, and <span class="mono">route()</span> in the WASM binding — a required feature, never bypassed; each returns a typed <span class="mono">{type, value, facts}</span>, so raw model text never reaches the user. The pure-Rust forward pass matches the numpy and TypeScript ports to <b class="accent">0.0000 MSE</b>. The weights are published on <a href="https://huggingface.co/gary23w/gary-neuron-emergent" target="_blank" rel="noopener">Hugging Face</a> as a pure-NumPy mirror.
+          <b>gary-neuron v5 — the dispatcher hippocampus.</b> A ~7M-parameter int8 transformer baked into every build with <span class="mono">include_bytes!</span>: no download, no GPU, no network to load it. Each turn it routes to <span class="mono">ANSWER</span> / <span class="mono">ESCALATE</span> / <span class="mono">FETCH</span> / <span class="mono">STORE</span> over the recalled working set. On a held-out test the routing triage is <b class="accent">100%</b> on each class (<span class="mono">router_bench</span> 500/500), with STORE routing fixed <b class="accent">0→100%</b>; grounded answers land <b class="accent">94–100%</b> for working sets up to 12 facts, and an open-ended turn over on-topic facts resolves to a clean <span class="mono">ESCALATE</span> — no degenerate output. A dispatch runs in <b class="accent">~54 ms</b> in the browser (SIMD128) or <b class="accent">~255 ms</b> natively. It is the front gate on <b>every</b> mount — <span class="mono">neuron route</span> on the CLI, the MCP <span class="mono">route</span> tool, and <span class="mono">route()</span> in the WASM binding — a required feature, never bypassed; each returns a typed <span class="mono">{type, value, facts}</span>, so raw model text never reaches the user. The pure-Rust forward pass matches the numpy and TypeScript ports to <b class="accent">0.0000 MSE</b>. The weights are published on <a href="https://huggingface.co/gary23w/gary-neuron-emergent" target="_blank" rel="noopener">Hugging Face</a> as a pure-NumPy mirror.
         </div>
       </div>
     </div>
@@ -723,7 +723,7 @@
     <div class="sec-head reveal">
       <div class="kicker">Live demos</div>
       <h2 class="title">See it run. In your browser.</h2>
-      <p>Every demo runs client-side, with nothing sent to a server. The live-memory and cortex views execute the real Rust core compiled to WebAssembly; the rest are faithful, interactive views of the documented behaviour. Use the list or the arrows to move through them.</p>
+      <p>Every demo runs client-side, with nothing sent to a server. The live-memory and hippocampus views execute the real Rust core compiled to WebAssembly; the rest are faithful, interactive views of the documented behaviour. Use the list or the arrows to move through them.</p>
     </div>
     <div class="gallery reveal">
       <div class="demo-list" id="demoList"></div>
@@ -1104,7 +1104,7 @@ db.route(<span class="tok-s">"user:42"</span>, userMessage);              <span 
           <svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="16" r="4.6" fill="#5eead4"/><circle cx="6" cy="7" r="2.3" fill="#7c9cff"/><circle cx="26" cy="9" r="2.3" fill="#7c9cff"/><circle cx="7" cy="25" r="2.3" fill="#f472b6"/><circle cx="25" cy="24" r="2.3" fill="#34d399"/><g stroke="#5eead4" stroke-width="1.1" opacity=".55"><line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/><line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g></svg>
           neuron<b>-db</b>
         </a>
-        <p class="dim" style="font-size:14px;margin-top:14px">An associative memory you can run anywhere. Pure Rust, zero dependencies, with the gary-neuron dispatcher cortex baked in.</p>
+        <p class="dim" style="font-size:14px;margin-top:14px">An associative memory you can run anywhere. Pure Rust, zero dependencies, with the gary-neuron dispatcher hippocampus baked in.</p>
         <p class="dim" style="font-size:13px">MIT licensed · Author: <b class="accent">gary23w</b></p>
       </div>
       <div class="ft-links">
@@ -1127,7 +1127,7 @@ db.route(<span class="tok-s">"user:42"</span>, userMessage);              <span 
           <h5>Navigate</h5>
           <a href="lab.html" class="accent">▶ Live lab</a>
           <a href="#features">Features</a>
-          <a href="#cortex">The cortex</a>
+          <a href="#cortex">The hippocampus</a>
           <a href="#benchmarks">Benchmarks</a>
           <a href="#quickstart">Quickstart</a>
         </div>
@@ -1360,7 +1360,7 @@ db.route(<span class="tok-s">"user:42"</span>, userMessage);              <span 
     {f:'demos/synapse-3d.html',      t:'3D synapse',       d:'Watch neurons fire & link in 3D',   tag:'real WASM'},
     {f:'demos/semantic-3d.html',     t:'Semantic space',   d:'Meaning in N dimensions (PCA)',     tag:'real WASM'},
     {f:'demos/live-memory.html',     t:'Live memory',      d:'Chat with it; it remembers',        tag:'real WASM'},
-    {f:'demos/cortex-stream.html',   t:'Emergence cortex', d:'Copies a value out of context',     tag:'real WASM'},
+    {f:'demos/cortex-stream.html',   t:'Emergence hippocampus', d:'Copies a value out of context',     tag:'real WASM'},
     {f:'demos/plasticity.html',      t:'Plasticity',       d:'Adapt, decay, associate',           tag:'interactive'},
     {f:'demos/density.html',         t:'Storage density',  d:'130x a vector store',               tag:'interactive'},
     {f:'demos/encrypted-vault.html', t:'Encrypted vault',  d:'Right vs wrong passphrase',         tag:'WebCrypto'},

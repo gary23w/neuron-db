@@ -31,11 +31,12 @@ Working memory (the live conversation) plus a persistent per-chat **focus** keep
 scroll. Web access goes straight from the WASM through a `host_http` import to public **CORS** APIs (Wikipedia,
 DuckDuckGo, open-meteo) — **no proxy, no worker, nothing leaves your browser**. How the loop works: **[docs/guide/STATUS.md](docs/guide/STATUS.md)**.
 
-## The cortex: gary-neuron
+## The hippocampus: gary-neuron
 
-A small model called gary-neuron (v5) is the middle layer between a host model and neuron-db. It
-is a ~7M-parameter int8 transformer baked into the WebAssembly/binary build (no download, no GPU),
-and it works as a dispatcher: each turn it picks one route. The weights are published on Hugging Face
+A small model called gary-neuron (v5) is the **hippocampus** of the stack — the memory gate between a host
+model (the reasoning neocortex it escalates to) and neuron-db (the long-term store). It is a ~7M-parameter
+int8 transformer baked into the WebAssembly/binary build (no download, no GPU), and it works as a dispatcher:
+each turn it decides whether to recall, consolidate, fetch, or escalate. The weights are published on Hugging Face
 as a pure-NumPy mirror — **[gary23w/gary-neuron-emergent](https://huggingface.co/gary23w/gary-neuron-emergent)**. It is the front gate on **every** mount —
 `neuron route` on the CLI, the MCP `route` tool, and `route()` in the WASM binding — and a required
 feature of the `neuron` binary and the `mcp` build, so it is never bypassed.
@@ -251,7 +252,7 @@ Embedded SQLite has no login — control access by filesystem permissions, the H
 ## Implementations
 
 The store and service tiers are canonical in **Rust** (`rust/neuron-core/`). A Python
-reference implementation — including the gary-neuron cortex bridge and training tooling —
+reference implementation — including the gary-neuron bridge and training tooling —
 is preserved on the **`legacy-python`** branch.
 
 ## Examples

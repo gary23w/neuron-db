@@ -76,12 +76,12 @@ See **[BENCHMARKS.md](BENCHMARKS.md)** for methodology and the full tables.
   A lab-side agentic-loop fix (default low reasoning_effort for tool-selection round-trips + a hop
   cap) sped up reasoning tool-calling **~48%**; this is a harness tuning, the MCP was never the
   bottleneck.
-- **Plug-and-play, and the cortex route on every mount:** a zero-deps JS host binding
+- **Plug-and-play, and the hippocampus route on every mount:** a zero-deps JS host binding
   (`worker/neuron-db.mjs`) wraps the raw wasm FFI in typed methods, with a self-describing `ops` surface
-  that fails loud on an unsupported op and `route(scope, query)` — recall + cortex dispatch in one call,
-  returning `{type, value, facts}`. The same cortex route is now on every transport: `neuron route` on the
+  that fails loud on an unsupported op and `route(scope, query)` — recall + hippocampus dispatch in one call,
+  returning `{type, value, facts}`. The same route is now on every transport: `neuron route` on the
   CLI, a `route` MCP tool, and `route()` / `dispatch()` in the binding — all returning the typed
-  ANSWER / ESCALATE / FETCH / STORE decision. The cortex is a **required** feature of the `neuron` binary
+  ANSWER / ESCALATE / FETCH / STORE decision. The hippocampus is a **required** feature of the `neuron` binary
   and the `mcp` build, so no mount is ever store-only by accident, and raw model text can never reach the
   user (a degenerate generation resolves to escalate, not garbage).
 - **In-browser lab — gary-neuron dispatcher (new):** a fully client-side lab (`docs/lab.html`) with a
@@ -89,8 +89,9 @@ See **[BENCHMARKS.md](BENCHMARKS.md)** for methodology and the full tables.
   ships gary-neuron (now v5) as the in-browser dispatcher: a ~7M-parameter int8 transformer
   (E=256, H=8, L=8, vocab=2048, 512-token context) baked into the WASM build via `include_bytes`, so it
   runs on CPU with no GPU and nothing to download. It sits as the always-on middle layer between the host
-  model and neuron-db and emits exactly one route per turn: `ANSWER`, `ESCALATE`, `FETCH <topic>`, or
-  `STORE <fact>`. On `ANSWER` the literal value comes from neuron-db's deterministic recall, so the cortex
+  model (the reasoning neocortex it escalates to) and neuron-db and emits exactly one route per turn:
+  `ANSWER`, `ESCALATE`, `FETCH <topic>`, or `STORE <fact>`. On `ANSWER` the literal value comes from
+  neuron-db's deterministic recall, so the hippocampus
   decides the route and the store grounds the bytes. Held-out (v5): routing triage
   (ANSWER / ESCALATE / FETCH / STORE) is 100% on each class (`router_bench` 500/500), STORE routing went
   **0% → 100%**, grounded ANSWER is 94–100% to 12 facts, open-ended turns over on-topic context resolve to

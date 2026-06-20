@@ -5,7 +5,7 @@ The fast reimplementation of the neuron — the associative memory at the heart 
 dependencies, builds offline.
 
 The Rust core is the **canonical implementation** (on `main`); a Python reference — including
-the gary-neuron cortex bridge and training tooling — is preserved on the `legacy-python`
+the gary-neuron hippocampus bridge and training tooling — is preserved on the `legacy-python`
 branch. Same behavior, ~7× faster creation and ~5× faster recall, a single static binary, and
 true multi-core concurrency (no GIL).
 
