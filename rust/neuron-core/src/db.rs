@@ -1,7 +1,9 @@
-//! NeuronDB: a database of neurons in one SQLite file (rusqlite, bundled). Durable,
-//! thread-safe (one connection + an in-memory LRU cache behind a Mutex). Feature-gated
-//! behind `sqlite`. The cache avoids re-parsing a scope blob on every op (the large-scope
-//! write cost); writes still persist immediately. Batch ingest amortizes the per-write save.
+//! NeuronDB: a database of neurons in one SQLite file (rusqlite, bundled). Durable and
+//! thread-safe. The in-memory LRU cache + its connection are SHARDED by top-level scope family
+//! (see `shard_key`), each shard behind its own Mutex and its own WAL connection to the one file,
+//! so independent tenants recall/observe in parallel instead of serializing on a single global lock.
+//! Feature-gated behind `sqlite`. The cache avoids re-parsing a scope blob on every op (the
+//! large-scope write cost); writes still persist immediately. Batch ingest amortizes the per-write save.
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -53,7 +55,8 @@ impl crate::op::Store for NeuronDB {
 struct Entry { n: Neuron, created: i64, turns: i64, used: u64, dirty: bool, snap_count: usize, log_next: i64 }
 struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
 pub struct NeuronDB {
-    inner: Mutex<Inner>, max_facts: usize, cap: usize,
+    shards: Vec<Mutex<Inner>>,   // cache+connection partitioned by scope family; len 1 for in-memory DBs
+    max_facts: usize, cap: usize,
     flush_every: usize,   // append-log compaction floor: the log folds into a snapshot once it reaches ~max(snap_count, this)
     #[cfg(feature = "semantic")] sem: Mutex<crate::semantic::SemanticSpace>,
     #[cfg(feature = "semantic")] sem_threshold: f32,
@@ -62,17 +65,19 @@ pub struct NeuronDB {
 impl Drop for NeuronDB {
     /// Flush any write-behind buffers on shutdown so a clean exit never loses deferred writes.
     fn drop(&mut self) {
-        // Route through guard() (de-poisoning) rather than `if let Ok(lock())`: a prior persist panic
-        // (e.g. SQLITE_FULL) poisons the mutex, and the old form would silently SKIP this shutdown
-        // flush — dropping every dirty write-behind buffer. guard() never panics. Each per-entry
-        // persist is catch_unwind-isolated so a panic on one scope (a still-full disk) neither aborts
-        // the process nor skips the remaining scopes' flushes.
-        let mut g = self.guard();
-        let inner = &mut *g; let Inner { conn, cache, .. } = inner;
-        for (k, e) in cache.iter_mut() {
-            // snapshot() clears dirty on success; a panic (e.g. still-full disk) leaves it dirty rather
-            // than falsely clearing it — the log already holds the facts, so reopen still recovers them.
-            if e.dirty { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::snapshot(conn, k, e))); }
+        // Lock each shard directly (de-poisoning, like the old guard()) rather than `if let Ok(lock())`:
+        // a prior persist panic (e.g. SQLITE_FULL) poisons the mutex, and the old form would silently
+        // SKIP this shutdown flush — dropping every dirty write-behind buffer. Each per-entry persist is
+        // catch_unwind-isolated so a panic on one scope (a still-full disk) neither aborts the process
+        // nor skips the remaining scopes' flushes. Shards are independent, so we take one lock at a time.
+        for shard in &self.shards {
+            let mut g = shard.lock().unwrap_or_else(|e| e.into_inner());
+            let Inner { conn, cache, .. } = &mut *g;
+            for (k, e) in cache.iter_mut() {
+                // snapshot() clears dirty on success; a panic (e.g. still-full disk) leaves it dirty rather
+                // than falsely clearing it — the log already holds the facts, so reopen still recovers them.
+                if e.dirty { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::snapshot(conn, k, e))); }
+            }
         }
     }
 }
@@ -87,22 +92,60 @@ impl NeuronDB {
     /// log grow further between snapshots (fewer, larger compactions). Recall reads the in-memory cache.
     /// Kept for API compatibility — `open()` (flush_every=1) is the right default.
     pub fn open_with_flush(path: &str, max_facts: usize, flush_every: usize) -> Self {
-        let conn = Connection::open(path).expect("open sqlite");
-        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-        conn.execute_batch(SCHEMA).expect("schema");
+        // One in-memory cache shard per hardware thread (capped), each with its OWN WAL connection to the
+        // same file — independent scope families recall/observe without contending for one global lock.
+        // An in-memory or anonymous DB can't share state across connections, so it stays single-shard.
+        let nshards = if path == ":memory:" || path.is_empty() { 1 }
+            else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 16) };
+        let mut shards = Vec::with_capacity(nshards);
+        for _ in 0..nshards {
+            let conn = Connection::open(path).expect("open sqlite");
+            // WAL = concurrent readers + a single writer across connections; busy_timeout makes a second
+            // shard's writer wait for the brief WAL write-lock instead of erroring SQLITE_BUSY.
+            let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000;");
+            conn.execute_batch(SCHEMA).expect("schema");   // CREATE IF NOT EXISTS — idempotent across shards
+            shards.push(Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }));
+        }
         NeuronDB {
-            inner: Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }), max_facts, cap: 256,
+            // cap is PER-SHARD, so divide the ~256 global cached-scope budget across shards (with a floor so
+            // a single tenant's co-located sub/cross scopes don't thrash). Eviction is per-shard; an evicted
+            // scope just reloads from its durable log, so this bounds memory without risking correctness.
+            shards, max_facts, cap: (256 / nshards).max(32),
             flush_every: flush_every.max(1),
             #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
             #[cfg(feature = "semantic")] sem_threshold: 0.20,
         }
     }
 
-    /// Lock the inner state, recovering from a poisoned mutex instead of panicking. A write that
-    /// panics mid-persist (e.g. SQLITE_FULL on a huge import) poisons the lock; de-poisoning here
-    /// keeps the store usable for every later op rather than cascading one failed write into a dead
-    /// store — important for the long-lived MCP server with a preload boot hook.
-    fn guard(&self) -> std::sync::MutexGuard<'_, Inner> { self.inner.lock().unwrap_or_else(|e| e.into_inner()) }
+    /// The top-level scope family for `nid`: the prefix before the first `::` (typed sub-scope like
+    /// `::affect`/`::stance`/`::var`/`::instr`) or `__` (cross-scope child like `base__deals`). A scope
+    /// and ALL of its sub-scopes and cross-children share this key, so they hash to the SAME shard — every
+    /// multi-scope op (affect, a full forget, recall_many_across) stays a single-shard, single-lock path.
+    fn shard_key(nid: &str) -> &str {
+        let end = nid.len();
+        let a = nid.find("::").unwrap_or(end);
+        let b = nid.find("__").unwrap_or(end);
+        &nid[..a.min(b)]
+    }
+    fn shard_idx(&self, nid: &str) -> usize {
+        if self.shards.len() == 1 { return 0; }
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        Self::shard_key(nid).hash(&mut h);
+        (h.finish() % self.shards.len() as u64) as usize
+    }
+    /// Lock the shard owning `nid`'s scope family, recovering from a poisoned mutex instead of panicking.
+    /// A write that panics mid-persist (e.g. SQLITE_FULL on a huge import) poisons that shard's lock;
+    /// de-poisoning here keeps the store usable for every later op rather than cascading one failed write
+    /// into a dead store — important for the long-lived MCP server with a preload boot hook.
+    fn shard(&self, nid: &str) -> std::sync::MutexGuard<'_, Inner> {
+        self.shards[self.shard_idx(nid)].lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Lock shard 0 for catalog reads. The `neurons`/`fact_log` tables live in the one shared DB file, so
+    /// any shard's connection sees every committed row — listing ids needs only one shard's connection.
+    fn catalog(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.shards[0].lock().unwrap_or_else(|e| e.into_inner())
+    }
     // de-poison the semantic-space lock too: a panic inside train() (e.g. under the MCP preload
     // catch_unwind) would otherwise poison it and crash the first recall in the request loop.
     #[cfg(feature = "semantic")]
@@ -111,15 +154,17 @@ impl NeuronDB {
     /// Persist all scopes with unsaved (write-behind) changes. Call before shutdown for durability;
     /// also run automatically on Drop and on LRU eviction.
     pub fn flush_all(&self) {
-        let mut g = self.guard(); let inner = &mut *g;
-        let Inner { conn, cache, .. } = inner;
-        for (k, e) in cache.iter_mut() {
-            // isolate each persist like Drop does: a SQLITE_FULL panic on one scope (this is the
-            // pre-shutdown flush after a bulk import — the most likely spot to fill the disk) must
-            // not poison the lock or skip the remaining scopes. A failed scope stays dirty for Drop.
-            if e.dirty {
-                // snapshot() clears dirty on success; a SQLITE_FULL panic leaves it dirty for Drop to retry
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::snapshot(conn, k, e)));
+        for shard in &self.shards {
+            let mut g = shard.lock().unwrap_or_else(|e| e.into_inner());
+            let Inner { conn, cache, .. } = &mut *g;
+            for (k, e) in cache.iter_mut() {
+                // isolate each persist like Drop does: a SQLITE_FULL panic on one scope (this is the
+                // pre-shutdown flush after a bulk import — the most likely spot to fill the disk) must
+                // not poison the lock or skip the remaining scopes. A failed scope stays dirty for Drop.
+                if e.dirty {
+                    // snapshot() clears dirty on success; a SQLITE_FULL panic leaves it dirty for Drop to retry
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::snapshot(conn, k, e)));
+                }
             }
         }
     }
@@ -203,26 +248,33 @@ impl NeuronDB {
         if logged >= e.snap_count.max(flush_every).max(COMPACT_FLOOR) { Self::snapshot(conn, nid, e); return; }
         let block = e.n.dump_from(from);
         if block.is_empty() { return; }
-        // register a row for a brand-new scope so neurons()/scopes() lists it — ONLY on the first append.
-        // We must never UPDATE this row afterward: SQLite rewrites the whole row, and its `facts` blob can
-        // be megabytes, which would re-introduce the O(scope) write we're eliminating. `updated` refreshes
-        // on the next snapshot() instead (so neurons() recency can lag a little between snapshots).
-        if e.snap_count == 0 && e.log_next == 0 {
-            conn.execute("INSERT OR IGNORE INTO neurons(id,facts,created,updated,turns) VALUES(?1,'',?2,?3,?4)",
-                         params![nid, e.created, now_ms(), e.turns]).ok();
-        }
         // set dirty BEFORE the write: if the INSERT panics (e.g. SQLITE_FULL), the entry stays dirty so
         // flush_all/Drop snapshots the in-memory facts rather than silently losing this append.
         e.dirty = true;
-        let mut stmt = conn.prepare_cached("INSERT INTO fact_log(scope,seq,lines) VALUES(?1,?2,?3)").expect("prep append");
-        stmt.execute(params![nid, e.log_next, block]).expect("append");
+        if e.snap_count == 0 && e.log_next == 0 {
+            // Brand-new scope: register its catalog row (so neurons()/scopes() lists it) AND write its first
+            // facts in ONE transaction, so a crash between them can't leave a phantom empty scope — the row
+            // present with facts='' but the facts in neither the blob nor the log. We never UPDATE this row
+            // afterward: SQLite rewrites the whole row, and its `facts` blob can be megabytes, re-introducing
+            // the O(scope) write we're eliminating; `updated` refreshes on the next snapshot() instead.
+            let tx = conn.unchecked_transaction().expect("tx");
+            tx.execute("INSERT OR IGNORE INTO neurons(id,facts,created,updated,turns) VALUES(?1,'',?2,?3,?4)",
+                       params![nid, e.created, now_ms(), e.turns]).ok();
+            tx.prepare_cached("INSERT INTO fact_log(scope,seq,lines) VALUES(?1,?2,?3)").expect("prep append")
+                .execute(params![nid, e.log_next, block]).expect("append");
+            tx.commit().expect("commit");
+        } else {
+            // steady state: a single fact_log INSERT is atomic on its own (one statement, autocommit).
+            conn.prepare_cached("INSERT INTO fact_log(scope,seq,lines) VALUES(?1,?2,?3)").expect("prep append")
+                .execute(params![nid, e.log_next, block]).expect("append");
+        }
         e.log_next += 1;
     }
 
     pub fn observe(&self, nid: &str, text: &str) -> usize {
         let w;
         {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -247,7 +299,7 @@ impl NeuronDB {
     pub fn observe_many(&self, nid: &str, texts: &[String]) -> usize {
         let w;
         {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -264,7 +316,7 @@ impl NeuronDB {
     }
     pub fn recall(&self, nid: &str, query: &str) -> Option<Recall> {
         let lex = {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             inner.cache.get_mut(nid).unwrap().n.recall(query)
         };
@@ -283,7 +335,7 @@ impl NeuronDB {
     pub fn recall_semantic(&self, nid: &str, query: &str) -> Option<Recall> {
         const SEM_FALLBACK_CAP: usize = 4000;
         let facts: Vec<(String, String)> = {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
             let start = eps.len().saturating_sub(SEM_FALLBACK_CAP);   // most-recent window only
@@ -310,7 +362,7 @@ impl NeuronDB {
         // O(scope), as a chat's memory grows into the millions (and the embedding cache stays bounded).
         const BLENDED_CAP: usize = 4000;
         let facts: Vec<(String, String)> = {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
             let start = eps.len().saturating_sub(BLENDED_CAP);
@@ -354,14 +406,14 @@ impl NeuronDB {
         all
     }
     pub fn recall_many(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_many(query, k)
     }
     /// Spreading-activation recall: seeds on cue matches, then follows shared-entity links to
     /// surface associated facts (see Neuron::recall_spreading). Association-based, not keyword/cosine.
     pub fn recall_associative(&self, nid: &str, query: &str, k: usize, hops: usize) -> Vec<Spread> {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
     }
@@ -375,7 +427,7 @@ impl NeuronDB {
         if Neuron::new(self.max_facts).observe(&line) == 0 { return 0; }
         let w;
         {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -389,7 +441,7 @@ impl NeuronDB {
     /// Read a named variable's FULL value (everything after the first " is "), so multi-word values
     /// and values that themselves contain " is " round-trip exactly — unlike cue-isolated recall.
     pub fn var_get(&self, nid: &str, key: &str) -> Option<String> {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let kl = format!("{} is ", key.to_lowercase());
         inner.cache.get(nid).unwrap().n.episodes.iter()
@@ -408,7 +460,7 @@ impl NeuronDB {
     /// (the disposition built up over time). This is how the store colors the model's tone.
     pub fn affect(&self, nid: &str, asked_topic: Option<&str>) -> String {
         let (mood, stances) = {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             let asub = format!("{}::affect", nid);
             Self::ensure(inner, &asub, self.max_facts, self.cap);
             let mood = inner.cache.get(&asub).unwrap().n.episodes.iter()
@@ -428,7 +480,7 @@ impl NeuronDB {
     /// (a disposition that deepens with repetition), persisted durably. Returns (new_strength, new).
     pub fn note_stance(&self, nid: &str, topic: &str, feeling: &str) -> (f32, bool) {
         let out = {
-            let mut g = self.guard(); let inner = &mut *g;
+            let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let Inner { conn, cache, .. } = inner;
             let e = cache.get_mut(nid).unwrap();
@@ -469,7 +521,7 @@ impl NeuronDB {
         (Some(current), trail)
     }
     pub fn turn(&self, nid: &str, msg: &str) -> TurnOut {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let max = self.max_facts;
         let Inner { conn, cache, .. } = inner;
@@ -482,7 +534,7 @@ impl NeuronDB {
         TurnOut { reply: r.reply, kind: r.kind, wrote: r.wrote, facts: e.n.fact_count(), capacity_reached: at_cap && r.wrote > 0 }
     }
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let (before, after) = {
             let Inner { conn, cache, .. } = &mut *inner;
@@ -510,13 +562,13 @@ impl NeuronDB {
         (before - after, after)
     }
     pub fn stats(&self, nid: &str) -> Stats {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         let e = inner.cache.get(nid).unwrap();
         Stats { facts: e.n.fact_count(), max_facts: self.max_facts, created: e.created, updated: now_ms(), turns: e.turns, dropped: e.n.dropped }
     }
     pub fn neurons(&self) -> Vec<String> {
-        let g = self.guard();
+        let g = self.catalog();
         let mut st = g.conn.prepare("SELECT id FROM neurons ORDER BY updated DESC").unwrap();
         let rows = st.query_map([], |r| r.get::<_, String>(0)).unwrap();
         rows.filter_map(|x| x.ok()).collect()
@@ -525,14 +577,14 @@ impl NeuronDB {
     /// A scope's serialized dump() blob (`flag\ttext\tstrength` lines) — a raw read primitive
     /// (tab/newline-safe; dump escapes). The CLI export uses scope_facts() for readable packs.
     pub fn dump_scope(&self, nid: &str) -> String {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get(nid).unwrap().n.dump()
     }
 
     /// A scope's stored fact texts, in insertion order — the readable export path (`neuron export`).
     pub fn scope_facts(&self, nid: &str) -> Vec<String> {
-        let mut g = self.guard(); let inner = &mut *g;
+        let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| e.t.clone()).collect()
     }

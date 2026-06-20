@@ -156,3 +156,8 @@ required-features = ["sqlite", "semantic"]
 [[example]]
 name = "stress_millions"
 required-features = ["sqlite"]
+
+# concurrency: many threads recalling/observing across independent scope families (sharded lock scaling)
+[[example]]
+name = "concurrency_bench"
+required-features = ["sqlite"]
