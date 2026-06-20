@@ -722,6 +722,7 @@ pub mod op;     // the one op vocabulary + apply() every transport routes throug
 #[cfg(feature = "server")] pub mod server;
 #[cfg(feature = "mcp")] pub mod mcp;
 #[cfg(feature = "semantic")] pub mod semantic;
+#[cfg(feature = "personality")] pub mod persona;   // opt-in: Big Five + temperament that modulate affect/stance (inert until attached)
 #[cfg(feature = "compress")] pub mod codec;
 pub mod cortex;
 pub mod bpe;

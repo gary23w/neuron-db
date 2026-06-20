@@ -22,6 +22,7 @@ secure = ["sqlite", "dep:aes-gcm", "dep:sha2", "dep:hmac", "dep:base64", "dep:ge
 server = ["sqlite"]
 mcp = ["sqlite", "semantic", "cortex"]   # semantic-ranked recall + the cortex (the `route` tool); never bypassed
 semantic = []
+personality = []               # opt-in: the polymorphic "mind" — Big Five traits + temperament modulate affect/stance; OFF by default and inert until a Persona is attached (some users want a neutral store)
 compress = []                  # opt-in: lossless token-Huffman codec over the dump() blob (std-only, wasm-safe)
 http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
 
