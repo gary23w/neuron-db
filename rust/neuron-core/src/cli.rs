@@ -114,6 +114,28 @@ fn main() {
             if let OpResult::Forgot { forgot, remaining } = apply(&d, NeuronOp::Forget { scope: scope.clone(), matching: m }) {
                 if json { println!("{{\"forgot\":{},\"remaining\":{}}}", forgot, remaining); } else { println!("forgot {}, {} remaining", forgot, remaining); }
             } }
+        // affective layer — the persona ops. `stance` accumulates a disposition toward a topic (strength
+        // grows on repetition while neglected stances decay), `mood` sets/clears an override emotion, and
+        // `affect` renders the current humanize directive (mood + dominant stance). Parity with the MCP
+        // `note kind=stance` path: stances live in the `<scope>::stance` sub-scope, mood in `<scope>::affect`.
+        "stance" => { need_scope("stance"); let d = NeuronDB::open(&db, max);
+            let topic = pos.get(2).cloned().unwrap_or_default();
+            let feeling = pos.get(3..).map(|s| s.join(" ")).unwrap_or_default();
+            if topic.is_empty() || feeling.is_empty() { eprintln!("usage: neuron --db <db> stance <scope> <topic> <feeling…>"); std::process::exit(2); }
+            if let OpResult::Stance { intensity, created } = apply(&d, NeuronOp::Stance { scope: format!("{}::stance", scope), topic: topic.clone(), feeling: feeling.clone() }) {
+                if json { println!("{{\"topic\":\"{}\",\"feeling\":\"{}\",\"intensity\":{:.3},\"new\":{}}}", esc(&topic), esc(&feeling), intensity, created); }
+                else { println!("{} stance [{}] {} (intensity {:.2})", if created { "formed" } else { "intensified" }, topic, feeling, intensity); } }
+        }
+        "mood" => { need_scope("mood"); let d = NeuronDB::open(&db, max);
+            let emotion = rest();
+            apply(&d, NeuronOp::Mood { scope: scope.clone(), emotion: emotion.clone() });
+            if json { println!("{{\"mood\":\"{}\"}}", esc(&emotion)); }
+            else if emotion.trim().is_empty() { println!("mood cleared"); } else { println!("mood set: {}", emotion); }
+        }
+        "affect" => { need_scope("affect"); let d = NeuronDB::open(&db, max);
+            let topic = pos.get(2..).map(|s| s.join(" ")).filter(|s| !s.is_empty());
+            if let OpResult::Text(t) = apply(&d, NeuronOp::Affect { scope: scope.clone(), topic }) { println!("{}", t); }
+        }
         "list" => { let d = NeuronDB::open(&db, max);
             if let OpResult::Scopes(ids) = apply(&d, NeuronOp::List) {
                 if json { let items: Vec<String> = ids.iter().map(|s| format!("\"{}\"", esc(s))).collect(); println!("{{\"scopes\":[{}]}}", items.join(",")); }
@@ -664,6 +686,9 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
+  stance  <scope> <topic> <feeling...>   accumulate a disposition toward a topic (deepens on repeat)\n\
+  mood    <scope> [emotion...]   set (or clear, if empty) the override mood\n\
+  affect  <scope> [topic...]     render the current persona directive (mood + dominant stance)\n\
   route   <scope> <query...>     cortex dispatch: recall + gary-neuron -> answer|escalate|fetch|store\n\
   chat    <scope>                REPL: open once, turn() each stdin line\n\
   shell   [scope]                interactive shell: recall/observe/chain/… in one session\n\
