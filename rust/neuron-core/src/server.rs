@@ -96,9 +96,22 @@ pub fn serve(db_path: &str, host: &str, port: u16, max_facts: usize) -> std::io:
 }
 fn hms() -> String { let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(); format!("{:02}:{:02}:{:02}", (n/3600)%24,(n/60)%60,n%60) }
 
+/// Constant-time bearer-token comparison: every byte is compared regardless of where the first mismatch
+/// is, so the auth check can't be timed to recover the key. Length is not the secret (the token bytes are),
+/// so an early length check is acceptable and avoids subtle truncation bugs.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() { return false; }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) { diff |= x ^ y; }
+    diff == 0
+}
+
 fn handle(mut stream: TcpStream, db: Arc<NeuronDB>, key: Option<String>, logmode: u8, reqs: Arc<AtomicU64>, start: Instant) {
     let t0 = Instant::now();
     let n = reqs.fetch_add(1, Ordering::Relaxed) + 1;
+    // bound how long a single peer can hold a worker thread (slow-loris) and how long a blocked write waits
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(15)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(15)));
     let peek = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(peek);
     let mut line = String::new(); if reader.read_line(&mut line).is_err() { return; }
@@ -113,10 +126,17 @@ fn handle(mut stream: TcpStream, db: Arc<NeuronDB>, key: Option<String>, logmode
         if let Some(v) = low.strip_prefix("content-length:") { clen = v.trim().parse().unwrap_or(0); }
         if low.starts_with("authorization:") { auth = t[t.find(':').unwrap() + 1..].trim().to_string(); }
     }
+    // reject an oversized body BEFORE allocating it: a pre-auth Content-Length of 4 GiB must not OOM us
+    const MAX_BODY: usize = 1 << 20; // 1 MiB
+    if clen > MAX_BODY { respond(&mut stream, 413, "{\"error\":\"payload too large\"}"); return; }
     let mut buf = vec![0u8; clen]; if clen > 0 { let _ = reader.read_exact(&mut buf); }
     let body = String::from_utf8_lossy(&buf).to_string();
     let segs: Vec<String> = path.split('?').next().unwrap_or("").split('/').filter(|s| !s.is_empty()).map(urldecode).collect();
-    let authed = key.is_none() || auth.replace("Bearer ", "").trim() == key.as_deref().unwrap_or("");
+    let authed = key.is_none() || {
+        // strip_prefix (not replace, which would strip every occurrence) + constant-time compare
+        let token = auth.strip_prefix("Bearer ").unwrap_or(&auth).trim();
+        ct_eq(token.as_bytes(), key.as_deref().unwrap_or("").as_bytes())
+    };
     let scope = segs.get(1).map(|s| clip(s)).unwrap_or_default();
 
     let (status, resp) = route(&db, &method, &segs, authed, &body, n, start.elapsed().as_secs());

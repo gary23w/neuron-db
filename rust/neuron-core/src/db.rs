@@ -102,7 +102,9 @@ impl NeuronDB {
             let conn = Connection::open(path).expect("open sqlite");
             // WAL = concurrent readers + a single writer across connections; busy_timeout makes a second
             // shard's writer wait for the brief WAL write-lock instead of erroring SQLITE_BUSY.
-            let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000;");
+            // secure_delete=FAST zeroes freed content when it costs no extra I/O, so a forgotten fact does
+            // not linger as readable bytes in a free page (right-to-erasure); forget() also truncates the WAL.
+            let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000; PRAGMA secure_delete=FAST;");
             conn.execute_batch(SCHEMA).expect("schema");   // CREATE IF NOT EXISTS — idempotent across shards
             shards.push(Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }));
         }
@@ -606,7 +608,8 @@ impl NeuronDB {
         // variables (incl. secrets), standing instructions, stances, and mood aren't left behind.
         // Done INLINE on the held lock — not via self.forget(), which would re-lock and deadlock.
         if m.is_none() {
-            for suffix in ["::var", "::instr", "::stance", "::affect"] {
+            // include ::persona so a forgotten subject leaves no attached personality behind either
+            for suffix in ["::var", "::instr", "::stance", "::affect", "::persona"] {
                 let sub = format!("{}{}", nid, suffix);
                 Self::ensure(inner, &sub, self.max_facts, self.cap);
                 let Inner { conn, cache, .. } = &mut *inner;
@@ -615,6 +618,10 @@ impl NeuronDB {
                 Self::snapshot(conn, &sub, e);
             }
         }
+        // Truncate the WAL so the just-deleted plaintext does not survive in -wal frames after a logical
+        // delete. With secure_delete=FAST the freed pages are already zeroed; this flushes + truncates the
+        // log. Best-effort (a concurrent writer can defer it) and only on the cold forget path.
+        let _ = inner.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         (before - after, after)
     }
     pub fn stats(&self, nid: &str) -> Stats {

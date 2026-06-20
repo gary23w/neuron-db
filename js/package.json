@@ -1,7 +1,7 @@
 {
   "name": "@gary23w/neuron-db",
   "version": "0.1.2",
-  "description": "Plug-and-play host binding for neuron-db — a pure-Rust associative memory + the gary-neuron dispatcher cortex, compiled to WebAssembly. Typed methods over the wasm FFI, a self-describing op surface, and route() (recall + cortex dispatch in one call). Runs in Cloudflare Workers, the browser, Node, Deno, and Bun. Zero dependencies.",
+  "description": "Plug-and-play host binding for neuron-db — a pure-Rust associative memory compiled to WebAssembly. Typed methods over the wasm FFI and a self-describing op surface. The bundled wasm is store-only (recall, associative recall, chains; ~352 KB); mount a gary-neuron build to enable route() (recall + dispatch in one call). Runs in Cloudflare Workers, the browser, Node, Deno, and Bun. Zero dependencies.",
   "type": "module",
   "scripts": {
     "prepublishOnly": "node _sync-check.mjs"

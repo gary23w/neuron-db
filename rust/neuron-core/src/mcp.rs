@@ -596,7 +596,14 @@ pub fn serve_stdio() -> io::Result<()> {
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() { continue; }
-        if let Some(resp) = handle_line(&db, &line) {
+        // Isolate each request: a panic mid-handler (e.g. SQLITE_FULL on a write) must not kill the
+        // long-lived server. The store's locks de-poison on the next op, so it stays usable; we just
+        // return a JSON-RPC internal error and keep serving.
+        let resp = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle_line(&db, &line))) {
+            Ok(r) => r,
+            Err(_) => Some(r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"internal error"}}"#.to_string()),
+        };
+        if let Some(resp) = resp {
             out.write_all(resp.as_bytes())?;
             out.write_all(b"\n")?;
             out.flush()?;
