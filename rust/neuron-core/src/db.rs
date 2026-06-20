@@ -290,7 +290,7 @@ impl NeuronDB {
             eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect()
         };
         if facts.is_empty() { return None; }
-        let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
+        let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
         let mut s = self.sem_guard();
         let ranked = s.rank_cached(query, &texts);
         match ranked.first() {
@@ -306,13 +306,18 @@ impl NeuronDB {
     /// broad/narrative questions return topically-coherent facts instead of scattered keyword hits.
     #[cfg(feature = "semantic")]
     pub fn recall_blended(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
+        // BOUNDED like recall_semantic: rank the most-recent window so blended recall is O(window), not
+        // O(scope), as a chat's memory grows into the millions (and the embedding cache stays bounded).
+        const BLENDED_CAP: usize = 4000;
         let facts: Vec<(String, String)> = {
             let mut g = self.guard(); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
-            inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| (e.t.clone(), e.v.clone())).collect()
+            let eps = &inner.cache.get(nid).unwrap().n.episodes;
+            let start = eps.len().saturating_sub(BLENDED_CAP);
+            eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect()
         };
         if facts.is_empty() { return Vec::new(); }
-        let texts: Vec<String> = facts.iter().map(|(t, _)| t.clone()).collect();
+        let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
         let ranked = { let mut s = self.sem_guard(); s.rank_cached(query, &texts) };
         if ranked.is_empty() { return self.recall_many(nid, query, k); } // no semantic signal -> lexical
         // lexical boost: fraction of the query's content words (>=3 chars) present in the fact

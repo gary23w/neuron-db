@@ -119,9 +119,10 @@ fn main() {
         // caches fact vectors (lazy) -> warm call pays the embed once, later calls are dot-only.
         let cands: Vec<String> = (0..5_000).map(|i| format!("memo {} on the wifi router and the internet network connection", i)).collect();
         let q = "the wifi router and the internet network";
+        let cref: Vec<&str> = cands.iter().map(|s| s.as_str()).collect();   // rank_cached now borrows
         let t = Instant::now(); std::hint::black_box(s.rank(q, &cands)); let uncached = t.elapsed().as_micros();
-        let t = Instant::now(); std::hint::black_box(s.rank_cached(q, &cands)); let warm = t.elapsed().as_micros();
-        let t = Instant::now(); std::hint::black_box(s.rank_cached(q, &cands)); let cached = t.elapsed().as_micros();
+        let t = Instant::now(); std::hint::black_box(s.rank_cached(q, &cref)); let warm = t.elapsed().as_micros();
+        let t = Instant::now(); std::hint::black_box(s.rank_cached(q, &cref)); let cached = t.elapsed().as_micros();
         println!("[semantic] fuzzy rank over {} facts: rank() {} us | rank_cached warm {} us | rank_cached CACHED {} us  (cache {} facts, {:.1} MB)",
                  cands.len(), uncached, warm, cached, s.cached_embeddings(), s.bytes() as f64 / 1e6);
     }

@@ -284,23 +284,25 @@ impl SemanticSpace {
     /// Rank candidates by cosine to the query, reusing cached int8 embeddings. The query is
     /// embedded fresh each call; a candidate is re-embedded only if uncached or the space has
     /// more than doubled since (a cheap drift bound). After warm-up this is O(N) dot products.
-    pub fn rank_cached(&mut self, query: &str, cands: &[String]) -> Vec<(usize, f32)> {
+    pub fn rank_cached(&mut self, query: &str, cands: &[&str]) -> Vec<(usize, f32)> {
+        const EMB_CACHE_CAP: usize = 50_000;   // bound the fact-embedding cache so a long-lived server can't grow it without limit
         let q = match self.embed(query) { Some(q) => q, None => return Vec::new() };
         let ts = self.tokens_seen;
-        for c in cands {
+        for &c in cands {
             let need = match self.emb_cache.get(c) { Some((_, _, ep)) => ts >= ep.saturating_mul(2), None => true };
             if need {
-                if let Some(e) = self.embed(c) { let (qz, s) = Self::quantize(&e); self.emb_cache.insert(c.clone(), (qz, s, ts)); }
+                if let Some(e) = self.embed(c) { let (qz, s) = Self::quantize(&e); self.emb_cache.insert(c.to_string(), (qz, s, ts)); }
             }
         }
         let mut scored: Vec<(usize, f32)> = Vec::with_capacity(cands.len());
-        for (i, c) in cands.iter().enumerate() {
+        for (i, &c) in cands.iter().enumerate() {
             if let Some((e, s, _)) = self.emb_cache.get(c) {
                 let dot = e.iter().zip(&q).map(|(c8, qf)| *c8 as f32 * qf).sum::<f32>() * s;
                 scored.push((i, dot));
             }
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if self.emb_cache.len() > EMB_CACHE_CAP { self.emb_cache.clear(); }   // hard memory bound (re-embeds after a flush)
         scored
     }
 
