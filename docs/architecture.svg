@@ -1,0 +1,122 @@
+<svg role="img" viewBox="0 0 980 760" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>neuron-db architecture blueprint</title>
+  <desc>An app or agent sends each turn to gary-neuron, the hippocampus dispatcher, which routes to one of four actions: ANSWER and STORE read and write the neuron-db memory store, FETCH calls the live web, and ESCALATE hands off to the host LLM (the neocortex). neuron-db holds a recall engine, storage tiers, and an affective layer, reachable through CLI, MCP, HTTP, WASM, and npm surfaces.</desc>
+
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9ca3af"/>
+    </marker>
+    <marker id="ahT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
+    </marker>
+    <marker id="ahI" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6366f1"/>
+    </marker>
+  </defs>
+
+  <style>
+    .ttl{ font-family:ui-serif, Georgia, 'Times New Roman', serif; fill:#18181b; }
+    .h{ font-weight:700; fill:#18181b; }
+    .s,.lbl{ fill:#52525b; }
+    .mono{ font-family:ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; }
+    .box{ fill:#ffffff; stroke:#d4d4d8; }
+    .teal{ fill:#0d948814; stroke:#0d9488; }
+    .indigo{ fill:#6366f114; stroke:#6366f1; }
+    .amber{ fill:#d9770614; stroke:#d97706; }
+    .arrow{ stroke:#9ca3af; }
+    @media (prefers-color-scheme: dark){
+      .ttl,.h{ fill:#f4f4f5; }
+      .s,.lbl{ fill:#a1a1aa; }
+      .box{ fill:#1b1b1f; stroke:#3f3f46; }
+      .teal{ fill:#0d948828; stroke:#2dd4bf; }
+      .indigo{ fill:#6366f128; stroke:#818cf8; }
+      .amber{ fill:#d9770628; stroke:#fbbf24; }
+    }
+  </style>
+
+  <!-- title -->
+  <text class="ttl" x="36" y="44" font-size="27" font-weight="700">neuron-db — the blueprint</text>
+  <text class="s" x="37" y="70" font-size="13.5">A hippocampus that routes every turn over an associative memory store — one op vocabulary, many surfaces.</text>
+
+  <!-- legend -->
+  <rect x="700" y="32" width="11" height="11" rx="2" class="teal"/>
+  <text class="s" x="716" y="42" font-size="11.5">memory / store</text>
+  <rect x="820" y="32" width="11" height="11" rx="2" class="indigo"/>
+  <text class="s" x="836" y="42" font-size="11.5">model / escalate</text>
+
+  <!-- ROW 1: actors -->
+  <rect class="box" x="36" y="96" width="250" height="62" rx="12"/>
+  <text class="h" x="60" y="124" font-size="15">Your app / agent</text>
+  <text class="s" x="60" y="143" font-size="12">sends a turn</text>
+
+  <rect class="box indigo" x="694" y="96" width="250" height="62" rx="12"/>
+  <text class="h" x="718" y="124" font-size="15">Host LLM</text>
+  <text class="s" x="718" y="143" font-size="12">the neocortex it escalates to</text>
+
+  <rect class="box" x="694" y="186" width="250" height="50" rx="12"/>
+  <text class="h" x="718" y="210" font-size="14">Live web</text>
+  <text class="s" x="718" y="227" font-size="12">fetched on demand</text>
+
+  <!-- ROW 2: gary-neuron dispatcher -->
+  <rect class="box indigo" x="36" y="252" width="908" height="104" rx="14"/>
+  <text class="h" x="60" y="284" font-size="17">gary-neuron — the hippocampus</text>
+  <text class="s" x="60" y="305" font-size="12.5">~7M dispatcher · one route per turn · consolidates and recalls, escalates when memory can't</text>
+  <g font-size="12" font-weight="700" text-anchor="middle">
+    <rect class="teal" x="60" y="318" width="150" height="26" rx="13"/>
+    <text class="mono" x="135" y="335" fill="#0d9488">ANSWER → recall</text>
+    <rect class="teal" x="222" y="318" width="150" height="26" rx="13"/>
+    <text class="mono" x="297" y="335" fill="#0d9488">STORE → write</text>
+    <rect class="amber" x="384" y="318" width="150" height="26" rx="13"/>
+    <text class="mono" x="459" y="335" fill="#b45309">FETCH → web</text>
+    <rect class="indigo" x="546" y="318" width="160" height="26" rx="13"/>
+    <text class="mono" x="626" y="335" fill="#6366f1">ESCALATE → LLM</text>
+  </g>
+
+  <!-- ROW 3: neuron-db core -->
+  <rect class="box teal" x="36" y="392" width="908" height="218" rx="14"/>
+  <text class="h" x="60" y="422" font-size="17">neuron-db — the long-term memory</text>
+  <text class="s" x="60" y="442" font-size="12.5">facts as plain sentences · a stem→fact inverted index · recall in microseconds, flat as it grows</text>
+
+  <g>
+    <rect class="box" x="60" y="456" width="272" height="134" rx="11"/>
+    <text class="h" x="80" y="482" font-size="14">Recall engine</text>
+    <text class="s" x="80" y="504" font-size="12">cue overlap · df-gated · top-k</text>
+    <text class="s" x="80" y="523" font-size="12">RRF blend (lexical + semantic)</text>
+    <text class="s" x="80" y="542" font-size="12">recall_chain · spreading activation</text>
+    <text class="s" x="80" y="561" font-size="12">recall_many_across scopes</text>
+
+    <rect class="box" x="354" y="456" width="272" height="134" rx="11"/>
+    <text class="h" x="374" y="482" font-size="14">Storage tiers</text>
+    <text class="s" x="374" y="504" font-size="12">Neuron (in-memory) · Plastic</text>
+    <text class="s" x="374" y="523" font-size="12">Router (sharded fan-out)</text>
+    <text class="s" x="374" y="542" font-size="12">NeuronDB — durable SQLite</text>
+    <text class="s" x="374" y="561" font-size="12">sharded · append-log · WAL · Secure</text>
+
+    <rect class="box" x="648" y="456" width="276" height="134" rx="11"/>
+    <text class="h" x="668" y="482" font-size="14">Affective layer <tspan class="s" font-size="11" font-weight="400">(opt-in)</tspan></text>
+    <text class="s" x="668" y="504" font-size="12">stance — a deepening disposition</text>
+    <text class="s" x="668" y="523" font-size="12">mood · affect (humanize directive)</text>
+    <text class="s" x="668" y="542" font-size="12">why — feeling + its evidence</text>
+    <text class="s" x="668" y="561" font-size="12">persona — Big Five + temperament</text>
+  </g>
+
+  <!-- ROW 4: transports -->
+  <text class="lbl" x="36" y="664" font-size="12.5" font-weight="700">Reach it through</text>
+  <g font-size="12.5" font-weight="600" text-anchor="middle">
+    <rect class="box" x="150" y="648" width="120" height="34" rx="17"/><text class="mono h" x="210" y="669">neuron CLI</text>
+    <rect class="box" x="284" y="648" width="120" height="34" rx="17"/><text class="mono h" x="344" y="669">MCP server</text>
+    <rect class="box" x="418" y="648" width="120" height="34" rx="17"/><text class="mono h" x="478" y="669">HTTP server</text>
+    <rect class="box" x="552" y="648" width="150" height="34" rx="17"/><text class="mono h" x="627" y="669">WASM / browser</text>
+    <rect class="box" x="716" y="648" width="120" height="34" rx="17"/><text class="mono h" x="776" y="669">npm package</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="161" y1="158" x2="161" y2="250" class="arrow" stroke-width="1.6" marker-end="url(#ah)"/>
+  <text class="s" x="170" y="206" font-size="11">turn</text>
+  <line x1="700" y1="318" x2="780" y2="160" stroke="#6366f1" stroke-width="1.6" marker-end="url(#ahI)"/>
+  <line x1="459" y1="346" x2="694" y2="211" stroke="#d97706" stroke-width="1.4" marker-end="url(#ah)" opacity="0.85"/>
+  <line x1="200" y1="346" x2="200" y2="390" stroke="#0d9488" stroke-width="1.8" marker-end="url(#ahT)"/>
+  <line x1="200" y1="392" x2="200" y2="346" stroke="#0d9488" stroke-width="1.8" marker-end="url(#ahT)" opacity="0.5"/>
+  <text class="s" x="210" y="376" font-size="11">read / write</text>
+  <line x1="478" y1="648" x2="478" y2="612" class="arrow" stroke-width="1.4" marker-end="url(#ah)"/>
+</svg>

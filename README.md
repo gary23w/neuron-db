@@ -31,6 +31,15 @@ Working memory (the live conversation) plus a persistent per-chat **focus** keep
 scroll. Web access goes straight from the WASM through a `host_http` import to public **CORS** APIs (Wikipedia,
 DuckDuckGo, open-meteo) — **no proxy, no worker, nothing leaves your browser**. How the loop works: **[docs/guide/STATUS.md](docs/guide/STATUS.md)**.
 
+## Architecture
+
+![neuron-db architecture — gary-neuron, the hippocampus dispatcher, routes each turn (ANSWER, STORE, FETCH, ESCALATE) over the neuron-db memory store; the store holds a recall engine, storage tiers, and an opt-in affective layer, reachable through the CLI, MCP, HTTP, WASM, and npm surfaces.](docs/architecture.svg)
+
+Every turn flows into **gary-neuron**, the hippocampus dispatcher: it answers from memory, stores a new fact,
+fetches the live web, or escalates to a host model. **neuron-db** is the long-term store underneath — a recall
+engine over a stem→fact index, layered storage tiers, and an opt-in affective layer — reachable through any of
+the surfaces along the bottom.
+
 ## The hippocampus: gary-neuron
 
 A small model called gary-neuron (v5) is the **hippocampus** of the stack — the memory gate between a host

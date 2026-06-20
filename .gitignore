@@ -16,3 +16,8 @@ venv/
 
 # Model training pipeline + corpus — kept local only, never committed
 train/
+
+# Generated benchmark / test outputs — kept local
+examples/vs-vectors/*.tsv
+rust/neuron-core/out_*.log
+*fullsuite*.log
