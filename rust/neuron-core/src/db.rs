@@ -372,17 +372,27 @@ impl NeuronDB {
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
         let ranked = { let mut s = self.sem_guard(); s.rank_cached(query, &texts) };
         if ranked.is_empty() { return self.recall_many(nid, query, k); } // no semantic signal -> lexical
-        // lexical boost: fraction of the query's content words (>=3 chars) present in the fact
+        // HYBRID FUSION via Reciprocal Rank Fusion (Cormack et al. 2009): combine the lexical ranking and
+        // the semantic ranking by summing 1/(K+rank) instead of adding a cosine and a coverage score that
+        // live on mismatched scales. A fact ranked high by BOTH signals wins; crucially, a strong exact
+        // lexical hit is no longer demoted to rank 2 by a slightly-higher cosine on a sibling fact (the
+        // hit@1 failure the coder benchmark exposed), while a pure paraphrase with no shared words still
+        // surfaces through the semantic ranking. K=60 is the standard RRF constant, not a fitted weight.
+        const RRF_K: f32 = 60.0;
         let qw: Vec<String> = query.to_lowercase().split(|c: char| !c.is_alphanumeric())
             .filter(|w| w.len() >= 3).map(|w| w.to_string()).collect();
-        let mut scored: Vec<(f32, usize)> = ranked.iter().map(|&(i, cos)| {
+        // lexical ranking over the same window: facts ordered by how many query content-words they contain
+        let mut lex: Vec<(usize, usize)> = (0..texts.len()).map(|i| {              // (hit_count, idx)
             let lt = texts[i].to_lowercase();
-            let boost = if qw.is_empty() { 0.0 } else {
-                qw.iter().filter(|w| lt.contains(w.as_str())).count() as f32 / qw.len() as f32
-            };
-            (cos + 0.25 * boost, i)
-        }).collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            (qw.iter().filter(|w| lt.contains(w.as_str())).count(), i)
+        }).filter(|(h, _)| *h > 0).collect();
+        lex.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        // `ranked` is already the semantic order (cosine desc). Fuse the two rank lists by RRF.
+        let mut rrf: HashMap<usize, f32> = HashMap::new();
+        for (rank, &(_, i)) in lex.iter().enumerate() { *rrf.entry(i).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0); }
+        for (rank, &(i, _)) in ranked.iter().enumerate() { *rrf.entry(i).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0); }
+        let mut scored: Vec<(f32, usize)> = rrf.into_iter().map(|(i, s)| (s, i)).collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
         scored.truncate(k);
         scored.into_iter().map(|(score, i)| {
             let (fact, value) = facts[i].clone();

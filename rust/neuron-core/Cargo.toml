@@ -161,3 +161,8 @@ required-features = ["sqlite"]
 [[example]]
 name = "concurrency_bench"
 required-features = ["sqlite"]
+
+# coder-memory A/B: neuron recall vs grep / vector / full-context dump on a realistic codebase-memory corpus
+[[example]]
+name = "coder_bench"
+required-features = ["sqlite", "semantic"]
