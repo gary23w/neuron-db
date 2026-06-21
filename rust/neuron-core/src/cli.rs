@@ -80,6 +80,17 @@ fn main() {
                 None => if json { println!("{{\"fact\":null}}"); } else { eprintln!("(no match)"); },
             }
             if h.is_none() { std::process::exit(3); } }
+        // spreading-activation recall: seed on the cue, then fire across synapses for N hops — surfaces the
+        // CHAINED facts a single-hop recall misses (the bridge facts a multi-hop question needs).
+        "assoc" => { need_scope("assoc"); let d = NeuronDB::open(&db, max);
+            let hops: usize = std::env::var("NEURON_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+            let k: usize = std::env::var("NEURON_K").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+            let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: rest(), k, hops }).assoc();
+            if json {
+                let items: Vec<String> = hits.iter().map(|h| format!("{{\"fact\":\"{}\",\"act\":{:.4},\"seed\":{}}}", esc(&h.fact), h.act, h.seed)).collect();
+                println!("{{\"hits\":[{}]}}", items.join(","));
+            } else { for h in &hits { println!("{}", h.fact); } }
+            if hits.is_empty() { std::process::exit(3); } }
         "turn" => { need_scope("turn"); let d = NeuronDB::open(&db, max);
             if let OpResult::Turned(t) = apply(&d, NeuronOp::Turn { scope: scope.clone(), message: body(rest()) }) {
                 if json { println!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{}}}", esc(&t.reply), t.kind, t.wrote, t.facts); }
@@ -730,6 +741,8 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   observe <scope> <text...|->    store a fact ('-' reads the body from stdin)\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
+  assoc   <scope> <query...>     spreading-activation recall: the CHAINED facts a multi-hop question needs\n\
+                                 (env NEURON_HOPS=3, NEURON_K=10 tune hop depth + result count)\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
   stance  <scope> <topic> <feeling...>   accumulate a disposition toward a topic (deepens on repeat)\n\
   mood    <scope> [emotion...]   set (or clear, if empty) the override mood\n\
