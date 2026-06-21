@@ -98,7 +98,7 @@ pub fn apply<S: Store + ?Sized>(db: &S, op: NeuronOp) -> OpResult {
         NeuronOp::Recall { scope, query, k, semantic, across } => OpResult::Hits(db.recall_block(&scope, &query, k.clamp(1, 50), semantic, across)),
         NeuronOp::RecallOne { scope, query } => OpResult::Hit(db.recall_one(&scope, &query)),
         NeuronOp::RecallValue { scope, query } => OpResult::Value(db.recall_value(&scope, &query)),
-        NeuronOp::RecallAssoc { scope, query, k, hops } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 50), hops.clamp(1, 4))),
+        NeuronOp::RecallAssoc { scope, query, k, hops } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 64), hops.clamp(1, 32))),
         NeuronOp::RecallChain { scope, start, path } => { let (value, trail) = db.recall_chain(&scope, &start, &path); OpResult::Chain { value, trail } }
         NeuronOp::VarSet { scope, key, value } => OpResult::Wrote(db.var_set(&scope, &key, &value)),
         NeuronOp::VarGet { scope, key } => OpResult::Value(db.var_get(&scope, &key)),
