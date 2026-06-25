@@ -1,6 +1,9 @@
 __pycache__/
 *.py[cod]
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.egg-info/
 build/
