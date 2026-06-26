@@ -31,6 +31,7 @@ fn main() {
     let mut max: usize = std::env::var("NEURON_MAX_FACTS").ok().and_then(|s| s.parse().ok()).unwrap_or(500);
     let mut json = false;
     let mut force = false;
+    let mut trust_rank = false;
     let mut pos: Vec<String> = Vec::new();
     let mut i = 0;
     while i < raw.len() {
@@ -41,6 +42,8 @@ fn main() {
             "--max" => { if let Some(v) = raw.get(i + 1).and_then(|s| s.parse().ok()) { max = v; } i += 2; }
             "--json" => { json = true; i += 1; }
             "--force" => { force = true; i += 1; }
+            "--trust" => { trust_rank = true; i += 1; }   // rank `assoc` by relevance × learned trust
+
             "-h" | "--help" | "help" => { help(); return; }
             // everything after a bare `--` is verbatim positional (the child command for `run`),
             // so neuron never steals the app's own --db/--max/etc.
@@ -85,12 +88,44 @@ fn main() {
         "assoc" => { need_scope("assoc"); let d = NeuronDB::open(&db, max);
             let hops: usize = std::env::var("NEURON_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
             let k: usize = std::env::var("NEURON_K").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
-            let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: rest(), k, hops }).assoc();
+            #[cfg(feature = "trust")]
+            let hits = if trust_rank { d.recall_assoc_trusted(&scope, &rest(), k, hops) }
+                       else { apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: rest(), k, hops }).assoc() };
+            #[cfg(not(feature = "trust"))]
+            let hits = { let _ = trust_rank; apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: rest(), k, hops }).assoc() };
             if json {
                 let items: Vec<String> = hits.iter().map(|h| format!("{{\"fact\":\"{}\",\"act\":{:.4},\"seed\":{}}}", esc(&h.fact), h.act, h.seed)).collect();
                 println!("{{\"hits\":[{}]}}", items.join(","));
             } else { for h in &hits { println!("{}", h.fact); } }
             if hits.is_empty() { std::process::exit(3); } }
+        // the learned trust "floor" (feature `trust`): reward the tag-classes recalled this round by the
+        // grounded Δscore (the engine's acceptance-oracle signal). Earned from outcomes, never restatement.
+        #[cfg(feature = "trust")]
+        "trust_reward" => { let d = NeuronDB::open(&db, max);
+            let delta: f32 = pos.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let classes: Vec<String> = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            if classes.is_empty() { eprintln!("usage: neuron --db <db> trust_reward <delta> <class…>"); std::process::exit(2); }
+            let l = d.trust_reward(&classes, delta);
+            if json {
+                let items: Vec<String> = classes.iter().map(|c| format!("{{\"class\":\"{}\",\"weight\":{:.4}}}", esc(c), l.weight(c))).collect();
+                println!("{{\"delta\":{:.4},\"updated\":[{}]}}", delta, items.join(","));
+            } else { for c in &classes { println!("{}\t{:.4}", c, l.weight(c)); } } }
+        #[cfg(feature = "trust")]
+        "trust_weight" => { if scope.is_empty() { eprintln!("usage: neuron --db <db> trust_weight <class>"); std::process::exit(2); }
+            let d = NeuronDB::open(&db, max);
+            let w = d.trust_weight(&scope);
+            if json { println!("{{\"class\":\"{}\",\"weight\":{:.4}}}", esc(&scope), w); } else { println!("{:.4}", w); } }
+        #[cfg(feature = "trust")]
+        "trust_dump" => { let d = NeuronDB::open(&db, max);
+            let dump = d.trust_dump();
+            if json {
+                let items: Vec<String> = dump.lines().filter(|ln| !ln.is_empty()).map(|ln| {
+                    let f: Vec<&str> = ln.splitn(4, '\t').collect();
+                    format!("{{\"class\":\"{}\",\"weight\":{},\"rewards\":{},\"penalties\":{}}}",
+                        esc(f.first().copied().unwrap_or("")), f.get(1).copied().unwrap_or("0"), f.get(2).copied().unwrap_or("0"), f.get(3).copied().unwrap_or("0"))
+                }).collect();
+                println!("{{\"trust\":[{}]}}", items.join(","));
+            } else if dump.is_empty() { println!("(no trust learned yet)"); } else { println!("{}", dump); } }
         "turn" => { need_scope("turn"); let d = NeuronDB::open(&db, max);
             if let OpResult::Turned(t) = apply(&d, NeuronOp::Turn { scope: scope.clone(), message: body(rest()) }) {
                 if json { println!("{{\"reply\":\"{}\",\"kind\":\"{}\",\"wrote\":{},\"facts\":{}}}", esc(&t.reply), t.kind, t.wrote, t.facts); }

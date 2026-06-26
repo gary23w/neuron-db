@@ -14,6 +14,8 @@ use crate::turn::turn;
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS neurons (id TEXT PRIMARY KEY, facts TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0);\n\
 CREATE TABLE IF NOT EXISTS fact_log (scope TEXT NOT NULL, seq INTEGER NOT NULL, lines TEXT NOT NULL, PRIMARY KEY(scope, seq));";
+// NB: the trust "floor" (feature `trust`) creates its own trust_kv table LAZILY on the first reward,
+// NOT here — so a lexical/login/KV store that never uses the floor keeps a byte-identical schema.
 // the per-scope append-log can grow to ~the snapshot size before we fold it back into a fresh snapshot,
 // so a single durable observe is one small INSERT (O(new facts)) and compaction is amortized O(1)/fact.
 const COMPACT_FLOOR: usize = 256;
@@ -122,6 +124,57 @@ impl NeuronDB {
             #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
             #[cfg(feature = "semantic")] sem_threshold: 0.20,
         }
+    }
+
+    // --- the learned trust "floor" (see trust.rs). Feature-gated (`trust`) and OPT-IN: a lexical /
+    // login / KV store that never enables the feature, and any consumer that never calls reward(),
+    // is byte-identical — trust_kv is created LAZILY on the first reward, never on plain open. ONE
+    // global ledger per DB (catalog shard). The engine drives reward() from the acceptance-oracle
+    // Δscore; recall reads weight(). Nothing here privileges any class — the ledger only carries what
+    // outcomes have taught it.
+    /// Load the persisted trust ledger (empty / all-neutral if none yet, incl. before the table exists).
+    #[cfg(feature = "trust")]
+    pub fn trust_ledger(&self) -> crate::trust::TrustLedger {
+        let g = self.catalog();
+        let blob: String = g.conn.query_row("SELECT v FROM trust_kv WHERE k='trust'", [], |r| r.get(0)).unwrap_or_default();
+        crate::trust::TrustLedger::load(&blob)
+    }
+    /// Apply a grounded outcome to the classes recalled this round, persist, return the updated ledger.
+    /// Creates trust_kv lazily here (and ONLY here), so non-floor stores never grow the table.
+    #[cfg(feature = "trust")]
+    pub fn trust_reward(&self, classes: &[String], delta: f32) -> crate::trust::TrustLedger {
+        let g = self.catalog();
+        let _ = g.conn.execute_batch("CREATE TABLE IF NOT EXISTS trust_kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);");
+        let blob: String = g.conn.query_row("SELECT v FROM trust_kv WHERE k='trust'", [], |r| r.get(0)).unwrap_or_default();
+        let mut l = crate::trust::TrustLedger::load(&blob);
+        let refs: Vec<&str> = classes.iter().map(|s| s.as_str()).collect();
+        l.reward(&refs, delta);
+        let _ = g.conn.execute("INSERT INTO trust_kv(k,v) VALUES('trust',?1) ON CONFLICT(k) DO UPDATE SET v=?1", params![l.dump()]);
+        l
+    }
+    /// The learned trust weight for a tag-class (NEUTRAL if it has never been rewarded).
+    #[cfg(feature = "trust")]
+    pub fn trust_weight(&self, class: &str) -> f32 { self.trust_ledger().weight(class) }
+    /// The whole ledger serialized ("<class>\t<weight>\t<rewards>\t<penalties>" per line).
+    #[cfg(feature = "trust")]
+    pub fn trust_dump(&self) -> String { self.trust_ledger().dump() }
+    /// Spreading-activation recall, re-ranked by activation × learned trust of each fact's tag-class
+    /// (trust.rs::class_of). Widens the candidate pool first so a sparse-but-trusted fact can rise
+    /// above dense-but-untrusted ones, then truncates to k. This is the floor made load-bearing:
+    /// density alone no longer decides what the model sees. Falls back to plain order when nothing
+    /// has been learned yet (every class neutral -> act × 1.0 == act).
+    #[cfg(feature = "trust")]
+    pub fn recall_assoc_trusted(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<crate::Spread> {
+        let pool = k.saturating_mul(4).clamp(k.max(1), 64);
+        let mut hits = self.recall_associative(scope, query, pool, hops.clamp(1, 32));
+        let ledger = self.trust_ledger();
+        hits.sort_by(|a, b| {
+            let sa = a.act * ledger.weight(&crate::trust::class_of(&a.fact, scope)) as f64;
+            let sb = b.act * ledger.weight(&crate::trust::class_of(&b.fact, scope)) as f64;
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits.truncate(k);
+        hits
     }
 
     /// The top-level scope family for `nid`: the prefix before the first `::` (typed sub-scope like

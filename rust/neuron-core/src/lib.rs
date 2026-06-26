@@ -715,6 +715,8 @@ pub mod turn;
 pub mod stream;   // line-splitting for piping app output into a scope (capture/run/follow)
 pub mod preload;  // shared fact-pack reader for `neuron import` + the MCP preload boot hook
 pub mod affect;   // the one shared mood + stance + humanize-directive layer (db.rs and wasm both use it)
+#[cfg(feature = "trust")]
+pub mod trust;    // learned, outcome-reinforced trust over fact tag-classes — the weak-model "floor" (opt-in)
 pub mod caps;     // the capability manifest (grounded vs deferrable) — the polymorphism spine (§7)
 #[cfg(feature = "sqlite")] pub mod db;
 pub mod op;     // the one op vocabulary + apply() every transport routes through (std-only, generic over Store)

@@ -24,6 +24,7 @@ mcp = ["sqlite", "semantic", "cortex"]   # semantic-ranked recall + the cortex (
 semantic = []
 personality = []               # opt-in: the polymorphic "mind" — Big Five traits + temperament modulate affect/stance; OFF by default and inert until a Persona is attached (some users want a neutral store)
 compress = []                  # opt-in: lossless token-Huffman codec over the dump() blob (std-only, wasm-safe)
+trust = []                     # opt-in: the learned recall "floor" (outcome-reinforced per-tag-class trust + trust-weighted assoc). OFF by default; a lexical/login/KV store never compiles it and never grows the trust_kv table (created lazily on first reward). For weak-model agents that drift; a no-op for stores and near-neutral for capable models.
 http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
 
 [dependencies]
