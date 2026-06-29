@@ -98,6 +98,33 @@ fn main() {
                 println!("{{\"hits\":[{}]}}", items.join(","));
             } else { for h in &hits { println!("{}", h.fact); } }
             if hits.is_empty() { std::process::exit(3); } }
+        // relational CHAIN traversal: walk <start> --rel--> … following the graph (recall at each hop, advancing only
+        // when the relation actually appears in the recalled fact). Deterministic, microseconds, no model round-trip —
+        // how a caller reasons over a causal/dependency graph (symptom -> caused_by -> root) instead of re-deriving it.
+        // Promoted from the REPL-only handler so a one-shot CLI spawn (the engine's boundary) can reach it.
+        "chain" => { need_scope("chain"); let d = NeuronDB::open(&db, max);
+            let start = pos.get(2).cloned().unwrap_or_default();
+            let path: Vec<String> = pos.get(3..).map(|s| s.to_vec()).unwrap_or_default();
+            if start.is_empty() || path.is_empty() { eprintln!("usage: neuron --db <db> chain <scope> <start> <relation> [<relation> …]"); std::process::exit(2); }
+            let (value, trail) = d.recall_chain(&scope, &start, &path);
+            if json {
+                let tr: Vec<String> = trail.iter().map(|s| format!("\"{}\"", esc(s))).collect();
+                let v = value.as_deref().map(|s| format!("\"{}\"", esc(s))).unwrap_or_else(|| "null".into());
+                println!("{{\"value\":{},\"trail\":[{}]}}", v, tr.join(","));
+            } else {
+                match &value { Some(v) => println!("{}  (via {})", v, trail.join(" -> ")), None => println!("(chain broke after: {})", trail.join(" -> ")) }
+            }
+            if value.is_none() { std::process::exit(3); } }
+        // HEBBIAN plasticity: strengthen the facts in <scope> whose key matches <topic> (and fade the competing ones),
+        // so a confirmed relation out-ranks the alternatives in later recall — and accumulates across rounds + minds.
+        // How a caller LEARNS: e.g. recurrence reinforces "<root> caused_by", decaying the dead-end "kill the symptom".
+        "reinforce" => { need_scope("reinforce"); let d = NeuronDB::open(&db, max);
+            let topic = pos.get(2).cloned().unwrap_or_default();
+            let feeling = pos.get(3..).map(|s| s.join(" ")).unwrap_or_default();
+            if topic.is_empty() || feeling.is_empty() { eprintln!("usage: neuron --db <db> reinforce <scope> <topic> <feeling…>"); std::process::exit(2); }
+            let (strength, created) = d.note_stance(&scope, &topic, &feeling);
+            if json { println!("{{\"topic\":\"{}\",\"feeling\":\"{}\",\"strength\":{:.3},\"new\":{}}}", esc(&topic), esc(&feeling), strength, created); }
+            else { println!("{} '{}' [{}] strength {:.2}", if created { "reinforced (new)" } else { "reinforced" }, topic, feeling, strength); } }
         // the learned trust "floor" (feature `trust`): reward the tag-classes recalled this round by the
         // grounded Δscore (the engine's acceptance-oracle signal). Earned from outcomes, never restatement.
         #[cfg(feature = "trust")]
