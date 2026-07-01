@@ -213,6 +213,20 @@ mod tests {
         assert!(t.weight("b") < NEUTRAL, "loss should lower trust: {}", t.weight("b"));
     }
 
+    // stats() (behind the `trust_get` CLI verb) exposes weight AND the grounded reward/penalty counts, so a
+    // caller can UCB-rank sources by earned trust and still explore the never-tried.
+    #[test]
+    fn stats_expose_weight_and_grounded_counts() {
+        let mut t = TrustLedger::new();
+        assert!(t.stats("source:mdn").is_none()); // unseen -> no entry (wrapper reports NEUTRAL default)
+        t.reward(&["source:mdn"], 0.8); // one grounded win
+        t.reward(&["source:mdn"], -0.5); // one grounded loss
+        let s = t.stats("source:mdn").expect("class now seen");
+        assert_eq!(s.rewards, 1);
+        assert_eq!(s.penalties, 1);
+        assert!(s.weight > W_MIN && s.weight < W_MAX);
+    }
+
     // THE anti-amplifier property: recall without grounded gain can only ERODE trust. There is no
     // path by which restating / re-recalling a fact raises it. (Old `strength` did the opposite.)
     #[test]

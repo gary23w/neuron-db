@@ -142,6 +142,14 @@ fn main() {
             let d = NeuronDB::open(&db, max);
             let w = d.trust_weight(&scope);
             if json { println!("{{\"class\":\"{}\",\"weight\":{:.4}}}", esc(&scope), w); } else { println!("{:.4}", w); } }
+        // the FULL learned trust for one class: weight + grounded reward/penalty counts (its confidence), so a
+        // caller can UCB-rank sources by earned trust AND favor exploring the never-tried. Read-only.
+        #[cfg(feature = "trust")]
+        "trust_get" => { if scope.is_empty() { eprintln!("usage: neuron --db <db> trust_get <class>"); std::process::exit(2); }
+            let d = NeuronDB::open(&db, max);
+            let s = d.trust_stats(&scope);
+            if json { println!("{{\"class\":\"{}\",\"weight\":{:.4},\"rewards\":{},\"penalties\":{}}}", esc(&scope), s.weight, s.rewards, s.penalties); }
+            else { println!("{:.4}\t{}\t{}", s.weight, s.rewards, s.penalties); } }
         #[cfg(feature = "trust")]
         "trust_dump" => { let d = NeuronDB::open(&db, max);
             let dump = d.trust_dump();

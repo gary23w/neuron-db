@@ -155,6 +155,13 @@ impl NeuronDB {
     /// The learned trust weight for a tag-class (NEUTRAL if it has never been rewarded).
     #[cfg(feature = "trust")]
     pub fn trust_weight(&self, class: &str) -> f32 { self.trust_ledger().weight(class) }
+    /// The FULL learned trust for a class — weight plus the grounded reward/penalty counts (its confidence).
+    /// None-safe: an unseen class reports NEUTRAL with zero counts, so a caller can rank AND weigh certainty
+    /// (e.g. a UCB source-selection: weight + exploration_bonus(rewards + penalties)). A read-only query.
+    #[cfg(feature = "trust")]
+    pub fn trust_stats(&self, class: &str) -> crate::trust::ClassTrust {
+        self.trust_ledger().stats(class).cloned().unwrap_or_default()
+    }
     /// The whole ledger serialized ("<class>\t<weight>\t<rewards>\t<penalties>" per line).
     #[cfg(feature = "trust")]
     pub fn trust_dump(&self) -> String { self.trust_ledger().dump() }
