@@ -5,7 +5,7 @@ cd "$(dirname "$0")/rust/neuron-core"
 if ! command -v cargo >/dev/null 2>&1; then
   echo "Rust/cargo not found. Install it from https://rustup.rs then re-run ./build.sh"; exit 1
 fi
-FEATURES="${FEATURES:-sqlite secure server}"
+FEATURES="${FEATURES:-sqlite secure server trust}"
 echo "==> building neuron-core (features: $FEATURES)"
 cargo build --release --features "$FEATURES"
 BIN="$(pwd)/target/release"
