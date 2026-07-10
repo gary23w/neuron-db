@@ -25,6 +25,9 @@ pub trait Store {
     fn var_set(&self, scope: &str, key: &str, value: &str) -> usize;
     fn var_get(&self, scope: &str, key: &str) -> Option<String>;
     fn note_stance(&self, scope: &str, topic: &str, feeling: &str) -> (f32, bool);
+    /// Strengthen-only plasticity: bump the strength of facts whose text contains `matching`
+    /// (substring, like forget). Never mints — returns how many existing facts were touched.
+    fn strengthen(&self, scope: &str, matching: &str, bump: f32) -> usize;
     fn set_mood(&self, scope: &str, emotion: &str);
     fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String;
     fn turn(&self, scope: &str, message: &str) -> TurnOut;
@@ -49,6 +52,7 @@ pub enum NeuronOp {
     VarSet { scope: String, key: String, value: String },
     VarGet { scope: String, key: String },
     Stance { scope: String, topic: String, feeling: String },
+    Strengthen { scope: String, matching: String, bump: f32 },   // strengthen-only plasticity; never mints
     Mood { scope: String, emotion: String },
     Affect { scope: String, topic: Option<String> },     // topic = optional stance to bias the persona toward
     Turn { scope: String, message: String },
@@ -67,6 +71,7 @@ pub enum OpResult {
     Value(Option<String>),
     Chain { value: Option<String>, trail: Vec<String> },
     Stance { intensity: f32, created: bool },
+    Strengthened(usize),   // how many existing facts the strengthen touched (0 = nothing matched)
     Turned(TurnOut),
     Forgot { forgot: usize, remaining: usize },
     Stats(Stats),
@@ -103,6 +108,7 @@ pub fn apply<S: Store + ?Sized>(db: &S, op: NeuronOp) -> OpResult {
         NeuronOp::VarSet { scope, key, value } => OpResult::Wrote(db.var_set(&scope, &key, &value)),
         NeuronOp::VarGet { scope, key } => OpResult::Value(db.var_get(&scope, &key)),
         NeuronOp::Stance { scope, topic, feeling } => { let (intensity, created) = db.note_stance(&scope, &topic, &feeling); OpResult::Stance { intensity, created } }
+        NeuronOp::Strengthen { scope, matching, bump } => OpResult::Strengthened(db.strengthen(&scope, &matching, bump.clamp(0.05, 4.0))),
         NeuronOp::Mood { scope, emotion } => { db.set_mood(&scope, &emotion); OpResult::Ok }
         NeuronOp::Affect { scope, topic } => OpResult::Text(db.affect(&scope, topic.as_deref())),
         NeuronOp::Turn { scope, message } => OpResult::Turned(db.turn(&scope, &message)),

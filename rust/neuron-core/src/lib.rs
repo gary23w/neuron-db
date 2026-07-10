@@ -183,6 +183,11 @@ fn intern(s: &str) -> Arc<str> {
 #[derive(Clone, Debug)]
 pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<Arc<str>>, pub raw: Vec<Arc<str>>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32 }
 
+/// Ceiling for accumulated episode strength (strengthen_matching / reinforce paths). Bounds the
+/// synaptic dynamic range so repeated positive feedback saturates instead of one over-reinforced
+/// fact drowning relevance entirely (activation is multiplied by strength in spreading recall).
+pub const STRENGTH_CAP: f32 = 8.0;
+
 #[derive(Clone, Debug)]
 pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
 /// A spreading-activation hit: a fact reached by following shared-entity links from the cue.
@@ -546,7 +551,12 @@ impl Neuron {
             }
             if frontier.is_empty() { break; }
         }
-        let mut order: Vec<(usize, f64)> = act.into_iter().filter(|&(_, a)| a > 0.0).collect();
+        // Synaptic efficacy: activation is modulated by learned episode strength, so outcome-
+        // reinforced facts genuinely out-rank their alternatives (the documented `reinforce`/
+        // `strengthen` contract). Default strength is 1.0 — a scope nothing ever reinforced
+        // ranks exactly as before; the floor keeps a fully-decayed fact reachable, just last.
+        let mut order: Vec<(usize, f64)> = act.into_iter().filter(|&(_, a)| a > 0.0)
+            .map(|(i, a)| (i, a * f64::from(self.episodes[i].strength.max(0.05)))).collect();
         order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
         order.truncate(k);
         order.into_iter().map(|(i, a)| {
@@ -679,6 +689,23 @@ impl Neuron {
         let removed = before - self.episodes.len();
         if removed > 0 { self.index = None; self.index_len = usize::MAX; } // removals shift indices
         removed
+    }
+    /// STRENGTHEN-ONLY plasticity: bump the strength of every episode whose text contains `needle`
+    /// (case-insensitive substring, the same matcher as forget). The positive mirror of forget —
+    /// pure Hebbian feedback on facts that already exist. Unlike `reinforce_prefix` (the stance
+    /// primitive) it NEVER mints a new episode and never rewrites text, so outcome signals can only
+    /// re-rank what was actually learned, never invent memories. Returns the touched count.
+    pub fn strengthen_matching(&mut self, needle: &str, bump: f32) -> usize {
+        let nl = needle.trim().to_lowercase();
+        if nl.is_empty() { return 0; }
+        let mut hit = 0;
+        for e in self.episodes.iter_mut() {
+            if e.t.to_lowercase().contains(&nl) {
+                e.strength = (e.strength + bump).min(STRENGTH_CAP);
+                hit += 1;
+            }
+        }
+        hit   // no episode added/removed -> the index stays valid
     }
 
     pub fn fact_count(&self) -> usize { self.episodes.len() }

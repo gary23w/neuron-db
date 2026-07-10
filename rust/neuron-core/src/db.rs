@@ -49,6 +49,7 @@ impl crate::op::Store for NeuronDB {
     fn var_set(&self, scope: &str, key: &str, value: &str) -> usize { NeuronDB::var_set(self, scope, key, value) }
     fn var_get(&self, scope: &str, key: &str) -> Option<String> { NeuronDB::var_get(self, scope, key) }
     fn note_stance(&self, scope: &str, topic: &str, feeling: &str) -> (f32, bool) { NeuronDB::note_stance(self, scope, topic, feeling) }
+    fn strengthen(&self, scope: &str, matching: &str, bump: f32) -> usize { NeuronDB::strengthen(self, scope, matching, bump) }
     fn set_mood(&self, scope: &str, emotion: &str) { NeuronDB::set_mood(self, scope, emotion) }
     fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String { NeuronDB::affect(self, scope, asked_topic) }
     fn turn(&self, scope: &str, message: &str) -> TurnOut { NeuronDB::turn(self, scope, message) }
@@ -671,6 +672,19 @@ impl NeuronDB {
         e.turns += 1;
         Self::snapshot(conn, nid, e);
         TurnOut { reply: r.reply, kind: r.kind, wrote: r.wrote, facts: e.n.fact_count(), capacity_reached: at_cap && r.wrote > 0 }
+    }
+    /// Strengthen-only Hebbian plasticity: bump the strength of every fact in `nid` whose text
+    /// contains `matching` (case-insensitive substring — the same matcher as forget, its positive
+    /// mirror). Never mints and never rewrites text, unlike note_stance: outcome feedback re-ranks
+    /// what the scope already learned, it cannot invent memories. Returns the touched count.
+    pub fn strengthen(&self, nid: &str, matching: &str, bump: f32) -> usize {
+        let mut g = self.shard(nid); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        let Inner { conn, cache, .. } = inner;
+        let e = cache.get_mut(nid).unwrap();
+        let hit = e.n.strengthen_matching(matching, bump);
+        if hit > 0 { Self::snapshot(conn, nid, e); }   // strength is persisted in the fact blob
+        hit
     }
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
         let mut g = self.shard(nid); let inner = &mut *g;

@@ -245,6 +245,7 @@ impl crate::op::Store for MemStore {
             None => { v.push((topic.to_string(), feeling.to_string(), crate::affect::STANCE_BUMP)); (crate::affect::STANCE_BUMP, true) }
         }
     }
+    fn strengthen(&self, scope: &str, matching: &str, bump: f32) -> usize { memdb().n(scope).strengthen_matching(matching, bump) }
     fn set_mood(&self, scope: &str, emotion: &str) {
         if emotion.is_empty() { memdb().moods.remove(scope); } else { memdb().moods.insert(scope.to_string(), emotion.to_string()); }
     }

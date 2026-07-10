@@ -125,6 +125,16 @@ fn main() {
             let (strength, created) = d.note_stance(&scope, &topic, &feeling);
             if json { println!("{{\"topic\":\"{}\",\"feeling\":\"{}\",\"strength\":{:.3},\"new\":{}}}", esc(&topic), esc(&feeling), strength, created); }
             else { println!("{} '{}' [{}] strength {:.2}", if created { "reinforced (new)" } else { "reinforced" }, topic, feeling, strength); } }
+        // STRENGTHEN-ONLY plasticity: bump the strength of the facts whose text CONTAINS <match> (the positive
+        // mirror of forget's substring matcher). Unlike `reinforce` it never mints and never rewrites text —
+        // the verb for outcome feedback on facts a scope already learned ("this recalled lesson worked: rank
+        // it up"), so feedback keyed on arbitrary text can never invent a memory out of its own key.
+        "strengthen" => { need_scope("strengthen"); let d = NeuronDB::open(&db, max);
+            let m = pos.get(2..).map(|s| s.join(" ")).unwrap_or_default();
+            if m.trim().is_empty() { eprintln!("usage: neuron --db <db> strengthen <scope> <match…>"); std::process::exit(2); }
+            if let OpResult::Strengthened(hit) = apply(&d, NeuronOp::Strengthen { scope: scope.clone(), matching: m, bump: 1.0 }) {
+                if json { println!("{{\"strengthened\":{}}}", hit); } else { println!("strengthened {} fact(s)", hit); }
+            } }
         // the learned trust "floor" (feature `trust`): reward the tag-classes recalled this round by the
         // grounded Δscore (the engine's acceptance-oracle signal). Earned from outcomes, never restatement.
         #[cfg(feature = "trust")]
@@ -813,6 +823,9 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
   assoc   <scope> <query...>     spreading-activation recall: the CHAINED facts a multi-hop question needs\n\
                                  (env NEURON_HOPS=3, NEURON_K=10 tune hop depth + result count)\n\
+  chain   <scope> <start> <rel...>   relational multi-hop traversal (start --rel--> ... ; exit 3 on a break)\n\
+  reinforce <scope> <topic> <feeling...>   Hebbian stance: strengthen 'topic: ...' (minting it if absent)\n\
+  strengthen <scope> <match...>  strengthen-only plasticity: bump facts CONTAINING match; never mints\n\
   turn    <scope> <message...|-> store or answer (conversational)\n\
   stance  <scope> <topic> <feeling...>   accumulate a disposition toward a topic (deepens on repeat)\n\
   mood    <scope> [emotion...]   set (or clear, if empty) the override mood\n\
