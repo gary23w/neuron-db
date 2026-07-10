@@ -24,3 +24,6 @@ train/
 examples/vs-vectors/*.tsv
 rust/neuron-core/out_*.log
 *fullsuite*.log
+
+# Local Claude Code dev config (launch configs carry local paths/credentials) — never committed
+.claude/
