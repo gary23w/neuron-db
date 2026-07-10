@@ -46,6 +46,29 @@ fn strength_weights_spreading_ranking() {
     assert!(after[0].fact.contains("green"), "strengthened fact must lead, got {:?}", after[0].fact);
 }
 
+/// The cap must SATURATE, never weaken: an episode pushed past STRENGTH_CAP by the uncapped
+/// reinforce path (stance depth accumulates on purpose) must not be LOWERED by a strengthen
+/// call, and the ranking read must clamp so an N-times-reinforced fact saturates instead of
+/// scaling its activation by N.
+#[test]
+fn strengthen_never_lowers_and_ranking_clamps_overreinforced() {
+    let mut n = Neuron::new(1000);
+    n.observe("release: canary rollout on the orange fleet looks healthy");
+    n.episodes[0].strength = STRENGTH_CAP + 4.0; // reinforce_prefix-accumulated stance depth
+    n.strengthen_matching("orange fleet", 1.0);
+    assert!(n.episodes[0].strength >= STRENGTH_CAP + 4.0,
+        "strengthen must never weaken, got {}", n.episodes[0].strength);
+    // read-side clamp: a hugely over-reinforced fact may lead, but only by the CAP multiple —
+    // an equally-activated fact at the cap ties with it instead of being drowned N-fold
+    n.observe("release: canary rollout on the purple fleet looks healthy");
+    n.episodes[1].strength = STRENGTH_CAP;
+    let hits = n.recall_spreading("canary rollout fleet", 5, 2);
+    assert!(hits.len() >= 2);
+    let (a, b) = (hits[0].act, hits[1].act);
+    assert!((a - b).abs() < 1e-9,
+        "both at/over cap must rank by activation alone (clamped), got {} vs {}", a, b);
+}
+
 /// The desk pollution shape end-to-end: a lesson scope holds a verified fix; Hebbian feedback
 /// arrives keyed on a RAW USER PROMPT (the old bug's key). With strengthen it must be a no-op,
 /// and a later failing-command recall must surface only real lessons — never prompt text.

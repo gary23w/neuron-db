@@ -183,9 +183,11 @@ fn intern(s: &str) -> Arc<str> {
 #[derive(Clone, Debug)]
 pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<Arc<str>>, pub raw: Vec<Arc<str>>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32 }
 
-/// Ceiling for accumulated episode strength (strengthen_matching / reinforce paths). Bounds the
-/// synaptic dynamic range so repeated positive feedback saturates instead of one over-reinforced
-/// fact drowning relevance entirely (activation is multiplied by strength in spreading recall).
+/// Ceiling for episode strength as a RANKING signal. Enforced where strength is written by
+/// strengthen_matching and where it is read for ranking (spreading recall clamps to the cap), so
+/// one over-reinforced fact saturates instead of drowning relevance entirely. `reinforce_prefix`
+/// itself accumulates past the cap on purpose — stance depth ("deepens on repeat") is a separate
+/// signal from ranking weight — which is exactly why the read side must clamp.
 pub const STRENGTH_CAP: f32 = 8.0;
 
 #[derive(Clone, Debug)]
@@ -555,8 +557,10 @@ impl Neuron {
         // reinforced facts genuinely out-rank their alternatives (the documented `reinforce`/
         // `strengthen` contract). Default strength is 1.0 — a scope nothing ever reinforced
         // ranks exactly as before; the floor keeps a fully-decayed fact reachable, just last.
+        // Clamped to STRENGTH_CAP at the read: reinforce_prefix accumulates unbounded (stance
+        // depth), and an N-times-reinforced stance must saturate here, not scale rank by N.
         let mut order: Vec<(usize, f64)> = act.into_iter().filter(|&(_, a)| a > 0.0)
-            .map(|(i, a)| (i, a * f64::from(self.episodes[i].strength.max(0.05)))).collect();
+            .map(|(i, a)| (i, a * f64::from(self.episodes[i].strength.clamp(0.05, STRENGTH_CAP)))).collect();
         order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
         order.truncate(k);
         order.into_iter().map(|(i, a)| {
@@ -701,7 +705,9 @@ impl Neuron {
         let mut hit = 0;
         for e in self.episodes.iter_mut() {
             if e.t.to_lowercase().contains(&nl) {
-                e.strength = (e.strength + bump).min(STRENGTH_CAP);
+                // saturate WITHOUT lowering: an episode already past the cap (reinforce_prefix
+                // accumulates unbounded stance depth) must not be weakened by a strengthen call
+                e.strength = (e.strength + bump).min(STRENGTH_CAP.max(e.strength));
                 hit += 1;
             }
         }

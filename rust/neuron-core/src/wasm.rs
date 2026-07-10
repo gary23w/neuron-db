@@ -294,8 +294,9 @@ fn httpmap() -> &'static mut HashMap<i32, String> { unsafe { HTTP.get_or_insert_
 
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
 /// ops: observe | obsmany | recall | recallscored | value | assess | assoc | chain | setvar | getvar |
-///      vars | delvar | addinstr | instrs | delinstr | clearinstr | forget | stats | episodes |
-///      dump | load | scopes | feel | stance | humanize | mood | topstance | stanceof | fetch | fetched.
+///      vars | delvar | addinstr | instrs | delinstr | clearinstr | forget | strengthen | stats |
+///      episodes | dump | load | scopes | feel | stance | humanize | mood | topstance | stanceof |
+///      fetch | fetched.
 #[no_mangle]
 pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
     let req = input(ptr, len);
@@ -339,6 +340,11 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         // empty needle clears the scope; otherwise drops facts containing it (same substring semantics as the MCP/db forget)
         "forget" => match apply(&MemStore, NeuronOp::Forget { scope, matching: { let m = arg(2); if m.is_empty() { None } else { Some(m.to_string()) } } }) {
             OpResult::Forgot { forgot, .. } => forgot.to_string(), _ => "0".into(),
+        },
+        // strengthen-only plasticity (the positive mirror of forget): bump facts CONTAINING the needle;
+        // never mints. arg3 = optional bump (apply() clamps it). Returns the touched count.
+        "strengthen" => match apply(&MemStore, NeuronOp::Strengthen { scope, matching: arg(2).to_string(), bump: f.get(3).and_then(|x| x.parse().ok()).unwrap_or(1.0) }) {
+            OpResult::Strengthened(n) => n.to_string(), _ => "0".into(),
         },
         "stats" => match apply(&MemStore, NeuronOp::Stats { scope }) { OpResult::Stats(s) => s.facts.to_string(), _ => "0".into() },
         // the scope's stored episode texts, in insertion order — so a caller's ordered view matches
@@ -471,7 +477,7 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
 pub const MEM_OPS: &[&str] = &[
     "observe", "obsmany", "loadmany", "recall", "recallscored", "value", "assess", "assoc", "chain",
     "setvar", "getvar", "vars", "delvar", "addinstr", "instrs", "delinstr", "clearinstr",
-    "forget", "stats", "episodes", "dump", "load", "scopes",
+    "forget", "strengthen", "stats", "episodes", "dump", "load", "scopes",
     "feel", "stance", "humanize", "mood", "topstance", "stanceof", "fetch", "fetched",
     "caps", "ops",
 ];
