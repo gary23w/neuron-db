@@ -76,6 +76,24 @@ fn recall_spreading_hub_prefix_does_not_drown_rare_cue() {
 }
 
 #[test]
+fn recall_idx_points_at_the_hit_episode_and_neighbors_window_it() {
+    let mut n = Neuron::new(500);
+    n.observe("the first stored line mentions apples only.");
+    n.observe("the second stored line mentions bicycles only.");
+    n.observe("the third stored line mentions castles only.");
+    let r = n.recall("which line mentions bicycles?").unwrap();
+    assert_eq!(r.idx, 1, "idx is the hit's episode index");
+    assert_eq!(n.episodes[r.idx].t, r.fact, "idx dereferences to the recalled fact");
+    let (start, w) = n.neighbors(r.idx, 1, 1);
+    assert_eq!((start, w.len()), (0, 3));
+    assert!(w[0].contains("apples") && w[2].contains("castles"), "window is insertion-ordered: {:?}", w);
+    // bounds: clamped at the edges, empty on an out-of-range idx
+    let (s0, w0) = n.neighbors(0, 5, 0);
+    assert_eq!((s0, w0.len()), (0, 1));
+    assert!(n.neighbors(99, 2, 2).1.is_empty());
+}
+
+#[test]
 fn json_escape_handles_control_and_quotes() {
     assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
     assert_eq!(json_escape("tab\tnewline\n"), "tab\\tnewline\\n");

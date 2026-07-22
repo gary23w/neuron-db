@@ -88,16 +88,80 @@ fn main() {
         "assoc" => { need_scope("assoc"); let d = NeuronDB::open(&db, max);
             let hops: usize = std::env::var("NEURON_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
             let k: usize = std::env::var("NEURON_K").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+            // --across is a VERB-level flag (the global parser passes it through into pos): widen the
+            // spread over <scope>__* document sub-scopes. Stripped here so it never joins the query.
+            let across = pos.get(2..).is_some_and(|s| s.iter().any(|a| a == "--across"));
+            let q: String = pos.get(2..).map(|s| s.iter().filter(|a| a.as_str() != "--across").cloned().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            // across takes the plain path even under --trust: the trust re-rank is scope-local today.
             #[cfg(feature = "trust")]
-            let hits = if trust_rank { d.recall_assoc_trusted(&scope, &rest(), k, hops) }
-                       else { apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: rest(), k, hops }).assoc() };
+            let hits = if trust_rank && !across { d.recall_assoc_trusted(&scope, &q, k, hops) }
+                       else { apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: q.clone(), k, hops, across }).assoc() };
             #[cfg(not(feature = "trust"))]
-            let hits = { let _ = trust_rank; apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: rest(), k, hops }).assoc() };
+            let hits = { let _ = trust_rank; apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: q.clone(), k, hops, across }).assoc() };
             if json {
-                let items: Vec<String> = hits.iter().map(|h| format!("{{\"fact\":\"{}\",\"act\":{:.4},\"seed\":{}}}", esc(&h.fact), h.act, h.seed)).collect();
+                let items: Vec<String> = hits.iter().map(|h| format!("{{\"fact\":\"{}\",\"act\":{:.4},\"seed\":{},\"idx\":{}}}", esc(&h.fact), h.act, h.seed, h.idx)).collect();
                 println!("{{\"hits\":[{}]}}", items.join(","));
             } else { for h in &hits { println!("{}", h.fact); } }
             if hits.is_empty() { std::process::exit(3); } }
+        // STITCHED recall: top-k hits, each expanded into its surrounding sentences in insertion
+        // (= document) order — coherent passages instead of isolated fragments. --across widens the
+        // search over <scope>__* document sub-scopes and each hit expands in the scope it came from.
+        "context" => { need_scope("context"); let d = NeuronDB::open(&db, max);
+            let (mut k, mut before, mut after, mut across) = (4usize, 2usize, 3usize, false);
+            let mut qw: Vec<String> = Vec::new();
+            let tail = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            let mut i = 0;
+            while i < tail.len() {
+                match tail[i].as_str() {
+                    "--across" => { across = true; i += 1; }
+                    "--k" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { k = v; } i += 2; }
+                    "--before" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { before = v; } i += 2; }
+                    "--after" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { after = v; } i += 2; }
+                    _ => { qw.push(tail[i].clone()); i += 1; }
+                }
+            }
+            let q = qw.join(" ");
+            if q.trim().is_empty() { eprintln!("usage: neuron --db <db> context <scope> <query…> [--k N] [--before N] [--after N] [--across]"); std::process::exit(2); }
+            let passages = apply(&d, NeuronOp::RecallContext { scope: scope.clone(), query: q, k, before, after, across }).passages();
+            if json {
+                let items: Vec<String> = passages.iter().map(|p| {
+                    let facts: Vec<String> = p.facts.iter().map(|f| format!("\"{}\"", esc(f))).collect();
+                    format!("{{\"scope\":\"{}\",\"start\":{},\"hit\":{},\"facts\":[{}]}}", esc(&p.scope), p.start, p.start + p.hit_pos, facts.join(","))
+                }).collect();
+                println!("{{\"passages\":[{}]}}", items.join(","));
+            } else {
+                for (n, p) in passages.iter().enumerate() {
+                    if n > 0 { println!(); }
+                    println!("-- {} [{}..{}]", p.scope, p.start, p.start + p.facts.len().saturating_sub(1));
+                    println!("{}", p.facts.join(" "));
+                }
+            }
+            if passages.is_empty() { std::process::exit(3); } }
+        // FULL-DOCUMENT read: one insertion-order page of a scope's facts. The summarization path —
+        // a whole-document question walks the document page by page instead of asking top-k recall
+        // to reconstruct it from fragments. Facts go to stdout (data); the pager footer to stderr.
+        "read" => { need_scope("read"); let d = NeuronDB::open(&db, max);
+            let (mut from, mut limit) = (0usize, 100usize);
+            let tail = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            let mut i = 0;
+            while i < tail.len() {
+                match tail[i].as_str() {
+                    "--from" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { from = v; } i += 2; }
+                    "--limit" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { limit = v; } i += 2; }
+                    _ => { i += 1; }
+                }
+            }
+            if let OpResult::Page { total, from, facts } = apply(&d, NeuronOp::ReadPage { scope: scope.clone(), from, limit }) {
+                if json {
+                    let items: Vec<String> = facts.iter().map(|f| format!("\"{}\"", esc(f))).collect();
+                    println!("{{\"total\":{},\"from\":{},\"count\":{},\"facts\":[{}]}}", total, from, facts.len(), items.join(","));
+                } else {
+                    for f in &facts { println!("{}", f); }
+                    let next = from + facts.len();
+                    if next < total { eprintln!("(page {}..{} of {}; continue with --from {})", from, next.saturating_sub(1), total, next); }
+                    else { eprintln!("(end of scope: {} fact(s))", total); }
+                }
+            } }
         // relational CHAIN traversal: walk <start> --rel--> … following the graph (recall at each hop, advancing only
         // when the relation actually appears in the recalled fact). Deterministic, microseconds, no model round-trip —
         // how a caller reasons over a causal/dependency graph (symptom -> caused_by -> root) instead of re-deriving it.
@@ -374,7 +438,7 @@ fn shell(db: &str, max: usize, start_scope: &str, force: bool) {
             }
             "assoc" => {
                 if arg.is_empty() { eprintln!("assoc <query>"); continue; }
-                let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: arg.to_string(), k: 8, hops: 2 }).assoc();
+                let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: arg.to_string(), k: 8, hops: 2, across: false }).assoc();
                 if hits.is_empty() { println!("(nothing connected)"); } else { for h in hits { println!("{} {}", if h.seed { "*" } else { "-" }, h.fact); } }
             }
             "chain" => {
@@ -821,8 +885,11 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   observe <scope> <text...|->    store a fact ('-' reads the body from stdin)\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
-  assoc   <scope> <query...>     spreading-activation recall: the CHAINED facts a multi-hop question needs\n\
-                                 (env NEURON_HOPS=3, NEURON_K=10 tune hop depth + result count)\n\
+  assoc   <scope> <query...> [--across]   spreading-activation recall: the CHAINED facts a multi-hop question needs\n\
+                                 (env NEURON_HOPS=3, NEURON_K=10; --across widens over <scope>__* document sub-scopes)\n\
+  context <scope> <query...> [--k N] [--before N] [--after N] [--across]\n\
+                                 STITCHED recall: each hit expanded into its surrounding sentences, in document order\n\
+  read    <scope> [--from N] [--limit N]   one insertion-order page of a scope — the full-document/summary path\n\
   chain   <scope> <start> <rel...>   relational multi-hop traversal (start --rel--> ... ; exit 3 on a break)\n\
   reinforce <scope> <topic> <feeling...>   Hebbian stance: strengthen 'topic: ...' (minting it if absent)\n\
   strengthen <scope> <match...>  strengthen-only plasticity: bump facts CONTAINING match; never mints\n\

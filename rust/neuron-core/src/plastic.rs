@@ -124,7 +124,7 @@ impl PlasticNeuron {
             let l = self.recent.len(); if l > 32 { self.recent.drain(0..l - 32); }
             self.tick += 1;
         }
-        Some(Recall { fact, value: val, coverage: cov, overlap, exact: exact_n, echo })
+        Some(Recall { fact, value: val, coverage: cov, overlap, exact: exact_n, echo, idx: bi })
     }
 
     /// The hit plus its strongest associates (one-hop spreading).

@@ -190,12 +190,22 @@ pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Ve
 /// signal from ranking weight — which is exactly why the read side must clamp.
 pub const STRENGTH_CAP: f32 = 8.0;
 
+/// `idx` is the hit's EPISODE INDEX in its scope (insertion order — which, for an ingested
+/// document, is document order). It's what lets a caller expand a fragment back into its
+/// surrounding passage (see `Neuron::neighbors` / the `context` op) instead of treating every
+/// hit as an isolated sentence.
 #[derive(Clone, Debug)]
-pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool }
+pub struct Recall { pub fact: String, pub value: String, pub coverage: f64, pub overlap: usize, pub exact: usize, pub echo: bool, pub idx: usize }
 /// A spreading-activation hit: a fact reached by following shared-entity links from the cue.
 /// `seed` marks a fact that directly matched the query; the rest are associates surfaced by spread.
+/// `idx` = episode index in its scope, as on `Recall`.
 #[derive(Debug, Clone)]
-pub struct Spread { pub fact: String, pub value: String, pub seed: bool, pub act: f64 }
+pub struct Spread { pub fact: String, pub value: String, pub seed: bool, pub act: f64, pub idx: usize }
+/// A recall hit STITCHED into its surrounding episodes, in insertion (= document) order.
+/// `facts[hit_pos]` is the sentence that matched; the rest are its neighbors from the same scope.
+/// Defined at the crate root (like Recall/Spread) so the no-sqlite wasm build can name it.
+#[derive(Debug, Clone)]
+pub struct Passage { pub scope: String, pub start: usize, pub hit_pos: usize, pub facts: Vec<String> }
 
 // Result shapes for a conversational turn and a scope's stats. Defined at the crate root (not in the
 // sqlite-gated db.rs) so the op vocabulary + the Store trait can name them in a no-sqlite wasm build.
@@ -432,7 +442,7 @@ impl Neuron {
         if pet_query && e.s.iter().any(|s| pets().contains(s.as_ref())) { cov = 1.0; }
         let want_num = cue.contains("many") || cue.contains("much") || cue.contains(&stem1("number"));
         let (val, echo) = pick_value(e, &cue, want_num);
-        Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, exact: bk.0 as usize, echo })
+        Some(Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: bk.1 as usize, exact: bk.0 as usize, echo, idx: bi })
     }
 
     /// Score the `order` candidates against the cue and return the top-k (best first; ties -> lower
@@ -504,7 +514,7 @@ impl Neuron {
             let e = &self.episodes[i];
             let cov = cue.iter().filter(|c| has_stem(&e.s, c)).count() as f64 / (cue.len().max(1) as f64);
             let (val, echo) = pick_value(e, &cue, want_num);
-            Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo }
+            Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.1 as usize, exact: sc.0 as usize, echo, idx: i }
         }).collect();
         if out.is_empty() { self.root_scan(query, k) } else { out }
     }
@@ -575,7 +585,7 @@ impl Neuron {
         order.truncate(k);
         order.into_iter().map(|(i, a)| {
             let e = &self.episodes[i];
-            Spread { fact: e.t.clone(), value: e.v.clone(), seed: seed.contains(&i), act: a }
+            Spread { fact: e.t.clone(), value: e.v.clone(), seed: seed.contains(&i), act: a, idx: i }
         }).collect()
     }
 
@@ -617,8 +627,19 @@ impl Neuron {
                 .map(|w| stem1(w)).collect();
             let (val, echo) = pick_value(e, &cue, want_num);
             let cov = sc.0 as f64 / qroots.len().max(1) as f64;
-            Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.0 as usize, exact: 0, echo }
+            Recall { fact: e.t.clone(), value: val, coverage: cov, overlap: sc.0 as usize, exact: 0, echo, idx: i }
         }).collect()
+    }
+
+    /// The insertion-order window around episode `idx`: `before` episodes back, `after` forward,
+    /// clamped to the scope. Returns (start_index, fact texts). Insertion order IS document order
+    /// for an ingested document, so this reassembles the passage a fragment hit came from — the
+    /// stitching primitive behind the `context` op. O(before+after) clones; no index touched.
+    pub fn neighbors(&self, idx: usize, before: usize, after: usize) -> (usize, Vec<String>) {
+        if self.episodes.is_empty() || idx >= self.episodes.len() { return (0, Vec::new()); }
+        let start = idx.saturating_sub(before);
+        let end = (idx + after + 1).min(self.episodes.len());
+        (start, self.episodes[start..end].iter().map(|e| e.t.clone()).collect())
     }
 
     /// Persistence: "<flag>\t<text>\t<strength>" per line; index rebuilt on load. Strength carries

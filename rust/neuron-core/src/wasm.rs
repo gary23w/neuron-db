@@ -218,7 +218,51 @@ impl crate::op::Store for MemStore {
     // the in-browser store is lexical only — semantic/across are durable-store concepts
     fn recall_block(&self, scope: &str, query: &str, k: usize, _semantic: bool, _across: bool) -> Vec<crate::Recall> { memdb().n(scope).recall_many(query, k) }
     fn recall_value(&self, scope: &str, query: &str) -> Option<String> { memdb().n(scope).recall(query).map(|r| r.value) }
-    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<crate::Spread> { memdb().n(scope).recall_spreading(query, k, hops) }
+    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize, across: bool) -> Vec<crate::Spread> {
+        if !across { return memdb().n(scope).recall_spreading(query, k, hops); }
+        // across: base + base__* document children, the same filter as the durable store. Collect the
+        // names first (immutable borrow ends), then one n(scope) borrow per pass.
+        let names: Vec<String> = memdb().scopes.keys()
+            .filter(|id| id.as_str() == scope || (id.starts_with(scope) && id[scope.len()..].starts_with("__")))
+            .cloned().collect();
+        let mut all: Vec<crate::Spread> = Vec::new();
+        for s in &names { all.extend(memdb().n(s).recall_spreading(query, k, hops)); }
+        all.sort_by(|a, b| b.seed.cmp(&a.seed).then(b.act.partial_cmp(&a.act).unwrap_or(std::cmp::Ordering::Equal)));
+        all.truncate(k);
+        all
+    }
+    fn recall_context(&self, scope: &str, query: &str, k: usize, before: usize, after: usize, across: bool) -> Vec<crate::Passage> {
+        let names: Vec<String> = if across {
+            memdb().scopes.keys()
+                .filter(|id| id.as_str() == scope || (id.starts_with(scope) && id[scope.len()..].starts_with("__")))
+                .cloned().collect()
+        } else { vec![scope.to_string()] };
+        let mut tagged: Vec<(String, crate::Recall)> = Vec::new();
+        for s in &names { for h in memdb().n(s).recall_many(query, k) { tagged.push((s.clone(), h)); } }
+        tagged.sort_by(|a, b| b.1.exact.cmp(&a.1.exact)
+            .then(b.1.overlap.cmp(&a.1.overlap))
+            .then(b.1.coverage.partial_cmp(&a.1.coverage).unwrap_or(std::cmp::Ordering::Equal)));
+        tagged.truncate(k);
+        let mut out: Vec<crate::Passage> = Vec::new();
+        for (s, hit) in tagged {
+            if out.iter().any(|p| p.scope == s && hit.idx >= p.start && hit.idx < p.start + p.facts.len()) { continue; }
+            let (start, facts) = memdb().n(&s).neighbors(hit.idx, before, after);
+            if facts.is_empty() { continue; }
+            out.push(crate::Passage { scope: s, start, hit_pos: hit.idx - start, facts });
+        }
+        out
+    }
+    fn scope_page(&self, scope: &str, from: usize, limit: usize) -> (usize, Vec<String>) {
+        match memdb().scopes.get(scope) {
+            Some(n) => {
+                let total = n.episodes.len();
+                if from >= total || limit == 0 { return (total, Vec::new()); }
+                let end = (from + limit).min(total);
+                (total, n.episodes[from..end].iter().map(|e| e.t.clone()).collect())
+            }
+            None => (0, Vec::new()),
+        }
+    }
     fn recall_chain(&self, scope: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>) {
         let n = memdb().n(scope);
         let mut current = start.trim().to_string();
@@ -293,10 +337,10 @@ fn httpmap() -> &'static mut HashMap<i32, String> { unsafe { HTTP.get_or_insert_
 #[no_mangle] pub extern "C" fn http_deliver(token: i32, ptr: *const u8, len: usize) { httpmap().insert(token, input(ptr, len)); }
 
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
-/// ops: observe | obsmany | recall | recallscored | value | assess | assoc | chain | setvar | getvar |
-///      vars | delvar | addinstr | instrs | delinstr | clearinstr | forget | strengthen | stats |
-///      episodes | dump | load | scopes | feel | stance | humanize | mood | topstance | stanceof |
-///      fetch | fetched.
+/// ops: observe | obsmany | recall | recallscored | value | assess | assoc | context | readpage |
+///      chain | setvar | getvar | vars | delvar | addinstr | instrs | delinstr | clearinstr |
+///      forget | strengthen | stats | episodes | dump | load | scopes | feel | stance | humanize |
+///      mood | topstance | stanceof | fetch | fetched.
 #[no_mangle]
 pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
     let req = input(ptr, len);
@@ -312,8 +356,16 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         "recall" => apply(&MemStore, NeuronOp::Recall { scope, query: arg(2).to_string(), k: num(3, 6), semantic: false, across: false })
             .hits().into_iter().map(|r| r.fact).collect::<Vec<_>>().join("\n"),
         "value" => apply(&MemStore, NeuronOp::RecallValue { scope, query: arg(2).to_string() }).value().unwrap_or_default(),
-        "assoc" => apply(&MemStore, NeuronOp::RecallAssoc { scope, query: arg(2).to_string(), k: num(4, 8), hops: num(3, 2) })
+        "assoc" => apply(&MemStore, NeuronOp::RecallAssoc { scope, query: arg(2).to_string(), k: num(4, 8), hops: num(3, 2), across: arg(5) == "across" || arg(5) == "1" })
             .assoc().into_iter().map(|s| s.fact).collect::<Vec<_>>().join("\n"),
+        // stitched recall: each passage = its facts joined into one paragraph, passages blank-line separated
+        "context" => apply(&MemStore, NeuronOp::RecallContext { scope, query: arg(2).to_string(), k: num(3, 4), before: num(4, 2), after: num(5, 3), across: arg(6) == "across" || arg(6) == "1" })
+            .passages().into_iter().map(|p| p.facts.join(" ")).collect::<Vec<_>>().join("\n\n"),
+        // one insertion-order page; first line "#total <n>" so a pager knows when to stop
+        "readpage" => match apply(&MemStore, NeuronOp::ReadPage { scope, from: num(2, 0), limit: num(3, 100) }) {
+            OpResult::Page { total, facts, .. } => { let mut o = format!("#total {}", total); for fa in facts { o.push('\n'); o.push_str(&fa); } o }
+            _ => String::new(),
+        },
         "setvar" => { apply(&MemStore, NeuronOp::VarSet { scope, key: arg(2).to_string(), value: arg(3).to_string() }); "ok".into() }
         "getvar" => apply(&MemStore, NeuronOp::VarGet { scope, key: arg(2).to_string() }).value().unwrap_or_default(),
         "addinstr" => {
@@ -476,6 +528,7 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
 /// missing op rather than silently no-op'ing.
 pub const MEM_OPS: &[&str] = &[
     "observe", "obsmany", "loadmany", "recall", "recallscored", "value", "assess", "assoc", "chain",
+    "context", "readpage",
     "setvar", "getvar", "vars", "delvar", "addinstr", "instrs", "delinstr", "clearinstr",
     "forget", "strengthen", "stats", "episodes", "dump", "load", "scopes",
     "feel", "stance", "humanize", "mood", "topstance", "stanceof", "fetch", "fetched",

@@ -7,7 +7,7 @@
 //! backend owns the op SEMANTICS that differ between them — the recall rank choice, the
 //! recall_value fallback — inside its own `Store` impl, so they can't drift here. This module is
 //! std-only and not feature-gated, so the no-sqlite wasm build compiles it too.
-use crate::{Recall, Spread, Stats, TurnOut};
+use crate::{Passage, Recall, Spread, Stats, TurnOut};
 
 /// The store surface `apply` needs. Implemented by `NeuronDB` (durable) and `MemDB` (in-browser);
 /// `&self` because both stores use interior mutability (a Mutex / a RefCell), which also lets a
@@ -20,7 +20,14 @@ pub trait Store {
     fn recall_block(&self, scope: &str, query: &str, k: usize, semantic: bool, across: bool) -> Vec<Recall>;
     /// A single value for a direct question; the backend owns any cross-scope fallback.
     fn recall_value(&self, scope: &str, query: &str) -> Option<String>;
-    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<Spread>;
+    /// Spreading recall; `across` widens over `base__*` document sub-scopes (backends without
+    /// sub-scope storage may treat it as scope-only).
+    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize, across: bool) -> Vec<Spread>;
+    /// Stitched recall: top-k hits each expanded into surrounding episodes in insertion order.
+    fn recall_context(&self, scope: &str, query: &str, k: usize, before: usize, after: usize, across: bool) -> Vec<Passage>;
+    /// One insertion-order page of a scope's facts: (total, facts[from..from+limit]). The
+    /// full-document read path for summarization — never routed through top-k recall.
+    fn scope_page(&self, scope: &str, from: usize, limit: usize) -> (usize, Vec<String>);
     fn recall_chain(&self, scope: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>);
     fn var_set(&self, scope: &str, key: &str, value: &str) -> usize;
     fn var_get(&self, scope: &str, key: &str) -> Option<String>;
@@ -47,7 +54,9 @@ pub enum NeuronOp {
     Recall { scope: String, query: String, k: usize, semantic: bool, across: bool },
     RecallOne { scope: String, query: String },
     RecallValue { scope: String, query: String },
-    RecallAssoc { scope: String, query: String, k: usize, hops: usize },
+    RecallAssoc { scope: String, query: String, k: usize, hops: usize, across: bool },
+    RecallContext { scope: String, query: String, k: usize, before: usize, after: usize, across: bool },
+    ReadPage { scope: String, from: usize, limit: usize },
     RecallChain { scope: String, start: String, path: Vec<String> },
     VarSet { scope: String, key: String, value: String },
     VarGet { scope: String, key: String },
@@ -68,6 +77,8 @@ pub enum OpResult {
     Hit(Option<Recall>),
     Hits(Vec<Recall>),
     Assoc(Vec<Spread>),
+    Passages(Vec<Passage>),
+    Page { total: usize, from: usize, facts: Vec<String> },
     Value(Option<String>),
     Chain { value: Option<String>, trail: Vec<String> },
     Stance { intensity: f32, created: bool },
@@ -88,6 +99,7 @@ impl OpResult {
     pub fn hit(self) -> Option<Recall> { if let OpResult::Hit(h) = self { h } else { None } }
     pub fn hits(self) -> Vec<Recall> { if let OpResult::Hits(h) = self { h } else { Vec::new() } }
     pub fn assoc(self) -> Vec<Spread> { if let OpResult::Assoc(a) = self { a } else { Vec::new() } }
+    pub fn passages(self) -> Vec<Passage> { if let OpResult::Passages(p) = self { p } else { Vec::new() } }
     pub fn value(self) -> Option<String> { if let OpResult::Value(v) = self { v } else { None } }
     pub fn text(self) -> String { if let OpResult::Text(t) = self { t } else { String::new() } }
 }
@@ -103,7 +115,10 @@ pub fn apply<S: Store + ?Sized>(db: &S, op: NeuronOp) -> OpResult {
         NeuronOp::Recall { scope, query, k, semantic, across } => OpResult::Hits(db.recall_block(&scope, &query, k.clamp(1, 50), semantic, across)),
         NeuronOp::RecallOne { scope, query } => OpResult::Hit(db.recall_one(&scope, &query)),
         NeuronOp::RecallValue { scope, query } => OpResult::Value(db.recall_value(&scope, &query)),
-        NeuronOp::RecallAssoc { scope, query, k, hops } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 64), hops.clamp(1, 32))),
+        NeuronOp::RecallAssoc { scope, query, k, hops, across } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 64), hops.clamp(1, 32), across)),
+        // stitched windows multiply output size by ~(before+after+1), so k clamps tighter than assoc's
+        NeuronOp::RecallContext { scope, query, k, before, after, across } => OpResult::Passages(db.recall_context(&scope, &query, k.clamp(1, 16), before.min(16), after.min(16), across)),
+        NeuronOp::ReadPage { scope, from, limit } => { let (total, facts) = db.scope_page(&scope, from, limit.clamp(1, 500)); OpResult::Page { total, from, facts } }
         NeuronOp::RecallChain { scope, start, path } => { let (value, trail) = db.recall_chain(&scope, &start, &path); OpResult::Chain { value, trail } }
         NeuronOp::VarSet { scope, key, value } => OpResult::Wrote(db.var_set(&scope, &key, &value)),
         NeuronOp::VarGet { scope, key } => OpResult::Value(db.var_get(&scope, &key)),

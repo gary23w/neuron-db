@@ -229,10 +229,12 @@ fn host_deferrable(line: &str) -> Vec<&'static str> {
 // tools/list payload. Each entry MUST be a single line: MCP stdio framing is one JSON
 // message per physical line, so a response may never contain a raw newline. Names use
 // snake_case for broad client compatibility.
-const TOOL_DEFS: [&str; 10] = [
+const TOOL_DEFS: [&str; 12] = [
 r#"{"name":"route","description":"Route a turn through the gary-neuron cortex — the cheap front gate. It recalls the working set for the query, then decides ONE route: answer (memory answers it; value is the answer), escalate (memory can't — hand the turn to YOUR model, using the returned facts as context), fetch (a live-world lookup; value is the topic to search), or store (a declarative to remember; value is the fact). Returns {type,value,facts}. Call this first each turn; only invoke your own model when type is escalate.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"the user's turn"},"k":{"type":"integer","description":"facts to recall as the working set (default 6)"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall","description":"Recall the most relevant remembered facts for a query, as a memory block to inject into context. Call this BEFORE answering whenever the user refers to something they may have told you earlier. Ranks by associative cue overlap; pass rank='semantic' for broad/narrative topics; pass documents=true to also search this user's stored documents.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id, e.g. user:123 or session:abc - isolates one user/agent's memory"},"query":{"type":"string","description":"the question or topic to recall about"},"k":{"type":"integer","description":"max facts to return (default 5)"},"rank":{"type":"string","enum":["lexical","semantic"],"description":"ranking strategy; default lexical (associative). Use semantic only for broad/narrative recall."},"documents":{"type":"boolean","description":"also search the user's stored document sub-scopes, not just the main scope (default false)"}},"required":["scope","query"]}}"#,
-r#"{"name":"recall_associative","description":"Spreading-activation recall: starts from facts that match the query, then follows shared-entity links to surface RELATED facts that may share no words with the query. Use for 'what's connected to X' or to gather context around a topic.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"the topic or entity to activate from"},"k":{"type":"integer","description":"max facts to return (default 8)"},"hops":{"type":"integer","description":"link hops to spread (default 2)"}},"required":["scope","query"]}}"#,
+r#"{"name":"recall_associative","description":"Spreading-activation recall: starts from facts that match the query, then follows shared-entity links to surface RELATED facts that may share no words with the query. Use for 'what's connected to X' or to gather context around a topic.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"the topic or entity to activate from"},"k":{"type":"integer","description":"max facts to return (default 8)"},"hops":{"type":"integer","description":"link hops to spread (default 2)"},"documents":{"type":"boolean","description":"also spread through the user's stored document sub-scopes (default false)"}},"required":["scope","query"]}}"#,
+r#"{"name":"recall_context","description":"STITCHED recall: finds the best-matching facts, then expands each into its surrounding sentences in original document order — coherent passages instead of isolated fragments. Use when a lone recalled sentence needs its context (a quote, a step in a procedure, a plot moment). Pass documents=true to search stored document sub-scopes too.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"what to find"},"k":{"type":"integer","description":"max passages (default 4)"},"before":{"type":"integer","description":"sentences of context before each hit (default 2)"},"after":{"type":"integer","description":"sentences of context after each hit (default 3)"},"documents":{"type":"boolean","description":"also search document sub-scopes (default false)"}},"required":["scope","query"]}}"#,
+r#"{"name":"read_doc","description":"Read a scope's stored facts IN ORDER, one page at a time — the full-document path. Use for whole-document requests (summarize, outline, review) that fragment recall cannot serve: page through with from/limit until from reaches total. Never summarize a stored document from recall hits alone.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"the scope to read (e.g. a document sub-scope like knowledge__doc-mybook)"},"from":{"type":"integer","description":"start index (default 0)"},"limit":{"type":"integer","description":"facts per page (default 100, max 500)"}},"required":["scope"]}}"#,
 r#"{"name":"recall_value","description":"Recall a single best-matching value for a direct question (e.g. 'what is my plan?'). Returns the isolated value or '(no memory)'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"query":{"type":"string","description":"a direct question"}},"required":["scope","query"]}}"#,
 r#"{"name":"recall_chain","description":"Answer a multi-hop question in ONE call by walking a chain of relations server-side (no extra round-trips, any depth). Give the starting entity and the ordered relations to follow. Example: start 'Aurora', path ['owner','manager','timezone'] returns the timezone of the manager of the owner of Aurora.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"start":{"type":"string","description":"the entity to start from, e.g. 'Aurora' or 'Marisol'"},"path":{"type":"array","items":{"type":"string"},"description":"ordered relations to follow, e.g. ['owner','manager','timezone']"}},"required":["scope","start","path"]}}"#,
 r#"{"name":"remember","description":"Store durable facts the user stated, in plain language ('my plan is pro'). Call this AFTER a turn for anything worth remembering. Accepts one fact via 'text' or many via 'facts'.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","description":"memory scope id"},"text":{"type":"string","description":"a single fact to store"},"facts":{"type":"array","items":{"type":"string"},"description":"several facts to store at once"}},"required":["scope"]}}"#,
@@ -301,7 +303,9 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
             else {
                 let k = json_num(body, "k").unwrap_or(8).clamp(1, 50) as usize;
                 let hops = json_num(body, "hops").unwrap_or(2).clamp(1, 4) as usize;
-                let hits = apply(db, NeuronOp::RecallAssoc { scope: scope.clone(), query: q.clone(), k, hops }).assoc();
+                // documents:true widens over <scope>__* document sub-scopes (same convention as recall)
+                let across = body.contains("\"documents\":true") || body.contains("\"documents\": true");
+                let hits = apply(db, NeuronOp::RecallAssoc { scope: scope.clone(), query: q.clone(), k, hops, across }).assoc();
                 let n = hits.len();
                 if hits.is_empty() {
                     (tool_text(id, &format!("No memories found for \"{}\".", q)), 0)
@@ -310,6 +314,45 @@ fn tool_call(db: &NeuronDB, id: &str, body: &str) -> String {
                     for h in &hits { s.push_str(&format!("{} {}\n", if h.seed { "*" } else { "-" }, h.fact)); }
                     (tool_text(id, s.trim_end()), n)
                 }
+            }
+        }
+        "recall_context" => {
+            let q = json_field(body, "query").unwrap_or_default();
+            if q.is_empty() { (tool_err(id, "recall_context needs a query"), 0) }
+            else {
+                let k = json_num(body, "k").unwrap_or(4).clamp(1, 16) as usize;
+                let before = json_num(body, "before").unwrap_or(2).clamp(0, 16) as usize;
+                let after = json_num(body, "after").unwrap_or(3).clamp(0, 16) as usize;
+                let across = body.contains("\"documents\":true") || body.contains("\"documents\": true");
+                let passages = apply(db, NeuronOp::RecallContext { scope: scope.clone(), query: q.clone(), k, before, after, across }).passages();
+                let n = passages.len();
+                if passages.is_empty() {
+                    (tool_text(id, &format!("No memories found for \"{}\".", q)), 0)
+                } else {
+                    let mut s = format!("passages ({}):\n", n);
+                    for p in &passages { s.push_str(&format!("-- {} [{}..{}]\n{}\n", p.scope, p.start, p.start + p.facts.len().saturating_sub(1), p.facts.join(" "))); }
+                    (tool_text(id, s.trim_end()), n)
+                }
+            }
+        }
+        "read_doc" => {
+            let from = json_num(body, "from").unwrap_or(0).max(0) as usize;
+            let limit = json_num(body, "limit").unwrap_or(100).clamp(1, 500) as usize;
+            match apply(db, NeuronOp::ReadPage { scope: scope.clone(), from, limit }) {
+                crate::op::OpResult::Page { total, from, facts } => {
+                    let n = facts.len();
+                    if total == 0 { (tool_text(id, "(scope is empty)"), 0) }
+                    else {
+                        let next = from + n;
+                        let footer = if next < total { format!("\n(page {}..{} of {} — continue with from={})", from, next.saturating_sub(1), total, next) }
+                                     else { format!("\n(end — {} fact(s) total)", total) };
+                        let mut s = String::new();
+                        for f in &facts { s.push_str(f); s.push('\n'); }
+                        s.push_str(footer.trim_start_matches('\n'));
+                        (tool_text(id, s.trim_end()), n)
+                    }
+                }
+                _ => (tool_err(id, "read failed"), 0),
             }
         }
         "note" => {
@@ -774,7 +817,7 @@ mod tests {
     fn tools_list_has_all_tools() {
         let db = NeuronDB::open(&tmp(), 500);
         let r = handle_line(&db, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").unwrap();
-        for t in ["route","recall","recall_associative","recall_value","recall_chain","remember","note","recall_var","forget","stats"] {
+        for t in ["route","recall","recall_associative","recall_context","read_doc","recall_value","recall_chain","remember","note","recall_var","forget","stats"] {
             assert!(r.contains(&format!("\"name\":\"{}\"", t)), "missing tool {}", t);
         }
     }

@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::{Neuron, Recall, Spread};
+use crate::{Neuron, Passage, Recall, Spread};
 use crate::turn::turn;
 
 const SCHEMA: &str = "\
@@ -44,7 +44,14 @@ impl crate::op::Store for NeuronDB {
     fn recall_value(&self, scope: &str, query: &str) -> Option<String> {
         self.get(scope, query).or_else(|| self.recall_many_across(scope, query, 1).into_iter().next().map(|h| h.value))
     }
-    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<crate::Spread> { self.recall_associative(scope, query, k, hops) }
+    fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize, across: bool) -> Vec<crate::Spread> {
+        if across { self.recall_assoc_across(scope, query, k, hops).into_iter().map(|(_, h)| h).collect() }
+        else { self.recall_associative(scope, query, k, hops) }
+    }
+    fn recall_context(&self, scope: &str, query: &str, k: usize, before: usize, after: usize, across: bool) -> Vec<crate::Passage> {
+        NeuronDB::recall_context(self, scope, query, k, before, after, across)
+    }
+    fn scope_page(&self, scope: &str, from: usize, limit: usize) -> (usize, Vec<String>) { self.scope_facts_page(scope, from, limit) }
     fn recall_chain(&self, scope: &str, start: &str, path: &[String]) -> (Option<String>, Vec<String>) { NeuronDB::recall_chain(self, scope, start, path) }
     fn var_set(&self, scope: &str, key: &str, value: &str) -> usize { NeuronDB::var_set(self, scope, key, value) }
     fn var_get(&self, scope: &str, key: &str) -> Option<String> { NeuronDB::var_get(self, scope, key) }
@@ -402,12 +409,12 @@ impl NeuronDB {
     #[cfg(feature = "semantic")]
     pub fn recall_semantic(&self, nid: &str, query: &str) -> Option<Recall> {
         const SEM_FALLBACK_CAP: usize = 4000;
-        let facts: Vec<(String, String)> = {
+        let (start, facts): (usize, Vec<(String, String)>) = {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
             let start = eps.len().saturating_sub(SEM_FALLBACK_CAP);   // most-recent window only
-            eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect()
+            (start, eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect())
         };
         if facts.is_empty() { return None; }
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
@@ -416,7 +423,8 @@ impl NeuronDB {
         match ranked.first() {
             Some(&(i, score)) if score >= self.sem_threshold => {
                 let (fact, value) = facts[i].clone();
-                Some(Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false })
+                // i indexes the recent WINDOW; start+i is the true episode index in the scope
+                Some(Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: start + i })
             }
             _ => None,
         }
@@ -429,12 +437,12 @@ impl NeuronDB {
         // BOUNDED like recall_semantic: rank the most-recent window so blended recall is O(window), not
         // O(scope), as a chat's memory grows into the millions (and the embedding cache stays bounded).
         const BLENDED_CAP: usize = 4000;
-        let facts: Vec<(String, String)> = {
+        let (start, facts): (usize, Vec<(String, String)>) = {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
             let start = eps.len().saturating_sub(BLENDED_CAP);
-            eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect()
+            (start, eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect())
         };
         if facts.is_empty() { return Vec::new(); }
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
@@ -464,7 +472,8 @@ impl NeuronDB {
         scored.truncate(k);
         scored.into_iter().map(|(score, i)| {
             let (fact, value) = facts[i].clone();
-            Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false }
+            // i indexes the recent WINDOW; start+i is the true episode index in the scope
+            Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: start + i }
         }).collect()
     }
     /// Recall across a base scope AND its document sub-scopes (`base`, `base__doc1`, …), merging the
@@ -494,6 +503,76 @@ impl NeuronDB {
         let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get_mut(nid).unwrap().n.recall_spreading(query, k, hops)
+    }
+    /// Spreading recall across a base scope AND its document sub-scopes (`base`, `base__doc1`, …),
+    /// mirroring recall_many_across's scope filter (typed `::` sub-scopes and other tenants excluded).
+    /// Each scope spreads independently with the same k, then the hits merge by activation. Returns
+    /// (scope, hit) pairs so a caller can expand a hit in ITS OWN scope (Spread.idx is scope-local).
+    /// This is what lets "what does the hive know about X" reach a document absorbed under its own
+    /// sub-scope without the caller knowing document names.
+    pub fn recall_assoc_across(&self, base: &str, query: &str, k: usize, hops: usize) -> Vec<(String, Spread)> {
+        let scopes: Vec<String> = self.neurons().into_iter()
+            .filter(|id| id == base || (id.starts_with(base) && id[base.len()..].starts_with("__")))
+            .collect();
+        let mut all: Vec<(String, Spread)> = Vec::new();
+        for s in &scopes {
+            for h in self.recall_associative(s, query, k, hops) { all.push((s.clone(), h)); }
+        }
+        // seeds (direct query matches) outrank pure associates regardless of which scope is denser —
+        // activation magnitudes aren't comparable across scopes of different sizes, seed-ness is.
+        all.sort_by(|a, b| b.1.seed.cmp(&a.1.seed)
+            .then(b.1.act.partial_cmp(&a.1.act).unwrap_or(std::cmp::Ordering::Equal)));
+        all.truncate(k);
+        all
+    }
+    /// The insertion-order window around episode `idx` of a scope (see Neuron::neighbors).
+    pub fn neighbors(&self, nid: &str, idx: usize, before: usize, after: usize) -> (usize, Vec<String>) {
+        let mut g = self.shard(nid); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        inner.cache.get(nid).unwrap().n.neighbors(idx, before, after)
+    }
+    /// STITCHED recall: top-k hits, each expanded into its surrounding episodes in insertion
+    /// (= document) order — coherent passages instead of isolated sentences. `across` widens the
+    /// search over `base__*` document sub-scopes (same filter as recall_many_across), and each hit
+    /// expands in the scope it came from. Overlapping windows in the same scope dedupe: a hit that
+    /// falls inside an already-emitted passage is skipped rather than re-quoted.
+    pub fn recall_context(&self, base: &str, query: &str, k: usize, before: usize, after: usize, across: bool) -> Vec<Passage> {
+        let mut tagged: Vec<(String, Recall)> = if across {
+            let scopes: Vec<String> = self.neurons().into_iter()
+                .filter(|id| id == base || (id.starts_with(base) && id[base.len()..].starts_with("__")))
+                .collect();
+            let mut all: Vec<(String, Recall)> = Vec::new();
+            for s in &scopes {
+                for h in self.recall_many(s, query, k) { all.push((s.clone(), h)); }
+            }
+            all
+        } else {
+            self.recall_many(base, query, k).into_iter().map(|h| (base.to_string(), h)).collect()
+        };
+        tagged.sort_by(|a, b| b.1.exact.cmp(&a.1.exact)
+            .then(b.1.overlap.cmp(&a.1.overlap))
+            .then(b.1.coverage.partial_cmp(&a.1.coverage).unwrap_or(std::cmp::Ordering::Equal)));
+        tagged.truncate(k);
+        let mut out: Vec<Passage> = Vec::new();
+        for (scope, hit) in tagged {
+            if out.iter().any(|p| p.scope == scope && hit.idx >= p.start && hit.idx < p.start + p.facts.len()) { continue; }
+            let (start, facts) = self.neighbors(&scope, hit.idx, before, after);
+            if facts.is_empty() { continue; }
+            out.push(Passage { scope, start, hit_pos: hit.idx - start, facts });
+        }
+        out
+    }
+    /// One page of a scope's facts in insertion (= document) order: (total_facts, facts[from..from+limit]).
+    /// The full-document read path — a summary walks a document scope page by page instead of asking
+    /// top-k recall to reconstruct a whole book from fragments. Past-the-end `from` returns an empty page.
+    pub fn scope_facts_page(&self, nid: &str, from: usize, limit: usize) -> (usize, Vec<String>) {
+        let mut g = self.shard(nid); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        let eps = &inner.cache.get(nid).unwrap().n.episodes;
+        let total = eps.len();
+        if from >= total || limit == 0 { return (total, Vec::new()); }
+        let end = (from + limit).min(total);
+        (total, eps[from..end].iter().map(|e| e.t.clone()).collect())
     }
     /// Upsert a named variable: anchored removal of any prior "{key} is …" (so distinct keys never
     /// clobber each other — "region" must not delete "deployRegion"), then store "{key} is {value}".
