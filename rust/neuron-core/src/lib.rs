@@ -525,8 +525,18 @@ impl Neuron {
         let mut act: HashMap<usize, f64> = HashMap::new();
         let mut seed: HashSet<usize> = HashSet::new();
         let mut frontier: Vec<usize> = Vec::new();
+        // df-aware seed gating, mirroring candidates(): a cue stem present in >25% of the scope is a
+        // hub — seeding from it lights (nearly) the whole scope at uniform activation, and the final
+        // ranking degenerates into a query-INDEPENDENT connectivity ranking (every absorbed-document
+        // fact carries the same "[label] " prefix, so any query naming the document used to return
+        // the same hits regardless of its discriminative words). When the cue also has a rare stem,
+        // seed only from the rare ones; a query whose every stem is a hub falls back to seeding all.
+        // The floor (64) matches candidates(), so small scopes stay byte-identical.
+        let seed_dfcap = ((n as f64) * 0.25).max(64.0) as usize;
+        let has_rare = cue.iter().any(|s| idx.get(s.as_str()).is_some_and(|v| v.len() <= seed_dfcap));
         for s in &cue {
             if let Some(v) = idx.get(s.as_str()) {
+                if has_rare && v.len() > seed_dfcap { continue; }   // hub stem: a rarer cue stem carries the query
                 for &j in v { if seed.insert(j) { frontier.push(j); } *act.entry(j).or_insert(0.0) += 1.0; }
             }
         }

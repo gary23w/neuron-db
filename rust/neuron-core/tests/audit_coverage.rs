@@ -43,6 +43,39 @@ fn recall_spreading_base_seeds_and_bounds() {
 }
 
 #[test]
+fn recall_spreading_hub_prefix_does_not_drown_rare_cue() {
+    // The absorbed-document shape: EVERY fact carries the same "[label]" provenance prefix, so the
+    // label's stems are hubs (df == scope size), while the facts cross-link through a mid-df shared
+    // vocabulary. Pre-fix, a query naming the document seeded the whole scope uniformly off the hub
+    // stems and the ranking collapsed into query-independent graph centrality — the same hits came
+    // back for every query, and a rare discriminative cue word ("forged cheque") was drowned.
+    let pool = [
+        "harbor", "lantern", "meadow", "orchard", "chapel", "willow", "granite", "saddle", "copper",
+        "marsh", "cedar", "anvil", "quarry", "heather", "brook", "gable", "thicket", "furrow",
+        "hollow", "spire", "moss", "shale", "bramble", "wharf", "kiln", "beacon", "fern", "crag",
+        "sluice", "tarn",
+    ];
+    let mut n = Neuron::new(10_000);
+    for i in 0..300usize {
+        let (a, b, c) = (pool[i % 30], pool[(i + 7) % 30], pool[(i + 13) % 30]);
+        n.observe(&format!("[Green Overcoat] the {} beside the {} near the {} stayed quiet.", a, b, c));
+    }
+    n.observe("[Green Overcoat] Professor Higginson forged the cheque under duress.");
+    // rare cue stems (forged/cheque, df=1) must carry the seed past the hub title stems (df=301)
+    let r = n.recall_spreading("Green Overcoat who forged the cheque", 5, 1);
+    assert!(
+        r.first().is_some_and(|s| s.fact.contains("forged the cheque") && s.seed),
+        "the rare-stem fact must rank first as a direct seed: {:?}",
+        r.iter().map(|s| &s.fact).collect::<Vec<_>>()
+    );
+    // a genuinely broad query (every cue stem is a hub) still falls back to seeding everything
+    assert!(
+        !n.recall_spreading("Green Overcoat", 5, 1).is_empty(),
+        "an all-hub query keeps the old seed-everything behavior"
+    );
+}
+
+#[test]
 fn json_escape_handles_control_and_quotes() {
     assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
     assert_eq!(json_escape("tab\tnewline\n"), "tab\\tnewline\\n");
