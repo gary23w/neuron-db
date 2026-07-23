@@ -1,0 +1,25 @@
+[package]
+name = "neuron-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI staticlib over neuron-core: one entry point that mirrors the `neuron` CLI's stdout, so a native host can LINK the memory engine in instead of spawning it."
+license = "MIT"
+
+[lib]
+name = "neuron_ffi"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# The release feature set the shipped CLI uses. `cortex` rides in via neuron-core's defaults, so a
+# linked host gets byte-identical behaviour to `neuron.exe` built the same way.
+neuron-core = { path = "../neuron-core", features = ["sqlite", "secure", "server", "trust"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+# NOTE: deliberately NOT `panic = "abort"`. Two reasons:
+#   1. the FFI boundary catch_unwind's every call, so a panic inside the engine returns an error
+#      string to the host instead of aborting the host process;
+#   2. it does not remove the _Unwind_* imports anyway — precompiled Rust std still references the
+#      gcc personality routine, so the host has to link libunwind regardless.
