@@ -157,6 +157,42 @@ fn quantum_router_fans_out_to_idle_shard() {
 }
 
 #[test]
+fn teleport_cascade_relays_until_settled() {
+    let q = mem();
+    let secret = "the courier token is zx9000";
+    q.entangle("relay0", secret, "relay1", "the courier token is blank1", "copy", 1);
+    for i in 1..12 {
+        q.entangle(&format!("relay{}", i), secret, &format!("relay{}", i + 1), &format!("the courier token is blank{}", i + 1), "copy", 1);
+        q.inner.forget_exact(&format!("relay{}", i), secret);   // only the cascade may place it
+    }
+    let trail = q.teleport_cascade("relay0", "what is the courier token?");
+    assert_eq!(trail.len(), 12, "the cascade settles at the chain's end, not at any cap");
+    assert!(q.inner.has_fact("relay12", secret), "the payload reached the final hop");
+    // and it truly settled: there is nothing left to follow
+    assert!(q.teleport("relay12", "what is the courier token?").is_none());
+}
+
+#[test]
+fn teleport_cascade_drains_cycles_by_conservation() {
+    let q = mem();
+    let x = "the ring token is 9110";
+    // a two-scope CYCLE: a->b, then a back-edge b->a written directly (the fact it names only
+    // comes into being when the first hop lands). One e-bit per direction.
+    q.entangle("ring-a", x, "ring-b", "the ring token is blank", "copy", 1);
+    q.inner.write_entanglement(neuron_core::quantum::EntanglementRecord {
+        id: 0, source_scope: "ring-b".into(), source_text: x.into(),
+        dest_scope: "ring-a".into(), dest_text: x.into(),
+        classical: "copy".into(), ebits: 1, created_at: 0,
+    });
+    let trail = q.teleport_cascade("ring-a", "what is the ring token?");
+    // no infinite loop around the ring: 2 e-bits total -> exactly 2 hops, then it settles
+    assert_eq!(trail.len(), 2, "conservation drains the cycle: {:?}",
+        trail.iter().map(|t| t.dest_scope.clone()).collect::<Vec<_>>());
+    assert_eq!(trail[0].dest_scope, "ring-b");
+    assert_eq!(trail[1].dest_scope, "ring-a");
+}
+
+#[test]
 fn entangled_scopes_are_independent_after_disentangle() {
     let q = mem();
     let id = q.entangle("a", "the gate code is 4491", "b", "the gate code is ----", "copy", 5);

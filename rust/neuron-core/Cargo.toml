@@ -170,3 +170,9 @@ required-features = ["sqlite"]
 [[example]]
 name = "coder_bench"
 required-features = ["sqlite", "semantic"]
+
+# quantum tier vs classical equivalents: read overhead, teleport vs 3-op move, write_once vs
+# get+forget, superposition cost, entangle/link-lookup throughput, unbounded relay cascade.
+[[example]]
+name = "quantum_bench"
+required-features = ["quantum-db"]

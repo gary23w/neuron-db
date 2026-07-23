@@ -108,3 +108,18 @@ pub fn teleport<S: QuantumBack + HasEntanglements + ?Sized>(s: &S, scope: &str, 
         ebits_remaining: remaining,
     })
 }
+
+/// Relay teleportation: keep teleporting along the entanglement graph until it SETTLES — the
+/// arriving scope has no live source-side link the cue still measures. There is no hop cap, by
+/// design (hops are unbounded everywhere): every hop consumes exactly one e-bit from a finite
+/// budget, so even a CYCLIC entanglement graph drains and the cascade terminates — conservation
+/// ends the relay, not a limit. Returns the full hop trail (empty when nothing teleported).
+pub fn teleport_cascade<S: QuantumBack + HasEntanglements + ?Sized>(s: &S, scope: &str, cue: &str) -> Vec<TeleportResult> {
+    let mut trail = Vec::new();
+    let mut here = scope.to_string();
+    while let Some(t) = teleport(s, &here, cue) {
+        here = t.dest_scope.clone();
+        trail.push(t);
+    }
+    trail
+}

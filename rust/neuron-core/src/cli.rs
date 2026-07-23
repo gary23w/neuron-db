@@ -91,10 +91,11 @@ fn main() {
                 None => if json { println!("{{\"fact\":null}}"); } else { eprintln!("(no match)"); },
             }
             if h.is_none() { std::process::exit(3); } }
-        // spreading-activation recall: seed on the cue, then fire across synapses for N hops — surfaces the
-        // CHAINED facts a single-hop recall misses (the bridge facts a multi-hop question needs).
+        // spreading-activation recall: seed on the cue, then fire across synapses until the spread
+        // SETTLES (frontier-drain convergence — hops are unbounded by default; NEURON_HOPS bounds
+        // them explicitly). Surfaces the CHAINED facts a single-hop recall misses.
         "assoc" => { need_scope("assoc"); let d = NeuronDB::open(&db, max);
-            let hops: usize = std::env::var("NEURON_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+            let hops: usize = std::env::var("NEURON_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
             let k: usize = std::env::var("NEURON_K").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
             // --across is a VERB-level flag (the global parser passes it through into pos): widen the
             // spread over <scope>__* document sub-scopes. Stripped here so it never joins the query.
@@ -229,16 +230,35 @@ fn main() {
             else { println!("entangled #{}: {}|{} <-> {}|{}  classical={} ebits={}", id, p[0], p[1], p[2], p[3], classical, ebits.max(1)); } }
         // TELEPORT: recall the source by cue, spend one e-bit, reconstruct on the entangled dest
         // per the classical instruction. The source fact survives; the association moved.
+        // --cascade relays until the graph SETTLES (no hop cap — every hop spends one e-bit from
+        // a finite budget, so conservation terminates the relay, even around cycles).
         #[cfg(feature = "quantum-db")]
         "teleport" => { need_scope("teleport"); let d = NeuronDB::open(&db, max);
-            let cue = rest();
-            if cue.trim().is_empty() { eprintln!("usage: neuron --db <db> teleport <scope> <cue…>"); std::process::exit(2); }
-            match neuron_core::quantum::teleport(&d, &scope, &cue) {
-                Some(t) => {
-                    if json { println!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}", esc(&t.value), esc(&t.source_scope), esc(&t.dest_scope), esc(&t.classical_used), t.ebits_remaining); }
-                    else { println!("teleported \"{}\" via \"{}\" to {} ({} ebit(s) remaining)", t.value, t.classical_used, t.dest_scope, t.ebits_remaining); }
+            let tail = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            let cascade = tail.iter().any(|a| a == "--cascade");
+            let cue: String = tail.iter().filter(|a| a.as_str() != "--cascade").cloned().collect::<Vec<_>>().join(" ");
+            if cue.trim().is_empty() { eprintln!("usage: neuron --db <db> teleport <scope> <cue…> [--cascade]"); std::process::exit(2); }
+            if cascade {
+                let trail = neuron_core::quantum::teleport_cascade(&d, &scope, &cue);
+                if json {
+                    let hops: Vec<String> = trail.iter().map(|t| format!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}", esc(&t.value), esc(&t.source_scope), esc(&t.dest_scope), esc(&t.classical_used), t.ebits_remaining)).collect();
+                    println!("{{\"depth\":{},\"hops\":[{}]}}", trail.len(), hops.join(","));
+                } else {
+                    for t in &trail { println!("hop: \"{}\" via \"{}\" {} -> {} ({} ebit(s) left)", t.value, t.classical_used, t.source_scope, t.dest_scope, t.ebits_remaining); }
+                    match trail.last() {
+                        Some(t) => println!("cascade settled at {} after {} hop(s)", t.dest_scope, trail.len()),
+                        None => eprintln!("(no entangled match — nothing teleported)"),
+                    }
                 }
-                None => { if json { println!("{{\"value\":null}}"); } else { eprintln!("(no entangled match — nothing teleported)"); } std::process::exit(3); }
+                if trail.is_empty() { std::process::exit(3); }
+            } else {
+                match neuron_core::quantum::teleport(&d, &scope, &cue) {
+                    Some(t) => {
+                        if json { println!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}", esc(&t.value), esc(&t.source_scope), esc(&t.dest_scope), esc(&t.classical_used), t.ebits_remaining); }
+                        else { println!("teleported \"{}\" via \"{}\" to {} ({} ebit(s) remaining)", t.value, t.classical_used, t.dest_scope, t.ebits_remaining); }
+                    }
+                    None => { if json { println!("{{\"value\":null}}"); } else { eprintln!("(no entangled match — nothing teleported)"); } std::process::exit(3); }
+                }
             } }
         #[cfg(feature = "quantum-db")]
         "disentangle" => {
@@ -530,7 +550,7 @@ fn shell(db: &str, max: usize, start_scope: &str, force: bool) {
             }
             "assoc" => {
                 if arg.is_empty() { eprintln!("assoc <query>"); continue; }
-                let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: arg.to_string(), k: 8, hops: 2, across: false }).assoc();
+                let hits = apply(&d, NeuronOp::RecallAssoc { scope: scope.clone(), query: arg.to_string(), k: 8, hops: 0, across: false }).assoc();
                 if hits.is_empty() { println!("(nothing connected)"); } else { for h in hits { println!("{} {}", if h.seed { "*" } else { "-" }, h.fact); } }
             }
             "chain" => {
@@ -978,7 +998,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
   assoc   <scope> <query...> [--across]   spreading-activation recall: the CHAINED facts a multi-hop question needs\n\
-                                 (env NEURON_HOPS=3, NEURON_K=10; --across widens over <scope>__* document sub-scopes)\n\
+                                 (spreads until it settles; NEURON_HOPS bounds it, NEURON_K=10; --across widens over <scope>__* sub-scopes)\n\
   context <scope> <query...> [--k N] [--before N] [--after N] [--across]\n\
                                  STITCHED recall: each hit expanded into its surrounding sentences, in document order\n\
   read    <scope> [--from N] [--limit N]   one insertion-order page of a scope — the full-document/summary path\n\
@@ -1015,7 +1035,8 @@ Example: echo 'my plan is pro' | neuron --db demo.db observe user -");
     #[cfg(feature = "quantum-db")]
     eprintln!("\nQuantum tier (experimental — a structural analogy, not hardware):\n\
   entangle <scope_a> <fact_a> <scope_b> <fact_b> [--classical copy|swap|invert|<text>] [--ebits N]\n\
-  teleport <scope> <cue...>       spend an e-bit: recall the source, reconstruct on the entangled dest\n\
+  teleport <scope> <cue...> [--cascade]   spend an e-bit: recall the source, reconstruct on the entangled dest\n\
+                                  (--cascade relays until the graph settles — no hop cap; e-bit conservation terminates it)\n\
   disentangle <id>                delete a link (ids via `entanglements`)\n\
   entanglements <scope>           list links touching a scope\n\
   write_once <scope> <text...> [--reads N]        burn-after-reading: the read that spends the last budget deletes the fact\n\

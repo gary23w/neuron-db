@@ -20,8 +20,9 @@ pub trait Store {
     fn recall_block(&self, scope: &str, query: &str, k: usize, semantic: bool, across: bool) -> Vec<Recall>;
     /// A single value for a direct question; the backend owns any cross-scope fallback.
     fn recall_value(&self, scope: &str, query: &str) -> Option<String>;
-    /// Spreading recall; `across` widens over `base__*` document sub-scopes (backends without
-    /// sub-scope storage may treat it as scope-only).
+    /// Spreading recall; `hops == 0` = spread until it settles (frontier-drain convergence — the
+    /// default posture), an explicit N is an upper bound. `across` widens over `base__*` document
+    /// sub-scopes (backends without sub-scope storage may treat it as scope-only).
     fn recall_assoc(&self, scope: &str, query: &str, k: usize, hops: usize, across: bool) -> Vec<Spread>;
     /// Stitched recall: top-k hits each expanded into surrounding episodes in insertion order.
     fn recall_context(&self, scope: &str, query: &str, k: usize, before: usize, after: usize, across: bool) -> Vec<Passage>;
@@ -115,7 +116,9 @@ pub fn apply<S: Store + ?Sized>(db: &S, op: NeuronOp) -> OpResult {
         NeuronOp::Recall { scope, query, k, semantic, across } => OpResult::Hits(db.recall_block(&scope, &query, k.clamp(1, 50), semantic, across)),
         NeuronOp::RecallOne { scope, query } => OpResult::Hit(db.recall_one(&scope, &query)),
         NeuronOp::RecallValue { scope, query } => OpResult::Value(db.recall_value(&scope, &query)),
-        NeuronOp::RecallAssoc { scope, query, k, hops, across } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 64), hops.clamp(1, 32), across)),
+        // hops passes through UNCLAMPED: 0 = spread until it settles (the engine's frontier-drain
+        // convergence + activation floor guarantee termination, so no budget cap is needed).
+        NeuronOp::RecallAssoc { scope, query, k, hops, across } => OpResult::Assoc(db.recall_assoc(&scope, &query, k.clamp(1, 64), hops, across)),
         // stitched windows multiply output size by ~(before+after+1), so k clamps tighter than assoc's
         NeuronOp::RecallContext { scope, query, k, before, after, across } => OpResult::Passages(db.recall_context(&scope, &query, k.clamp(1, 16), before.min(16), after.min(16), across)),
         NeuronOp::ReadPage { scope, from, limit } => { let (total, facts) = db.scope_page(&scope, from, limit.clamp(1, 500)); OpResult::Page { total, from, facts } }

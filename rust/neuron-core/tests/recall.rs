@@ -50,3 +50,26 @@ fn semantic_aliases_bridge_paraphrase() {
     assert_eq!(n.recall("what subscription tier do i have?").unwrap().value, "pro");
     assert_eq!(n.recall("who do i report to?").unwrap().value, "Dana");
 }
+
+// hops are UNBOUNDED by default: hops = 0 spreads until the frontier drains (convergence),
+// so a long associative chain is fully traversable with no cap in the way — while an explicit
+// small bound still binds for callers that want a shallow read.
+#[test] fn assoc_unbounded_spreads_until_settled(){ let mut n=Neuron::new(10_000);
+    let chain = [
+        "the probe kestrel7 feeds datastream alpha9",
+        "datastream alpha9 lands in bucket rho3",
+        "bucket rho3 replicates to vault sigma5",
+        "vault sigma5 anchors ledger theta2",
+        "ledger theta2 reconciles against index omega8",
+        "index omega8 backs report zeta4",
+        "report zeta4 reaches director halden",
+    ];
+    for f in chain { n.observe(f); }
+    // a 1-hop bound cannot reach the chain's end
+    let shallow = n.recall_spreading("what about probe kestrel7?", 20, 1);
+    assert!(!shallow.iter().any(|s| s.fact.contains("halden")), "1 hop must not reach the end");
+    // hops = 0: spread until it settles — the far end lights up
+    let settled = n.recall_spreading("what about probe kestrel7?", 20, 0);
+    assert!(settled.iter().any(|s| s.fact.contains("halden")),
+        "unbounded spread must reach the chain's end: {:?}",
+        settled.iter().map(|s| s.fact.clone()).collect::<Vec<_>>()); }

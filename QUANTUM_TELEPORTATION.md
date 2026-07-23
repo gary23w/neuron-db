@@ -155,6 +155,11 @@ let r = q.entangled_recall("user:42", "what is the gate code?");
 let t = q.teleport("user:42", "what is the gate code?");
 // t.value = "4491", t.dest_scope = "user:99", t.ebits_remaining = 2
 
+// the relay: teleport along the graph until it SETTLES. No hop cap, by design — every hop
+// consumes one e-bit from a finite budget, so even a cyclic graph drains and the cascade
+// terminates. Conservation ends the relay, not a limit.
+let trail = q.teleport_cascade("user:42", "what is the gate code?");
+
 q.disentangle(id);
 
 // no-cloning: burns after `max_reads` quantum-aware reads
@@ -200,6 +205,9 @@ neuron --db app.db entangle user:42 "the gate code is 4491" \
 neuron --db app.db teleport user:42 "what is the gate code?"
 # → teleported "4491" via "copy" to user:99 (2 ebit(s) remaining)
 
+# Relay until the entanglement graph settles (no hop cap — e-bit conservation terminates)
+neuron --db app.db teleport user:42 "what is the gate code?" --cascade
+
 neuron --db app.db entanglements user:42      # list links (ids, endpoints, ebits)
 neuron --db app.db disentangle 1
 
@@ -228,7 +236,8 @@ Same gate (`server` + `quantum-db`); `/get` and `/recall` are quantum-aware too:
 ```sh
 POST /v1/{scope}/entangle      {"fact_a": "...", "fact_b": "...",
                                 "scope_b": "user:99", "classical": "copy", "ebits": 3}
-POST /v1/{scope}/teleport      {"cue": "what is the gate code?"}
+POST /v1/{scope}/teleport      {"cue": "what is the gate code?"}           # one hop
+POST /v1/{scope}/teleport      {"cue": "...", "cascade": true}            # relay until settled
 POST /v1/{scope}/write_once    {"text": "the launch code is gamma-7", "reads": 1}
 POST /v1/{scope}/superposition {"text": "mood", "alternatives": ["happy","tired","curious"]}
 POST /v1/{scope}/disentangle   {"id": 1}
@@ -263,10 +272,16 @@ tests/quantum_tier.rs            (cargo test --features quantum; durable half ne
   ✓ superposition_removes_decayed_alternatives    (prune → lone survivor resolves to a real fact)
   ✓ quantum_router_fans_out_to_idle_shard
   ✓ entangled_scopes_are_independent_after_disentangle
+  ✓ teleport_cascade_relays_until_settled         (12-hop chain, no cap in the way)
+  ✓ teleport_cascade_drains_cycles_by_conservation (a cyclic graph terminates by e-bit budget)
   ✓ durable_quantum_state_survives_reopen         (quantum-db)
   ✓ durable_noclone_burn_is_durable_across_reopen (quantum-db)
   ✓ quantum_routes_through_http_surface           (server.rs, quantum-db + server)
 ```
+
+Benchmarks against the normal tier (engine, CLI, and the nl-veil pipeline) live in
+**[QUANTUM_BENCHMARKS.md](QUANTUM_BENCHMARKS.md)**: parity on base reads, 6.5–6.6× on the
+workflows the tier replaces, ~80× link lookups after the endpoint indexes.
 
 ---
 
@@ -295,6 +310,85 @@ opt in.
 
 ---
 
+## How a teleport actually executes
+
+The whole protocol is eight deterministic steps over two tables — worth seeing concretely,
+because every "spooky" behavior falls out of these mechanics:
+
+1. **Measure.** `recall(scope, cue)` runs the ordinary associative recall — stems, df-gated
+   candidates, the ranking key. The best fact is the measured qubit. Nothing quantum yet.
+2. **Correlate.** The hit's exact text is looked up in the `entanglements` table (two indexed
+   probes, one per endpoint direction, ~6.5 µs at 10k links). Fact identity IS the text, so
+   the link follows the fact through rewrites.
+3. **Gate.** Only a link whose SOURCE side is the hit, with `ebits > 0`, can fire. A dest-side
+   hit correlates (`entangled_recall`) but cannot teleport — the protocol is directional.
+4. **Collapse.** One `UPDATE ... SET ebits = ebits - 1`. At zero the row is deleted — the pair
+   is disentangled, permanently. This decrement is what makes the op consuming and why the
+   budget is a real resource.
+5. **Classical channel.** The link's plain-text instruction is read. This is the only
+   information that travels — exactly like the real protocol, where the Bell result must move
+   classically. `copy` / `swap` / `invert` / anything-else-verbatim.
+6. **Reconstruct.** The dest fact's text is rewritten per the instruction (first exact match
+   removed, re-encoded text appended, learned strength carried). The dest scope now ANSWERS
+   like the source did — the association moved; no fact was copied and left behind un-tracked.
+7. **Rebind.** Surviving links pointing at the dest's old text are re-pointed at the new text.
+   This is the step that makes CHAINS work: a link pre-written against the text a teleport
+   will create becomes live the moment the hop lands.
+8. **Report.** Value, endpoints, instruction used, e-bits remaining.
+
+`teleport_cascade` just loops step 1–8 from each arriving scope until step 3 finds nothing —
+and because step 4 spends one unit of a finite budget per hop, the cascade provably terminates
+even on a cyclic graph. Hops are unbounded by policy everywhere in the store (spreading recall
+runs to frontier-drain convergence the same way); the quantum tier's bound is conservation.
+
+## How far can it be pushed
+
+- **Relay depth: unbounded.** The benchmark drives a 64-hop chain to completion in one
+  cascade call (~160 µs/hop); the chain length is data, not a limit. A hop is ~3 SQL
+  statements + one scope snapshot, so thousand-hop relays are perfectly practical.
+- **Fan-out: one source, many links.** A fact can be the source of N links to N scopes; each
+  teleport call consumes the lowest-id live link first, so repeated calls drain the fan-out
+  one dest at a time (deliberate: one measurement, one collapse).
+- **Link scale.** 10k links cost ~1.8 MB and 6.5 µs per lookup (indexed). The table is global
+  to the file; a million links is ~180 MB and still indexed — but the tier is built for a
+  handful of deliberate links, not link-per-fact.
+- **E-bit budgets** are `u32`: a link can support ~4 billion teleports before disentangling.
+  Combined with `write_once(reads=N)`, both resources are arbitrary-precision knobs on
+  "how many times may this association move / be seen".
+- **Superposition width**: alternatives serialize as one kv row; dozens of candidates are
+  fine. Collapse dynamics (×1.1 winner, ×0.5 losers, prune < 0.1) resolve a W-wide
+  superposition in ~⌈log₂(W-ish)⌉ + 3 measurements — fast, and the resolution writes a real
+  fact, so the ambiguity has a definite end state.
+- **Router sharding**: `QuantumRouter` places every reconstruction on the least-loaded shard,
+  so teleport-heavy traffic self-balances; cascade across shards works the same way.
+- **Not yet pushable**: cross-process entanglement (one file, one budget), compound-state
+  teleports, partial measurement. See Future directions.
+
+## More real-world use cases
+
+Beyond the original table (burn-after-reading, split knowledge, load-balanced recall,
+deferred ambiguity, atomic moves):
+
+- **One-time invite/recovery codes** — `write_once(reads=1)`: the code self-destructs on
+  redemption; no cleanup job, no TTL clock, no forgotten-forget bug.
+- **Tamper canaries** — plant a `write_once` fact no legitimate path reads. If
+  `reads_remaining` ever comes back None, something read it: the burn IS the alarm.
+- **Agent-to-agent dead drops** (nl-veil minds) — entangle a placeholder in the receiving
+  mind's scope; the sender teleports when ready; the payload arrives atomically, the e-bit
+  ledger says exactly how many handoffs remain, and `entanglements <scope>` audits every
+  standing channel.
+- **Staged rollouts of a changing value** — entangle a config fact to N consumer scopes with
+  `ebits: 1` each; teleport one at a time (or cascade a chain) to propagate a new value
+  scope-by-scope with a built-in count of how many consumers are still on the old one.
+- **Escrow / two-phase reveal** — the dest holds a placeholder until the counterparty's
+  action triggers the teleport; before that, the dest scope literally does not contain the
+  answer (unlike a hidden-but-present fact).
+- **Multi-armed ambiguity resolution** — a superposition over candidate hypotheses, measured
+  on use: the Zeno boost turns "the answer we keep acting on" into the resolved fact — a
+  tiny bandit that converges to a durable memory.
+- **Session state that must not outlive N reads** — bearer handoffs, one-shot OAuth-style
+  exchanges, "show the hint at most 3 times" UX counters.
+
 ## Limitations
 
 - **No actual quantum hardware** — entirely classical; the name is an analogy.
@@ -305,6 +399,10 @@ opt in.
   verbs compiled under `quantum-db`, or `recall_once`/`teleport` in Rust. A
   transport built without the feature (or the MCP/wasm surfaces) reads the same
   facts without consuming anything.
+- **The dormant fast-path hint is per-process** — a long-lived handle tracks its
+  own quantum writes; a SECOND process writing quantum state into the same file
+  is seen by fresh handles (nl-veil's fork-per-op model always re-probes), not
+  by an already-open one mid-flight.
 - **Measurement is deterministic** (argmax), not amplitude-weighted random — a
   deliberate deviation for testability; amplitude still decides the outcome.
 - **No distributed entanglement** — e-bits live in one database file.

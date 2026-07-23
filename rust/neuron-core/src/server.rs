@@ -245,7 +245,17 @@ fn route_quantum(db: &NeuronDB, sub: &str, nid: &str, body: &str) -> Option<(u16
         }
         "teleport" => {
             let cue = json_field(body, "cue").or_else(|| json_field(body, "query")).unwrap_or_default();
-            if cue.is_empty() { return Some((400, "{\"error\":\"need {cue}\"}".into())); }
+            if cue.is_empty() { return Some((400, "{\"error\":\"need {cue[, cascade]}\"}".into())); }
+            // cascade: relay until the graph settles (unbounded — e-bit conservation terminates).
+            // Accepts "cascade":true or "cascade":1 (this server's parser reads strings/numbers).
+            let cascade = json_num(body, "cascade").unwrap_or(0) == 1
+                || body.replace([' ', '\t'], "").contains("\"cascade\":true");
+            if cascade {
+                let trail = quantum::teleport_cascade(db, nid, &cap(&cue, 4000));
+                let hops: Vec<String> = trail.iter().map(|t| format!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}",
+                    json_escape(&t.value), json_escape(&t.source_scope), json_escape(&t.dest_scope), json_escape(&t.classical_used), t.ebits_remaining)).collect();
+                return Some((200, format!("{{\"depth\":{},\"hops\":[{}]}}", trail.len(), hops.join(","))));
+            }
             Some(match quantum::teleport(db, nid, &cap(&cue, 4000)) {
                 Some(t) => (200, format!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}",
                     json_escape(&t.value), json_escape(&t.source_scope), json_escape(&t.dest_scope), json_escape(&t.classical_used), t.ebits_remaining)),

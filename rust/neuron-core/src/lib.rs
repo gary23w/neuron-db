@@ -387,12 +387,11 @@ impl Neuron {
         let qraw: HashSet<String> = content(query);
         let pet_query = cue.contains(&stem1("pet")) || cue.contains(&stem1("animal"));
         let name_query = cue.contains("name") && cue.intersection(rel_s()).count()==0;
-        self.ensure_index();
-        let idx = self.index.as_ref().unwrap();
-        let mut cand: HashSet<usize> = HashSet::new();
-        for s in &cue { if let Some(v) = idx.get(s.as_str()) { cand.extend(v); } }
-        if pet_query { for s in pets() { if let Some(v) = idx.get(s.as_str()) { cand.extend(v); } } }
-        let mut order: Vec<usize> = cand.into_iter().collect(); order.sort();
+        // df-gated candidate gather (the shared helper recall_many already uses): when the cue has
+        // a discriminative rare stem, hub postings are skipped, so a single recall on a large
+        // scope full of shared schema words ("unit", "serial") is O(rare-df), not O(scope). The
+        // dfcap floor keeps small scopes byte-identical.
+        let order = self.candidates(&cue, pet_query);
         let mut best: Option<usize> = None;
         let mut bk: (i64,i64,i64,i64,i64,i64,i64) = (-1,-1,-1,-1,0,-100000,-1);
         for i in order {
@@ -521,9 +520,15 @@ impl Neuron {
 
     /// Spreading-activation recall over the shared-stem co-occurrence graph. Facts that match the
     /// cue are seeded, then activation flows along DISCRIMINATIVE shared stems (rare entities link
-    /// strongly; common/hub stems are ignored) for `hops`, so facts that share no words with the
-    /// query but are wired to a match still surface. This is association-based recall — it traverses
-    /// structure the raw text never stated — not keyword or cosine ranking. Pure read of the index.
+    /// strongly; common/hub stems are ignored), so facts that share no words with the query but are
+    /// wired to a match still surface. This is association-based recall — it traverses structure
+    /// the raw text never stated — not keyword or cosine ranking. Pure read of the index.
+    ///
+    /// `hops == 0` means UNTIL IT SETTLES: the spread runs to frontier-drain convergence, which is
+    /// the default posture everywhere (CLI/MCP/HTTP/wasm). Termination is structural, not budgeted:
+    /// an episode enters the frontier at most once, and the activation floor stops propagation of
+    /// decayed-out noise, so even a dense million-fact scope drains in a handful of hops. An
+    /// explicit `hops = N` is an upper bound for callers that want a shallower read.
     pub fn recall_spreading(&mut self, query: &str, k: usize, hops: usize) -> Vec<Spread> {
         let cue: HashSet<String> = stems_s(&content(query));
         if cue.is_empty() || self.episodes.is_empty() { return Vec::new(); }
@@ -552,7 +557,12 @@ impl Neuron {
         }
         if frontier.is_empty() { return Vec::new(); }
         let dfcap = ((n as f64) * 0.25).max(4.0) as usize;   // hub stems link too much to be discriminative
-        for _ in 0..hops {
+        // activation floor: a contribution this small is decayed-out noise (each hop multiplies by
+        // w <= 0.25, so branches settle geometrically) — skipping it keeps the UNBOUNDED spread
+        // cheap on huge scopes without changing any rankable result.
+        const SPREAD_EPS: f64 = 1e-6;
+        let bound = if hops == 0 { usize::MAX } else { hops };   // 0 = spread until it settles
+        for _ in 0..bound {
             let mut next: HashMap<usize, f64> = HashMap::new();
             for &i in &frontier {
                 let ai = act[&i];
@@ -562,7 +572,9 @@ impl Neuron {
                     let df = posting.len();
                     if df < 2 || df > dfcap { continue; }    // unique stem = no link; hub = skipped
                     let w = 0.5 / df as f64;                 // rarer shared entity = stronger link
-                    for &j in posting { if j != i { *next.entry(j).or_insert(0.0) += ai * w; } }
+                    let sig = ai * w;
+                    if sig < SPREAD_EPS { continue; }        // this branch of the spread has settled
+                    for &j in posting { if j != i { *next.entry(j).or_insert(0.0) += sig; } }
                 }
             }
             frontier.clear();

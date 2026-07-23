@@ -133,4 +133,12 @@ impl QuantumRouter {
             ebits_remaining: remaining,
         })
     }
+
+    /// Relay across shards until the cascade settles — no hop cap; each hop spends one e-bit
+    /// from a finite budget, so termination is conservation, not a limit.
+    pub fn teleport_cascade(&mut self, cue: &str) -> Vec<TeleportResult> {
+        let mut trail = Vec::new();
+        while let Some(t) = self.teleport(cue) { trail.push(t); }
+        trail
+    }
 }

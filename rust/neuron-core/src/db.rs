@@ -75,6 +75,10 @@ pub struct NeuronDB {
     flush_every: usize,   // append-log compaction floor: the log folds into a snapshot once it reaches ~max(snap_count, this)
     #[cfg(feature = "semantic")] sem: Mutex<crate::semantic::SemanticSpace>,
     #[cfg(feature = "semantic")] sem_threshold: f32,
+    // cached "does any READ-AFFECTING quantum state exist" hint (0 unknown / 1 present / -1 absent),
+    // so the quantum-aware read costs one atomic load — not two SQL lookups — on an ordinary store.
+    // Per-process: a fresh handle re-probes once; quantum writes in this process keep it current.
+    #[cfg(feature = "quantum-db")] q_hint: std::sync::atomic::AtomicI8,
 }
 
 impl Drop for NeuronDB {
@@ -131,6 +135,7 @@ impl NeuronDB {
             flush_every: flush_every.max(1),
             #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
             #[cfg(feature = "semantic")] sem_threshold: 0.20,
+            #[cfg(feature = "quantum-db")] q_hint: std::sync::atomic::AtomicI8::new(0),
         }
     }
 
@@ -181,7 +186,7 @@ impl NeuronDB {
     #[cfg(feature = "trust")]
     pub fn recall_assoc_trusted(&self, scope: &str, query: &str, k: usize, hops: usize) -> Vec<crate::Spread> {
         let pool = k.saturating_mul(4).clamp(k.max(1), 64);
-        let mut hits = self.recall_associative(scope, query, pool, hops.clamp(1, 32));
+        let mut hits = self.recall_associative(scope, query, pool, hops);   // 0 = until it settles
         let ledger = self.trust_ledger();
         hits.sort_by(|a, b| {
             let sa = a.act * ledger.weight(&crate::trust::class_of(&a.fact, scope)) as f64;
@@ -840,9 +845,18 @@ mod quantum_db {
 
     const Q_SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS entanglements (id INTEGER PRIMARY KEY AUTOINCREMENT, src_scope TEXT NOT NULL, src_text TEXT NOT NULL, dst_scope TEXT NOT NULL, dst_text TEXT NOT NULL, classical TEXT NOT NULL, ebits INTEGER NOT NULL, created INTEGER NOT NULL);\n\
+CREATE INDEX IF NOT EXISTS idx_ent_src ON entanglements(src_scope, src_text);\n\
+CREATE INDEX IF NOT EXISTS idx_ent_dst ON entanglements(dst_scope, dst_text);\n\
 CREATE TABLE IF NOT EXISTS quantum_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, scope, k));";
 
     fn q_ensure(conn: &Connection) { let _ = conn.execute_batch(Q_SCHEMA); }
+
+    use std::sync::atomic::Ordering::Relaxed;
+    // hint maintenance: read-affecting quantum WRITES arm the hint, deletes drop it back to
+    // "unknown" (the next read re-probes once). Links never gate a plain read, so the
+    // entanglement ops don't touch it.
+    fn q_arm(db: &NeuronDB) { db.q_hint.store(1, Relaxed); }
+    fn q_unknown(db: &NeuronDB) { db.q_hint.store(0, Relaxed); }
 
     fn rec(r: &rusqlite::Row) -> rusqlite::Result<EntanglementRecord> {
         Ok(EntanglementRecord {
@@ -866,19 +880,32 @@ CREATE TABLE IF NOT EXISTS quantum_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, 
         }
         fn read_entanglement(&self, id: u64) -> Option<EntanglementRecord> {
             let g = self.catalog();
-            g.conn.query_row(&format!("SELECT {} FROM entanglements WHERE id=?1", REC_COLS), params![id as i64], |r| rec(r)).ok()
+            let mut st = g.conn.prepare_cached(&format!("SELECT {} FROM entanglements WHERE id=?1", REC_COLS)).ok()?;
+            st.query_row(params![id as i64], |r| rec(r)).ok()
         }
         fn find_entanglements(&self, scope: &str, text: &str) -> Vec<EntanglementRecord> {
+            // the teleport hot path: two indexed probes (idx_ent_src / idx_ent_dst) via cached
+            // statements — an OR across both endpoints would defeat the per-endpoint indexes.
             let g = self.catalog();
-            let mut st = match g.conn.prepare(&format!("SELECT {} FROM entanglements WHERE (src_scope=?1 AND src_text=?2) OR (dst_scope=?1 AND dst_text=?2) ORDER BY id", REC_COLS)) {
-                Ok(s) => s, Err(_) => return Vec::new(),   // table not created yet: nothing entangled
-            };
-            let out = match st.query_map(params![scope, text], |r| rec(r)) { Ok(rows) => rows.flatten().collect(), Err(_) => Vec::new() };
+            let mut out: Vec<EntanglementRecord> = Vec::new();
+            for sql in [
+                format!("SELECT {} FROM entanglements WHERE src_scope=?1 AND src_text=?2 ORDER BY id", REC_COLS),
+                format!("SELECT {} FROM entanglements WHERE dst_scope=?1 AND dst_text=?2 ORDER BY id", REC_COLS),
+            ] {
+                let mut st = match g.conn.prepare_cached(&sql) { Ok(s) => s, Err(_) => return Vec::new() };   // table absent: nothing entangled
+                let batch: Vec<EntanglementRecord> = match st.query_map(params![scope, text], |r| rec(r)) {
+                    Ok(rows) => rows.flatten().collect(),
+                    Err(_) => Vec::new(),
+                };
+                out.extend(batch);
+            }
+            out.sort_by_key(|l| l.id);
+            out.dedup_by_key(|l| l.id);   // a same-scope self-pair would match both probes
             out
         }
         fn scope_entanglements(&self, scope: &str) -> Vec<EntanglementRecord> {
             let g = self.catalog();
-            let mut st = match g.conn.prepare(&format!("SELECT {} FROM entanglements WHERE src_scope=?1 OR dst_scope=?1 ORDER BY id", REC_COLS)) {
+            let mut st = match g.conn.prepare_cached(&format!("SELECT {} FROM entanglements WHERE src_scope=?1 OR dst_scope=?1 ORDER BY id", REC_COLS)) {
                 Ok(s) => s, Err(_) => return Vec::new(),
             };
             let out = match st.query_map(params![scope], |r| rec(r)) { Ok(rows) => rows.flatten().collect(), Err(_) => Vec::new() };
@@ -904,24 +931,43 @@ CREATE TABLE IF NOT EXISTS quantum_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, 
     }
 
     impl QuantumSide for NeuronDB {
+        fn quantum_dormant(&self) -> bool {
+            // one atomic load on the hot path; the probe below runs once per handle (and again
+            // only after a quantum delete flips the hint back to unknown)
+            match self.q_hint.load(Relaxed) {
+                -1 => true,
+                1 => false,
+                _ => {
+                    let g = self.catalog();
+                    // a missing table reads as an error -> no state -> dormant
+                    let any = g.conn.query_row("SELECT 1 FROM quantum_kv LIMIT 1", [], |_| Ok(())).is_ok();
+                    self.q_hint.store(if any { 1 } else { -1 }, Relaxed);
+                    !any
+                }
+            }
+        }
         fn noclone_set(&self, scope: &str, text: &str, reads: u32) {
             let g = self.catalog();
             q_ensure(&g.conn);
             let _ = g.conn.execute("INSERT INTO quantum_kv(kind,scope,k,v) VALUES('noclone',?1,?2,?3) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?3",
                 params![scope, text, reads.max(1).to_string()]);
+            q_arm(self);
         }
         fn noclone_get(&self, scope: &str, text: &str) -> Option<u32> {
             let g = self.catalog();
-            g.conn.query_row("SELECT v FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text], |r| r.get::<_, String>(0))
-                .ok().and_then(|v| v.parse().ok())
+            let mut st = g.conn.prepare_cached("SELECT v FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2").ok()?;
+            st.query_row(params![scope, text], |r| r.get::<_, String>(0)).ok().and_then(|v| v.parse().ok())
         }
         fn noclone_dec(&self, scope: &str, text: &str) -> Option<u32> {
             let g = self.catalog();
-            let cur: u32 = g.conn.query_row("SELECT v FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text], |r| r.get::<_, String>(0))
-                .ok().and_then(|v| v.parse().ok())?;
+            let cur: u32 = {
+                let mut st = g.conn.prepare_cached("SELECT v FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2").ok()?;
+                st.query_row(params![scope, text], |r| r.get::<_, String>(0)).ok().and_then(|v| v.parse().ok())?
+            };
             let left = cur.saturating_sub(1);
             if left == 0 {
                 let _ = g.conn.execute("DELETE FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text]);
+                q_unknown(self);   // the last read-affecting entry may be gone: re-probe next read
             } else {
                 let _ = g.conn.execute("UPDATE quantum_kv SET v=?3 WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text, left.to_string()]);
             }
@@ -934,15 +980,17 @@ CREATE TABLE IF NOT EXISTS quantum_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, 
             q_ensure(&g.conn);
             let _ = g.conn.execute("INSERT INTO quantum_kv(kind,scope,k,v) VALUES('super',?1,?2,?3) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?3",
                 params![scope, text, v]);
+            q_arm(self);
         }
         fn super_get(&self, scope: &str, text: &str) -> Option<Vec<(String, f64)>> {
             let g = self.catalog();
-            let v: String = g.conn.query_row("SELECT v FROM quantum_kv WHERE kind='super' AND scope=?1 AND k=?2", params![scope, text], |r| r.get(0)).ok()?;
+            let mut st = g.conn.prepare_cached("SELECT v FROM quantum_kv WHERE kind='super' AND scope=?1 AND k=?2").ok()?;
+            let v: String = st.query_row(params![scope, text], |r| r.get(0)).ok()?;
             Some(parse_alts(&v))
         }
         fn super_all(&self, scope: &str) -> Vec<(String, Vec<(String, f64)>)> {
             let g = self.catalog();
-            let mut st = match g.conn.prepare("SELECT k,v FROM quantum_kv WHERE kind='super' AND scope=?1 ORDER BY k") {
+            let mut st = match g.conn.prepare_cached("SELECT k,v FROM quantum_kv WHERE kind='super' AND scope=?1 ORDER BY k") {
                 Ok(s) => s, Err(_) => return Vec::new(),
             };
             let out = match st.query_map(params![scope], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
@@ -954,6 +1002,7 @@ CREATE TABLE IF NOT EXISTS quantum_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, 
         fn super_del(&self, scope: &str, text: &str) {
             let g = self.catalog();
             let _ = g.conn.execute("DELETE FROM quantum_kv WHERE kind='super' AND scope=?1 AND k=?2", params![scope, text]);
+            q_unknown(self);
         }
     }
 

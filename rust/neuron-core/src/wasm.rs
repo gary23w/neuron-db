@@ -356,7 +356,7 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         "recall" => apply(&MemStore, NeuronOp::Recall { scope, query: arg(2).to_string(), k: num(3, 6), semantic: false, across: false })
             .hits().into_iter().map(|r| r.fact).collect::<Vec<_>>().join("\n"),
         "value" => apply(&MemStore, NeuronOp::RecallValue { scope, query: arg(2).to_string() }).value().unwrap_or_default(),
-        "assoc" => apply(&MemStore, NeuronOp::RecallAssoc { scope, query: arg(2).to_string(), k: num(4, 8), hops: num(3, 2), across: arg(5) == "across" || arg(5) == "1" })
+        "assoc" => apply(&MemStore, NeuronOp::RecallAssoc { scope, query: arg(2).to_string(), k: num(4, 8), hops: num(3, 0), across: arg(5) == "across" || arg(5) == "1" })
             .assoc().into_iter().map(|s| s.fact).collect::<Vec<_>>().join("\n"),
         // stitched recall: each passage = its facts joined into one paragraph, passages blank-line separated
         "context" => apply(&MemStore, NeuronOp::RecallContext { scope, query: arg(2).to_string(), k: num(3, 4), before: num(4, 2), after: num(5, 3), across: arg(6) == "across" || arg(6) == "1" })

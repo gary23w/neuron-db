@@ -33,7 +33,7 @@ mod router;
 pub use entangle::{disentangle, entangle, entangled_recall, scope_entanglements, EntangledHit, EntangledRecall, EntanglementRecord, HasEntanglements};
 pub use noclone::{reads_remaining, write_once};
 pub use superposition::{measure, recall_super, store_super, PRUNE_THRESHOLD, SUPER_DECAY, ZENO_BOOST};
-pub use teleport::{invert_value, teleport, TeleportResult};
+pub use teleport::{invert_value, teleport, teleport_cascade, TeleportResult};
 pub use router::QuantumRouter;
 
 use crate::{Neuron, Recall};
@@ -64,6 +64,11 @@ pub trait QuantumBack {
 /// Side-state for the no-cloning counters and the superposed values. Kept separate from
 /// [`HasEntanglements`] so a backend could implement burn-after-reading without the link table.
 pub trait QuantumSide {
+    /// True when the store provably holds NO read-affecting quantum state (no read budgets, no
+    /// superpositions) — the fast-path license for `recall_once` to skip straight to a plain
+    /// recall. Backends should make this an O(1) cached check; the conservative default (false)
+    /// is always correct, just slower. Links don't count: entanglements never alter a plain read.
+    fn quantum_dormant(&self) -> bool { false }
     fn noclone_set(&self, scope: &str, text: &str, reads: u32);
     fn noclone_get(&self, scope: &str, text: &str) -> Option<u32>;
     /// Decrement the read budget, removing the marker when it reaches 0. Returns the remaining
@@ -82,6 +87,9 @@ pub trait QuantumSide {
 /// one finds nothing). This is the read the CLI `get`/`recall` and the HTTP `/get`/`/recall`
 /// routes use when compiled with `quantum-db`.
 pub fn recall_once<S: QuantumBack + QuantumSide + ?Sized>(s: &S, scope: &str, query: &str) -> Option<Recall> {
+    // fast path: a store with no read-affecting quantum state reads exactly like the base tier
+    // (one cached O(1) check — this is what keeps `quantum-db` free for ordinary workloads)
+    if s.quantum_dormant() { return s.recall_one(scope, query); }
     if let Some(r) = superposition::measure_matching(s, scope, query) { return Some(r); }
     let hit = s.recall_one(scope, query)?;
     if s.noclone_get(scope, &hit.fact).is_some() {
@@ -117,6 +125,8 @@ impl<S: QuantumBack + HasEntanglements> EntangledStore<S> {
     pub fn disentangle(&self, id: u64) -> bool { disentangle(&self.inner, id) }
     pub fn entangled_recall(&self, scope: &str, query: &str) -> Option<EntangledRecall> { entangled_recall(&self.inner, scope, query) }
     pub fn teleport(&self, scope: &str, cue: &str) -> Option<TeleportResult> { teleport(&self.inner, scope, cue) }
+    /// Relay until the cascade settles (e-bit conservation terminates it; no hop cap).
+    pub fn teleport_cascade(&self, scope: &str, cue: &str) -> Vec<TeleportResult> { teleport_cascade(&self.inner, scope, cue) }
 }
 
 impl<S: QuantumBack + QuantumSide> EntangledStore<S> {
@@ -244,6 +254,10 @@ impl HasEntanglements for MemBack {
 }
 
 impl QuantumSide for MemBack {
+    fn quantum_dormant(&self) -> bool {
+        let g = self.lock();
+        g.noclone.is_empty() && g.supers.is_empty()
+    }
     fn noclone_set(&self, scope: &str, text: &str, reads: u32) {
         self.lock().noclone.insert((scope.to_string(), text.to_string()), reads.max(1));
     }
