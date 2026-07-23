@@ -789,6 +789,7 @@ pub mod op;     // the one op vocabulary + apply() every transport routes throug
 #[cfg(feature = "mcp")] pub mod mcp;
 #[cfg(feature = "semantic")] pub mod semantic;
 #[cfg(feature = "personality")] pub mod persona;   // opt-in: Big Five + temperament that modulate affect/stance (inert until attached)
+#[cfg(feature = "quantum")] pub mod quantum;   // opt-in: the quantum-teleportation tier — a structural analogy, not hardware (see quantum.rs)
 #[cfg(feature = "compress")] pub mod codec;
 pub mod cortex;
 pub mod bpe;

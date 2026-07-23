@@ -26,6 +26,8 @@ personality = []               # opt-in: the polymorphic "mind" — Big Five tra
 compress = []                  # opt-in: lossless token-Huffman codec over the dump() blob (std-only, wasm-safe)
 trust = []                     # opt-in: the learned recall "floor" (outcome-reinforced per-tag-class trust + trust-weighted assoc). OFF by default; a lexical/login/KV store never compiles it and never grows the trust_kv table (created lazily on first reward). For weak-model agents that drift; a no-op for stores and near-neutral for capable models.
 http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
+quantum = []                   # opt-in: the quantum-teleportation tier — entangled cross-scope links, teleport recall, burn-after-reading facts, superposed values (std-only, in-memory)
+quantum-db = ["quantum", "sqlite"]   # + durable quantum state (entanglements/no-clone/superposition side tables) on the NeuronDB SQLite file; wires the CLI + HTTP quantum ops
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }

@@ -164,6 +164,9 @@ unlimited, storage-bound memory that stays fast at any size. Full mechanism:
 - **`SecureNeuronDB`** — AES-256-GCM values, per-scope secret never stored (`--features secure`).
 - **HTTP server + `serve` binary** — one endpoint per scope (`--features server`).
 - **`neuron-mcp`** — stdio MCP server so any LLM mounts neuron-db as memory (`--features mcp`).
+- **Quantum tier** (experimental) — entangled cross-scope links, teleport recall, burn-after-reading
+  facts, superposed values (`--features quantum`; durable + CLI/HTTP ops with `quantum-db`). A
+  structural analogy, not hardware — see **[QUANTUM_TELEPORTATION.md](QUANTUM_TELEPORTATION.md)**.
 
 ## The CLI
 

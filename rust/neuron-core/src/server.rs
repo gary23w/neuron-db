@@ -181,6 +181,10 @@ fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str,
         if sub == "get" {
             let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
             if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
+            // quantum-aware under `quantum-db`: superpositions measure, write_once facts burn
+            #[cfg(feature = "quantum-db")]
+            let v = crate::quantum::recall_once(db, &nid, &cap(&q, 4000)).map(|h| h.value);
+            #[cfg(not(feature = "quantum-db"))]
             let v = apply(db, NeuronOp::RecallOne { scope: nid.clone(), query: cap(&q, 4000) }).hit().map(|h| h.value);
             let vj = match v { Some(s) => format!("\"{}\"", json_escape(&s)), None => "null".to_string() };
             return (200, format!("{{\"value\":{}}}", vj));
@@ -188,11 +192,17 @@ fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str,
         if sub == "recall" {
             let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
             if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
-            return match apply(db, NeuronOp::RecallOne { scope: nid.clone(), query: cap(&q, 4000) }).hit() {
+            #[cfg(feature = "quantum-db")]
+            let h = crate::quantum::recall_once(db, &nid, &cap(&q, 4000));
+            #[cfg(not(feature = "quantum-db"))]
+            let h = apply(db, NeuronOp::RecallOne { scope: nid.clone(), query: cap(&q, 4000) }).hit();
+            return match h {
                 Some(h) => (200, format!("{{\"value\":\"{}\",\"fact\":\"{}\",\"coverage\":{:.4},\"overlap\":{},\"exact\":{}}}", json_escape(&h.value), json_escape(&h.fact), h.coverage, h.overlap, h.exact)),
                 None => (200, "{\"value\":null,\"coverage\":0}".into()),
             };
         }
+        #[cfg(feature = "quantum-db")]
+        if let Some(r) = route_quantum(db, sub, &nid, body) { return r; }
         if sub == "recall_many" {
             let q = json_field(body, "query").or_else(|| json_field(body, "message")).unwrap_or_default();
             if q.is_empty() { return (400, "{\"error\":\"empty query\"}".into()); }
@@ -209,6 +219,60 @@ fn route(db: &NeuronDB, method: &str, segs: &[String], authed: bool, body: &str,
         };
     }
     (404, "{\"error\":\"not found\"}".into())
+}
+
+/// The quantum-teleportation tier's endpoints (feature `quantum-db`):
+///   POST /v1/{scope}/entangle      {"fact_a","fact_b"[,"scope_b","classical","ebits"]}
+///   POST /v1/{scope}/teleport      {"cue"}
+///   POST /v1/{scope}/write_once    {"text"[,"reads"]}
+///   POST /v1/{scope}/superposition {"text","alternatives":[...]}
+///   POST /v1/{scope}/disentangle   {"id"}
+/// None = not a quantum route (the caller falls through to the turn handler).
+#[cfg(feature = "quantum-db")]
+fn route_quantum(db: &NeuronDB, sub: &str, nid: &str, body: &str) -> Option<(u16, String)> {
+    use crate::quantum;
+    match sub {
+        "entangle" => {
+            let (fa, fb) = match (json_field(body, "fact_a"), json_field(body, "fact_b")) {
+                (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => (a, b),
+                _ => return Some((400, "{\"error\":\"need {fact_a, fact_b[, scope_b, classical, ebits]}\"}".into())),
+            };
+            let sb = json_field(body, "scope_b").filter(|s| !s.is_empty()).unwrap_or_else(|| nid.to_string());
+            let classical = json_field(body, "classical").filter(|s| !s.is_empty()).unwrap_or_else(|| "copy".into());
+            let ebits = json_num(body, "ebits").unwrap_or(1).clamp(1, 1_000_000) as u32;
+            let id = quantum::entangle(db, nid, &cap(&fa, 4000), &clip(&sb), &cap(&fb, 4000), &cap(&classical, 4000), ebits);
+            Some((200, format!("{{\"id\":{},\"ebits\":{}}}", id, ebits)))
+        }
+        "teleport" => {
+            let cue = json_field(body, "cue").or_else(|| json_field(body, "query")).unwrap_or_default();
+            if cue.is_empty() { return Some((400, "{\"error\":\"need {cue}\"}".into())); }
+            Some(match quantum::teleport(db, nid, &cap(&cue, 4000)) {
+                Some(t) => (200, format!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}",
+                    json_escape(&t.value), json_escape(&t.source_scope), json_escape(&t.dest_scope), json_escape(&t.classical_used), t.ebits_remaining)),
+                None => (200, "{\"value\":null}".into()),
+            })
+        }
+        "write_once" => {
+            let text = json_field(body, "text").unwrap_or_default();
+            if text.is_empty() { return Some((400, "{\"error\":\"need {text[, reads]}\"}".into())); }
+            let reads = json_num(body, "reads").unwrap_or(1).clamp(1, 1_000_000) as u32;
+            let w = quantum::write_once(db, nid, &cap(&text, 4000), reads);
+            Some((200, format!("{{\"wrote\":{},\"reads\":{}}}", w, reads)))
+        }
+        "superposition" => {
+            let text = json_field(body, "text").unwrap_or_default();
+            let alts_owned = json_array(body, "alternatives");
+            if text.is_empty() || alts_owned.is_empty() { return Some((400, "{\"error\":\"need {text, alternatives:[...]}\"}".into())); }
+            let alts: Vec<&str> = alts_owned.iter().map(String::as_str).collect();
+            quantum::store_super(db, nid, &cap(&text, 4000), &alts);
+            Some((200, format!("{{\"superposed\":{}}}", alts.len())))
+        }
+        "disentangle" => {
+            let id = match json_num(body, "id") { Some(i) if i >= 0 => i as u64, _ => return Some((400, "{\"error\":\"need {id}\"}".into())) };
+            Some((200, format!("{{\"deleted\":{}}}", quantum::disentangle(db, id))))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +312,40 @@ mod tests {
         assert_eq!(route(&db, "GET", &seg("/v1/u"), false, "", 1, 0).0, 401);          // auth
         assert_eq!(route(&db, "POST", &seg("/v1/u/get"), true, "{}", 1, 0).0, 400);    // empty query
         assert_eq!(route(&db, "OPTIONS", &seg("/v1/u"), true, "", 1, 0).0, 204);       // CORS preflight
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // Pins the quantum endpoints (feature quantum-db): entangle -> teleport moves the association,
+    // write_once burns through the SAME /get route clients already use, superposition measures.
+    #[cfg(feature = "quantum-db")]
+    #[test]
+    fn quantum_routes_through_http_surface() {
+        let tmp = std::env::temp_dir().join(format!("neuron_qroute_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let db = NeuronDB::open(tmp.to_str().unwrap(), 500);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/alpha/entangle"), true,
+            "{\"fact_a\":\"the gate code is 4491\",\"scope_b\":\"beta\",\"fact_b\":\"the gate code is ----\",\"classical\":\"copy\",\"ebits\":2}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"id\":"), "entangle: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/alpha/teleport"), true, "{\"cue\":\"what is the gate code?\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("4491") && body.contains("\"to\":\"beta\""), "teleport: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/alpha/write_once"), true, "{\"text\":\"the launch code is gamma-7\",\"reads\":1}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"wrote\":1"), "write_once: {}", body);
+        let (st, body) = route(&db, "POST", &seg("/v1/alpha/get"), true, "{\"query\":\"what is the launch code?\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("gamma-7"), "the single read returns: {}", body);
+
+        let (st, body) = route(&db, "POST", &seg("/v1/beta/superposition"), true,
+            "{\"text\":\"standby region is\",\"alternatives\":[\"us-east\",\"eu-west\"]}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("\"superposed\":2"), "superposition: {}", body);
+        let (st, body) = route(&db, "POST", &seg("/v1/beta/get"), true, "{\"query\":\"what is the standby region?\"}", 1, 0);
+        assert_eq!(st, 200); assert!(body.contains("us-east"), "the measurement returns: {}", body);
+
+        // bad inputs stay 400, and an unknown sub still falls through to the turn handler's 400
+        assert_eq!(route(&db, "POST", &seg("/v1/alpha/entangle"), true, "{}", 1, 0).0, 400);
+        assert_eq!(route(&db, "POST", &seg("/v1/alpha/teleport"), true, "{}", 1, 0).0, 400);
 
         let _ = std::fs::remove_file(&tmp);
     }

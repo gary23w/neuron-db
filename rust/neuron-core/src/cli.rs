@@ -71,11 +71,19 @@ fn main() {
             let n = apply(&d, NeuronOp::Observe { scope: scope.clone(), text: body(rest()) }).wrote();
             if json { println!("{{\"wrote\":{}}}", n); } else { println!("stored {} fact(s)", n); } }
         "get" => { need_scope("get"); let d = NeuronDB::open(&db, max);
+            // quantum-aware read under `quantum-db`: a matching superposition collapses on this
+            // measurement, and a write_once fact spends a read (the last read burns it).
+            #[cfg(feature = "quantum-db")]
+            let v = neuron_core::quantum::recall_once(&d, &scope, &rest()).map(|h| h.value);
+            #[cfg(not(feature = "quantum-db"))]
             let v = apply(&d, NeuronOp::RecallOne { scope: scope.clone(), query: rest() }).hit().map(|h| h.value);
             if json { println!("{{\"value\":{}}}", v.as_deref().map(|s| format!("\"{}\"", esc(s))).unwrap_or("null".into())); }
             else { match &v { Some(s) => println!("{}", s), None => eprintln!("(no answer)") } }
             if v.is_none() { std::process::exit(3); } }                       // miss -> exit 3 (scriptable: get … || fallback)
         "recall" => { need_scope("recall"); let d = NeuronDB::open(&db, max);
+            #[cfg(feature = "quantum-db")]
+            let h = neuron_core::quantum::recall_once(&d, &scope, &rest());
+            #[cfg(not(feature = "quantum-db"))]
             let h = apply(&d, NeuronOp::RecallOne { scope: scope.clone(), query: rest() }).hit();
             match &h {
                 Some(h) => if json { println!("{{\"fact\":\"{}\",\"value\":\"{}\",\"coverage\":{:.3}}}", esc(&h.fact), esc(&h.value), h.coverage) }
@@ -198,6 +206,90 @@ fn main() {
             if m.trim().is_empty() { eprintln!("usage: neuron --db <db> strengthen <scope> <match…>"); std::process::exit(2); }
             if let OpResult::Strengthened(hit) = apply(&d, NeuronOp::Strengthen { scope: scope.clone(), matching: m, bump: 1.0 }) {
                 if json { println!("{{\"strengthened\":{}}}", hit); } else { println!("strengthened {} fact(s)", hit); }
+            } }
+        // ---- the quantum-teleportation tier (experimental, --features quantum-db) ----
+        // ENTANGLE two facts across scopes (observing either side if absent): a link record with a
+        // plain-text classical instruction and a budget of e-bits. `teleport` is the consuming op.
+        #[cfg(feature = "quantum-db")]
+        "entangle" => {
+            let tail = pos.get(1..).map(|s| s.to_vec()).unwrap_or_default();
+            let (mut classical, mut ebits, mut p) = ("copy".to_string(), 1u32, Vec::new());
+            let mut i = 0;
+            while i < tail.len() {
+                match tail[i].as_str() {
+                    "--classical" => { if let Some(v) = tail.get(i + 1) { classical = v.clone(); } i += 2; }
+                    "--ebits" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { ebits = v; } i += 2; }
+                    _ => { p.push(tail[i].clone()); i += 1; }
+                }
+            }
+            if p.len() < 4 { eprintln!("usage: neuron --db <db> entangle <scope_a> <fact_a> <scope_b> <fact_b> [--classical copy|swap|invert|<text>] [--ebits N]"); std::process::exit(2); }
+            let d = NeuronDB::open(&db, max);
+            let id = neuron_core::quantum::entangle(&d, &p[0], &p[1], &p[2], &p[3], &classical, ebits);
+            if json { println!("{{\"id\":{},\"classical\":\"{}\",\"ebits\":{}}}", id, esc(&classical), ebits.max(1)); }
+            else { println!("entangled #{}: {}|{} <-> {}|{}  classical={} ebits={}", id, p[0], p[1], p[2], p[3], classical, ebits.max(1)); } }
+        // TELEPORT: recall the source by cue, spend one e-bit, reconstruct on the entangled dest
+        // per the classical instruction. The source fact survives; the association moved.
+        #[cfg(feature = "quantum-db")]
+        "teleport" => { need_scope("teleport"); let d = NeuronDB::open(&db, max);
+            let cue = rest();
+            if cue.trim().is_empty() { eprintln!("usage: neuron --db <db> teleport <scope> <cue…>"); std::process::exit(2); }
+            match neuron_core::quantum::teleport(&d, &scope, &cue) {
+                Some(t) => {
+                    if json { println!("{{\"value\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"classical\":\"{}\",\"ebits_remaining\":{}}}", esc(&t.value), esc(&t.source_scope), esc(&t.dest_scope), esc(&t.classical_used), t.ebits_remaining); }
+                    else { println!("teleported \"{}\" via \"{}\" to {} ({} ebit(s) remaining)", t.value, t.classical_used, t.dest_scope, t.ebits_remaining); }
+                }
+                None => { if json { println!("{{\"value\":null}}"); } else { eprintln!("(no entangled match — nothing teleported)"); } std::process::exit(3); }
+            } }
+        #[cfg(feature = "quantum-db")]
+        "disentangle" => {
+            let id: Option<u64> = pos.get(1..).unwrap_or(&[]).iter().find_map(|a| a.parse().ok());
+            let id = match id { Some(i) => i, None => { eprintln!("usage: neuron --db <db> disentangle <id>  (ids: neuron entanglements <scope>)"); std::process::exit(2); } };
+            let d = NeuronDB::open(&db, max);
+            let gone = neuron_core::quantum::disentangle(&d, id);
+            if json { println!("{{\"deleted\":{}}}", gone); }
+            else if gone { println!("disentangled #{}", id); } else { eprintln!("(no link #{})", id); std::process::exit(3); } }
+        // WRITE-ONCE (no-cloning): store a fact with a read budget; each quantum-aware `get`
+        // spends one, and the read that spends the last deletes the fact from the store.
+        #[cfg(feature = "quantum-db")]
+        "write_once" => { need_scope("write_once");
+            let tail = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            let (mut reads, mut words) = (1u32, Vec::new());
+            let mut i = 0;
+            while i < tail.len() {
+                match tail[i].as_str() {
+                    "--reads" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { reads = v; } i += 2; }
+                    _ => { words.push(tail[i].clone()); i += 1; }
+                }
+            }
+            let text = words.join(" ");
+            if text.trim().is_empty() { eprintln!("usage: neuron --db <db> write_once <scope> <text…> [--reads N]"); std::process::exit(2); }
+            let d = NeuronDB::open(&db, max);
+            let w = neuron_core::quantum::write_once(&d, &scope, &text, reads);
+            if json { println!("{{\"wrote\":{},\"reads\":{}}}", w, reads.max(1)); }
+            else { println!("stored {} fact(s); burns after {} read(s)", w, reads.max(1)); } }
+        // SUPERPOSITION: one cue holding several alternatives, none yet a fact. A quantum-aware
+        // `get` measures it: the strongest returns, the rest decay, and a lone survivor resolves
+        // into an ordinary stored fact.
+        #[cfg(feature = "quantum-db")]
+        "superposition" => { need_scope("superposition");
+            let text = pos.get(2).cloned().unwrap_or_default();
+            let joined = pos.get(3..).map(|s| s.join(" ")).unwrap_or_default();
+            let alts: Vec<&str> = joined.split(',').map(str::trim).filter(|a| !a.is_empty()).collect();
+            if text.is_empty() || alts.is_empty() { eprintln!("usage: neuron --db <db> superposition <scope> <text> <alt1, alt2, …>"); std::process::exit(2); }
+            let d = NeuronDB::open(&db, max);
+            neuron_core::quantum::store_super(&d, &scope, &text, &alts);
+            if json { let items: Vec<String> = alts.iter().map(|a| format!("\"{}\"", esc(a))).collect(); println!("{{\"text\":\"{}\",\"alternatives\":[{}]}}", esc(&text), items.join(",")); }
+            else { println!("superposed '{}' over {} alternative(s)", text, alts.len()); } }
+        #[cfg(feature = "quantum-db")]
+        "entanglements" => { need_scope("entanglements"); let d = NeuronDB::open(&db, max);
+            let links = neuron_core::quantum::scope_entanglements(&d, &scope);
+            if json {
+                let items: Vec<String> = links.iter().map(|l| format!("{{\"id\":{},\"src_scope\":\"{}\",\"src\":\"{}\",\"dst_scope\":\"{}\",\"dst\":\"{}\",\"classical\":\"{}\",\"ebits\":{}}}",
+                    l.id, esc(&l.source_scope), esc(&l.source_text), esc(&l.dest_scope), esc(&l.dest_text), esc(&l.classical), l.ebits)).collect();
+                println!("{{\"entanglements\":[{}]}}", items.join(","));
+            } else {
+                for l in &links { println!("#{}\t{}|{}  ->  {}|{}\tclassical={}\tebits={}", l.id, l.source_scope, l.source_text, l.dest_scope, l.dest_text, l.classical, l.ebits); }
+                if links.is_empty() { eprintln!("(no entanglements touch '{}')", scope); }
             } }
         // the learned trust "floor" (feature `trust`): reward the tag-classes recalled this round by the
         // grounded Δscore (the engine's acceptance-oracle signal). Earned from outcomes, never restatement.
@@ -920,4 +1012,12 @@ Keys:   --keyfile F or NEURON_SECRET_FILE / NEURON_SECRET_FD (unix) keep the key
         --secret is accepted but deprecated (leaks via ps / /proc).\n\
 Env: NEURON_DB, NEURON_MAX_FACTS, NEURON_SECRET, NEURON_DB_KEY (server bearer), NEURON_HOST/NEURON_PORT\n\
 Example: echo 'my plan is pro' | neuron --db demo.db observe user -");
+    #[cfg(feature = "quantum-db")]
+    eprintln!("\nQuantum tier (experimental — a structural analogy, not hardware):\n\
+  entangle <scope_a> <fact_a> <scope_b> <fact_b> [--classical copy|swap|invert|<text>] [--ebits N]\n\
+  teleport <scope> <cue...>       spend an e-bit: recall the source, reconstruct on the entangled dest\n\
+  disentangle <id>                delete a link (ids via `entanglements`)\n\
+  entanglements <scope>           list links touching a scope\n\
+  write_once <scope> <text...> [--reads N]        burn-after-reading: the read that spends the last budget deletes the fact\n\
+  superposition <scope> <text> <alt1, alt2, ...>  hold alternatives; `get` measures one (losers decay, a lone survivor becomes a fact)");
 }

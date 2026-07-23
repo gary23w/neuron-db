@@ -826,3 +826,183 @@ impl NeuronDB {
         inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| e.t.clone()).collect()
     }
 }
+
+// ---- the quantum-teleportation tier's durable state (feature `quantum-db`) ----
+// Same policy as the trust ledger: the side tables are created LAZILY on the first quantum WRITE,
+// on the catalog shard's connection, and reads tolerate their absence — so a store that never
+// touches the tier keeps a byte-identical schema. The protocol logic itself lives in quantum/;
+// these impls only give it durable storage.
+#[cfg(feature = "quantum-db")]
+mod quantum_db {
+    use super::*;
+    use crate::quantum::{EntanglementRecord, HasEntanglements, QuantumBack, QuantumSide};
+    use crate::{esc, unesc};
+
+    const Q_SCHEMA: &str = "\
+CREATE TABLE IF NOT EXISTS entanglements (id INTEGER PRIMARY KEY AUTOINCREMENT, src_scope TEXT NOT NULL, src_text TEXT NOT NULL, dst_scope TEXT NOT NULL, dst_text TEXT NOT NULL, classical TEXT NOT NULL, ebits INTEGER NOT NULL, created INTEGER NOT NULL);\n\
+CREATE TABLE IF NOT EXISTS quantum_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, scope, k));";
+
+    fn q_ensure(conn: &Connection) { let _ = conn.execute_batch(Q_SCHEMA); }
+
+    fn rec(r: &rusqlite::Row) -> rusqlite::Result<EntanglementRecord> {
+        Ok(EntanglementRecord {
+            id: r.get::<_, i64>(0)? as u64,
+            source_scope: r.get(1)?, source_text: r.get(2)?,
+            dest_scope: r.get(3)?, dest_text: r.get(4)?,
+            classical: r.get(5)?, ebits: r.get::<_, i64>(6)?.max(0) as u32,
+            created_at: r.get::<_, i64>(7)?.max(0) as u64,
+        })
+    }
+    const REC_COLS: &str = "id,src_scope,src_text,dst_scope,dst_text,classical,ebits,created";
+
+    impl HasEntanglements for NeuronDB {
+        fn write_entanglement(&self, r: EntanglementRecord) -> u64 {
+            let g = self.catalog();
+            q_ensure(&g.conn);
+            let _ = g.conn.execute(
+                "INSERT INTO entanglements(src_scope,src_text,dst_scope,dst_text,classical,ebits,created) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![r.source_scope, r.source_text, r.dest_scope, r.dest_text, r.classical, r.ebits as i64, r.created_at as i64]);
+            g.conn.last_insert_rowid() as u64
+        }
+        fn read_entanglement(&self, id: u64) -> Option<EntanglementRecord> {
+            let g = self.catalog();
+            g.conn.query_row(&format!("SELECT {} FROM entanglements WHERE id=?1", REC_COLS), params![id as i64], |r| rec(r)).ok()
+        }
+        fn find_entanglements(&self, scope: &str, text: &str) -> Vec<EntanglementRecord> {
+            let g = self.catalog();
+            let mut st = match g.conn.prepare(&format!("SELECT {} FROM entanglements WHERE (src_scope=?1 AND src_text=?2) OR (dst_scope=?1 AND dst_text=?2) ORDER BY id", REC_COLS)) {
+                Ok(s) => s, Err(_) => return Vec::new(),   // table not created yet: nothing entangled
+            };
+            let out = match st.query_map(params![scope, text], |r| rec(r)) { Ok(rows) => rows.flatten().collect(), Err(_) => Vec::new() };
+            out
+        }
+        fn scope_entanglements(&self, scope: &str) -> Vec<EntanglementRecord> {
+            let g = self.catalog();
+            let mut st = match g.conn.prepare(&format!("SELECT {} FROM entanglements WHERE src_scope=?1 OR dst_scope=?1 ORDER BY id", REC_COLS)) {
+                Ok(s) => s, Err(_) => return Vec::new(),
+            };
+            let out = match st.query_map(params![scope], |r| rec(r)) { Ok(rows) => rows.flatten().collect(), Err(_) => Vec::new() };
+            out
+        }
+        fn consume_ebit(&self, id: u64) -> Option<u32> {
+            let g = self.catalog();
+            let changed = g.conn.execute("UPDATE entanglements SET ebits=ebits-1 WHERE id=?1 AND ebits>0", params![id as i64]).unwrap_or(0);
+            if changed == 0 { return None; }   // no live link (missing table included)
+            let left: i64 = g.conn.query_row("SELECT ebits FROM entanglements WHERE id=?1", params![id as i64], |r| r.get(0)).unwrap_or(0);
+            if left <= 0 { let _ = g.conn.execute("DELETE FROM entanglements WHERE id=?1", params![id as i64]); }
+            Some(left.max(0) as u32)
+        }
+        fn delete_entanglement(&self, id: u64) -> bool {
+            let g = self.catalog();
+            g.conn.execute("DELETE FROM entanglements WHERE id=?1", params![id as i64]).unwrap_or(0) > 0
+        }
+        fn rebind_text(&self, scope: &str, old: &str, new: &str) {
+            let g = self.catalog();
+            let _ = g.conn.execute("UPDATE entanglements SET src_text=?3 WHERE src_scope=?1 AND src_text=?2", params![scope, old, new]);
+            let _ = g.conn.execute("UPDATE entanglements SET dst_text=?3 WHERE dst_scope=?1 AND dst_text=?2", params![scope, old, new]);
+        }
+    }
+
+    impl QuantumSide for NeuronDB {
+        fn noclone_set(&self, scope: &str, text: &str, reads: u32) {
+            let g = self.catalog();
+            q_ensure(&g.conn);
+            let _ = g.conn.execute("INSERT INTO quantum_kv(kind,scope,k,v) VALUES('noclone',?1,?2,?3) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?3",
+                params![scope, text, reads.max(1).to_string()]);
+        }
+        fn noclone_get(&self, scope: &str, text: &str) -> Option<u32> {
+            let g = self.catalog();
+            g.conn.query_row("SELECT v FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text], |r| r.get::<_, String>(0))
+                .ok().and_then(|v| v.parse().ok())
+        }
+        fn noclone_dec(&self, scope: &str, text: &str) -> Option<u32> {
+            let g = self.catalog();
+            let cur: u32 = g.conn.query_row("SELECT v FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text], |r| r.get::<_, String>(0))
+                .ok().and_then(|v| v.parse().ok())?;
+            let left = cur.saturating_sub(1);
+            if left == 0 {
+                let _ = g.conn.execute("DELETE FROM quantum_kv WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text]);
+            } else {
+                let _ = g.conn.execute("UPDATE quantum_kv SET v=?3 WHERE kind='noclone' AND scope=?1 AND k=?2", params![scope, text, left.to_string()]);
+            }
+            Some(left)
+        }
+        fn super_set(&self, scope: &str, text: &str, alts: &[(String, f64)]) {
+            // one "weight\tesc(value)" line per alternative (escape-aware: a value can hold tabs/newlines)
+            let v = alts.iter().map(|(a, w)| format!("{}\t{}", w, esc(a))).collect::<Vec<_>>().join("\n");
+            let g = self.catalog();
+            q_ensure(&g.conn);
+            let _ = g.conn.execute("INSERT INTO quantum_kv(kind,scope,k,v) VALUES('super',?1,?2,?3) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?3",
+                params![scope, text, v]);
+        }
+        fn super_get(&self, scope: &str, text: &str) -> Option<Vec<(String, f64)>> {
+            let g = self.catalog();
+            let v: String = g.conn.query_row("SELECT v FROM quantum_kv WHERE kind='super' AND scope=?1 AND k=?2", params![scope, text], |r| r.get(0)).ok()?;
+            Some(parse_alts(&v))
+        }
+        fn super_all(&self, scope: &str) -> Vec<(String, Vec<(String, f64)>)> {
+            let g = self.catalog();
+            let mut st = match g.conn.prepare("SELECT k,v FROM quantum_kv WHERE kind='super' AND scope=?1 ORDER BY k") {
+                Ok(s) => s, Err(_) => return Vec::new(),
+            };
+            let out = match st.query_map(params![scope], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                Ok(rows) => rows.flatten().map(|(k, v)| (k, parse_alts(&v))).collect(),
+                Err(_) => Vec::new(),
+            };
+            out
+        }
+        fn super_del(&self, scope: &str, text: &str) {
+            let g = self.catalog();
+            let _ = g.conn.execute("DELETE FROM quantum_kv WHERE kind='super' AND scope=?1 AND k=?2", params![scope, text]);
+        }
+    }
+
+    fn parse_alts(v: &str) -> Vec<(String, f64)> {
+        v.split('\n').filter(|l| !l.is_empty()).filter_map(|l| {
+            let (w, a) = l.split_once('\t')?;
+            Some((unesc(a), w.parse::<f64>().ok()?))
+        }).collect()
+    }
+
+    impl QuantumBack for NeuronDB {
+        fn observe(&self, scope: &str, text: &str) -> usize { NeuronDB::observe(self, scope, text) }
+        fn recall_one(&self, scope: &str, query: &str) -> Option<crate::Recall> { self.recall(scope, query) }
+        fn has_fact(&self, scope: &str, text: &str) -> bool {
+            let mut g = self.shard(scope); let inner = &mut *g;
+            Self::ensure(inner, scope, self.max_facts, self.cap);
+            inner.cache.get(scope).unwrap().n.episodes.iter().any(|e| e.t == text)
+        }
+        fn forget_exact(&self, scope: &str, text: &str) -> usize {
+            let mut g = self.shard(scope); let inner = &mut *g;
+            Self::ensure(inner, scope, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(scope).unwrap();
+            let before = e.n.episodes.len();
+            e.n.episodes.retain(|ep| ep.t != text);
+            let removed = before - e.n.episodes.len();
+            if removed > 0 { e.n.invalidate_index(); Self::snapshot(conn, scope, e); }
+            removed
+        }
+        fn rewrite_fact(&self, scope: &str, old: &str, new: &str) -> bool {
+            let mut g = self.shard(scope); let inner = &mut *g;
+            Self::ensure(inner, scope, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(scope).unwrap();
+            // same semantics as the in-memory backing (quantum::rewrite_in): first exact match is
+            // removed and the re-encoded text appends — teleport's swap ordering relies on this.
+            let i = match e.n.episodes.iter().position(|ep| ep.t == old) { Some(i) => i, None => return false };
+            let strength = e.n.episodes[i].strength;
+            match crate::encode(new, None) {
+                Some(mut ep) => {
+                    ep.strength = strength;
+                    e.n.episodes.remove(i);
+                    e.n.episodes.push(ep);
+                    e.n.invalidate_index();
+                    Self::snapshot(conn, scope, e);
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+}
