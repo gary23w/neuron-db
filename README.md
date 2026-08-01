@@ -4,6 +4,7 @@
 [![npm](https://img.shields.io/npm/v/@gary23w/neuron-db?logo=npm&color=cb3837&label=npm)](https://www.npmjs.com/package/@gary23w/neuron-db)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20model-gary--neuron--emergent-FFD21E)](https://huggingface.co/gary23w/gary-neuron-emergent)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![in production](https://img.shields.io/badge/in%20production-nl--veil-8a3ffc)](https://github.com/gary23w/nl-veil)
 [![GitHub stars](https://img.shields.io/github/stars/gary23w/neuron-db?style=social)](https://github.com/gary23w/neuron-db/stargazers)
 
 > ⭐ **If neuron-db is useful to you, [star it on GitHub](https://github.com/gary23w/neuron-db/stargazers).** It's a solo project — a star genuinely helps it reach more people.
@@ -21,6 +22,11 @@ neuron --db app.db get  me 'what plan am i on?'      # -> pro
 ```
 
 ▶ **[Watch the synapse fire in 3D](https://gary23w.github.io/neuron-db/demos/synapse-3d.html)** — the real Rust core, in your browser.
+
+▶ **In production: [nl-veil](https://github.com/gary23w/nl-veil)** ([site](https://gary23w.github.io/nl-veil/)) — a
+local-first swarm intelligence engine where many minds work one goal at once. neuron-db is the **one shared memory**
+every mind reads and writes: crawled facts, failures with their exact paths, and judges' scores all land where the
+whole hive can reach them. Separate stores made polite strangers; one store made a swarm.
 
 ▶ **[Try the live browser lab](https://gary23w.github.io/neuron-db/lab.html) — no server, no key.** A WebLLM model
 runs entirely in your tab with neuron-db (compiled to WASM) as its long-term memory. It is *reasoned-routed*: each
