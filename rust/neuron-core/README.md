@@ -28,6 +28,7 @@ cargo run --release --bin bench                              # microbenchmark
 | `personality` | `Persona` | opt-in Big-Five + temperament that modulate affect/stance — OFF by default, inert until attached |
 | `topics` | `TopicModel` | latent-Dirichlet-allocation topics over fact word-bags (deterministic Gibbs): topic-gated SCOPE-WIDE fuzzy recall + `neuron topics` introspection |
 | `fisher` | `FisherHead` | two-class Fisher discriminant heads (outcome axis, scope-vs-rest) — learned separation as rank evidence, inert until outcomes feed it |
+| `semantic-db` | durable `SemanticSpace` | per-word context vectors persist in a lazy `sem_kv` side table, so fuzzy recall (and fisher/topics above it) survives restarts — the spawn-per-op CLI contract; prose-gated, KV/blob writes stay spawn-cheap |
 
 Tests live in `tests/` (recall, db_tier, secure_tier, router, turn, plastic, inference,
 db_comprehensive, semantic_tier). Server-side multi-hop (`recall_chain`), the book-ingestion

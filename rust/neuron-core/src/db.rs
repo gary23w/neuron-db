@@ -84,6 +84,26 @@ struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
 // byte-identical schema (the trust_kv / quantum_kv policy).
 #[cfg(any(feature = "topics", all(feature = "fisher", feature = "semantic")))]
 const STATS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS stats_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, scope, k));";
+// the durable semantic space (feature `semantic-db`): one row per word — occurrence count +
+// full-precision context vector as an f32-LE blob; the meta row (k='') carries tokens_seen in c.
+// Loaded lazily on the FIRST op that needs meaning; saved incrementally (touched words only).
+#[cfg(feature = "semantic-db")]
+const SEM_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS sem_kv (k TEXT PRIMARY KEY, c INTEGER NOT NULL, v BLOB NOT NULL);";
+/// PROSE GATE for the learned tiers: at least two plain word-ish tokens (2..=24 alnum chars).
+/// The KV callers (auth records, sessions, vault entries) store base64 blobs — one giant token —
+/// and those must never train the semantic space, absorb into topics, or trigger a space load:
+/// distributional meaning lives in prose, and the KV hot path must stay spawn-cheap.
+#[cfg(any(feature = "semantic-db", feature = "topics"))]
+fn prose_like(text: &str) -> bool {
+    let mut plain = 0usize;
+    for tok in text.split(|c: char| !c.is_alphanumeric()) {
+        if tok.len() >= 2 && tok.len() <= 24 {
+            plain += 1;
+            if plain >= 2 { return true; }
+        }
+    }
+    false
+}
 /// topic -> episode indices for one scope (lists[k()] is the no-topic bucket, so facts absorbed
 /// while the model was cold stay reachable through the gate). `gen`/`upto` tie it to the scope's
 /// mutation state; `tokens_at` ties it to the model state (rebuilt once the model doubles).
@@ -107,9 +127,14 @@ pub struct NeuronDB {
     // so the quantum-aware read costs one atomic load — not two SQL lookups — on an ordinary store.
     // Per-process: a fresh handle re-probes once; quantum writes in this process keep it current.
     #[cfg(feature = "quantum-db")] q_hint: std::sync::atomic::AtomicI8,
-    #[cfg(feature = "topics")] tm: Mutex<crate::topics::TopicModel>,
+    // the statistics-tier models load LAZILY (None until an op needs one) and persist only when
+    // dirty — so a spawn-per-op host pays nothing for KV verbs that never touch meaning.
+    #[cfg(feature = "topics")] tm: Mutex<Option<crate::topics::TopicModel>>,
+    #[cfg(feature = "topics")] tm_dirty: std::sync::atomic::AtomicBool,
     #[cfg(feature = "topics")] postings: Mutex<HashMap<String, TopicPostings>>,
-    #[cfg(all(feature = "fisher", feature = "semantic"))] fh: Mutex<crate::fisher::FisherHead>,
+    #[cfg(all(feature = "fisher", feature = "semantic"))] fh: Mutex<Option<crate::fisher::FisherHead>>,
+    #[cfg(all(feature = "fisher", feature = "semantic"))] fh_dirty: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "semantic-db")] sem_loaded: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for NeuronDB {
@@ -161,34 +186,21 @@ impl NeuronDB {
             conn.execute_batch(SCHEMA).expect("schema");   // CREATE IF NOT EXISTS — idempotent across shards
             shards.push(Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }));
         }
-        #[cfg(feature = "semantic")] let sem = crate::semantic::SemanticSpace::new();
-        // reload the statistics tier's learned state (if any): reads tolerate a missing stats_kv
-        // (a store that never learned), and a dim-drifted fisher head is discarded, not misread.
-        #[cfg(feature = "topics")]
-        let tm = {
-            let g = shards[0].lock().unwrap_or_else(|e| e.into_inner());
-            let blob: String = g.conn.query_row("SELECT v FROM stats_kv WHERE kind='topics' AND scope='' AND k='model'", [], |r| r.get(0)).unwrap_or_default();
-            crate::topics::TopicModel::load(&blob).unwrap_or_else(|| crate::topics::TopicModel::new(TOPIC_K))
-        };
-        #[cfg(all(feature = "fisher", feature = "semantic"))]
-        let fh = {
-            let g = shards[0].lock().unwrap_or_else(|e| e.into_inner());
-            let blob: String = g.conn.query_row("SELECT v FROM stats_kv WHERE kind='fisher' AND scope='' AND k='head'", [], |r| r.get(0)).unwrap_or_default();
-            crate::fisher::FisherHead::load(&blob).filter(|h| h.dim() == sem.dim())
-                .unwrap_or_else(|| crate::fisher::FisherHead::new(sem.dim()))
-        };
         NeuronDB {
             // cap is PER-SHARD, so divide the ~256 global cached-scope budget across shards (with a floor so
             // a single tenant's co-located sub/cross scopes don't thrash). Eviction is per-shard; an evicted
             // scope just reloads from its durable log, so this bounds memory without risking correctness.
             shards, max_facts, cap: (256 / nshards).max(32),
             flush_every: flush_every.max(1),
-            #[cfg(feature = "semantic")] sem: Mutex::new(sem),
+            #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
             #[cfg(feature = "semantic")] sem_threshold: 0.20,
             #[cfg(feature = "quantum-db")] q_hint: std::sync::atomic::AtomicI8::new(0),
-            #[cfg(feature = "topics")] tm: Mutex::new(tm),
+            #[cfg(feature = "topics")] tm: Mutex::new(None),
+            #[cfg(feature = "topics")] tm_dirty: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "topics")] postings: Mutex::new(HashMap::new()),
-            #[cfg(all(feature = "fisher", feature = "semantic"))] fh: Mutex::new(fh),
+            #[cfg(all(feature = "fisher", feature = "semantic"))] fh: Mutex::new(None),
+            #[cfg(all(feature = "fisher", feature = "semantic"))] fh_dirty: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "semantic-db")] sem_loaded: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -285,13 +297,73 @@ impl NeuronDB {
     fn sem_guard(&self) -> std::sync::MutexGuard<'_, crate::semantic::SemanticSpace> { self.sem.lock().unwrap_or_else(|e| e.into_inner()) }
     // The statistics tier's locks follow a single-lock discipline: no path holds two of
     // {shard, sem, tm, postings, fh} at once (data is snapshotted between acquisitions), except
-    // the harmless shard->postings freshness peek — so no ordering cycle can form.
+    // the harmless shard->postings freshness peek — so no ordering cycle can form. The loaders
+    // below read their stats_kv/sem_kv blob BETWEEN lock acquisitions; a racing double-read
+    // wastes one parse, never state.
+    /// The topic model, loaded from stats_kv on FIRST touch (a KV-only spawn never pays this).
     #[cfg(feature = "topics")]
-    fn tm_guard(&self) -> std::sync::MutexGuard<'_, crate::topics::TopicModel> { self.tm.lock().unwrap_or_else(|e| e.into_inner()) }
+    fn tm_loaded(&self) -> std::sync::MutexGuard<'_, Option<crate::topics::TopicModel>> {
+        {
+            let g = self.tm.lock().unwrap_or_else(|e| e.into_inner());
+            if g.is_some() { return g; }
+        }
+        let blob: String = {
+            let c = self.catalog();
+            c.conn.query_row("SELECT v FROM stats_kv WHERE kind='topics' AND scope='' AND k='model'", [], |r| r.get(0)).unwrap_or_default()
+        };
+        let m = crate::topics::TopicModel::load(&blob).unwrap_or_else(|| crate::topics::TopicModel::new(TOPIC_K));
+        let mut g = self.tm.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() { *g = Some(m); }
+        g
+    }
     #[cfg(feature = "topics")]
     fn postings_guard(&self) -> std::sync::MutexGuard<'_, HashMap<String, TopicPostings>> { self.postings.lock().unwrap_or_else(|e| e.into_inner()) }
+    /// The discriminant head, loaded from stats_kv on first touch (dim-drifted dumps discarded).
     #[cfg(all(feature = "fisher", feature = "semantic"))]
-    fn fh_guard(&self) -> std::sync::MutexGuard<'_, crate::fisher::FisherHead> { self.fh.lock().unwrap_or_else(|e| e.into_inner()) }
+    fn fh_loaded(&self) -> std::sync::MutexGuard<'_, Option<crate::fisher::FisherHead>> {
+        {
+            let g = self.fh.lock().unwrap_or_else(|e| e.into_inner());
+            if g.is_some() { return g; }
+        }
+        let dim = { self.sem_guard().dim() };
+        let blob: String = {
+            let c = self.catalog();
+            c.conn.query_row("SELECT v FROM stats_kv WHERE kind='fisher' AND scope='' AND k='head'", [], |r| r.get(0)).unwrap_or_default()
+        };
+        let h = crate::fisher::FisherHead::load(&blob).filter(|h| h.dim() == dim)
+            .unwrap_or_else(|| crate::fisher::FisherHead::new(dim));
+        let mut g = self.fh.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() { *g = Some(h); }
+        g
+    }
+    /// Load the durable semantic space once per handle, on the first op that needs meaning.
+    /// Tolerates a missing sem_kv (nothing persisted yet). Rows are read under the catalog lock,
+    /// imported under the sem lock with the flag re-checked inside, so a race serializes there.
+    #[cfg(feature = "semantic-db")]
+    fn sem_ensure_loaded(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.sem_loaded.load(SeqCst) { return; }
+        let rows: Vec<(String, i64, Vec<u8>)> = {
+            let c = self.catalog();
+            let mut st = match c.conn.prepare_cached("SELECT k,c,v FROM sem_kv") {
+                Ok(s) => s,
+                Err(_) => { self.sem_loaded.store(true, SeqCst); return; }   // table absent: nothing durable yet
+            };
+            let collected: Vec<(String, i64, Vec<u8>)> = match st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Vec<u8>>(2)?))) {
+                Ok(it) => it.flatten().collect(),
+                Err(_) => Vec::new(),
+            };
+            collected
+        };
+        let mut s = self.sem_guard();
+        if self.sem_loaded.swap(true, SeqCst) { return; }   // another thread imported while we read
+        for (k, cnum, blob) in rows {
+            if k.is_empty() { s.set_tokens(cnum.max(0) as u64); continue; }
+            let mut v = Vec::with_capacity(blob.len() / 4);
+            for ch in blob.chunks_exact(4) { v.push(f32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]])); }
+            s.import_word(&k, cnum.max(0) as u32, v);
+        }
+    }
 
     /// Persist all scopes with unsaved (write-behind) changes. Call before shutdown for durability;
     /// also run automatically on Drop and on LRU eviction.
@@ -315,21 +387,29 @@ impl NeuronDB {
     /// Train the semantic space on arbitrary background text (e.g. a book/corpus), so recall
     /// can fall back to meaning when lexical cues miss. No-op unless built with `semantic`.
     #[cfg(feature = "semantic")]
-    pub fn train_semantic(&self, text: &str) { self.sem_guard().train(text); }
+    pub fn train_semantic(&self, text: &str) {
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
+        self.sem_guard().train(text);
+    }
     /// (vocab words, tokens seen, approx bytes) of the semantic space.
     #[cfg(feature = "semantic")]
     pub fn semantic_stats(&self) -> (usize, u64, usize) {
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
         let s = self.sem_guard(); (s.vocab(), s.tokens(), s.bytes())
     }
     /// The k nearest words to `word` in the learned semantic space (for inspection).
     #[cfg(feature = "semantic")]
     pub fn semantic_neighbors(&self, word: &str, k: usize) -> Vec<(String, f32)> {
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
         self.sem_guard().nearest(word, k)
     }
     /// Compact the semantic space to int8 for read-mostly serving (~4x smaller; recall intact,
     /// a later observe transparently re-expands it).
     #[cfg(feature = "semantic")]
-    pub fn compact_semantic(&self) { self.sem_guard().compact(); }
+    pub fn compact_semantic(&self) {
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
+        self.sem_guard().compact();
+    }
 
     /// Ensure `nid` is in the cache (load from sqlite on miss; evict LRU when over cap).
     fn ensure(inner: &mut Inner, nid: &str, max_facts: usize, cap: usize) {
@@ -437,26 +517,46 @@ impl NeuronDB {
             else { Self::snapshot(conn, nid, e); }
             // the new episodes' word bags, cloned under the lock (Arc<str> clones — cheap) so the
             // topic absorb below runs OUTSIDE it. Typed `::` sub-scopes (vars/stances/moods) are
-            // bookkeeping, not prose — they stay out of the topic space.
+            // bookkeeping, not prose — they stay out of the topic space; so does anything the
+            // prose gate rejects (KV/base64 blobs), and blob-shaped tokens are filtered from the
+            // bag so a stray hash inside real prose never enters the topic vocabulary.
             #[cfg(feature = "topics")]
-            if w > 0 && !nid.contains("::") {
+            if w > 0 && !nid.contains("::") && prose_like(text) {
                 let start = e.n.episodes.len().saturating_sub(w);
-                bags.extend(e.n.episodes[start..].iter().map(|ep| ep.raw.clone()));
+                for ep in &e.n.episodes[start..] {
+                    let bag: Vec<std::sync::Arc<str>> = ep.raw.iter().filter(|t| t.len() <= 24).cloned().collect();
+                    if bag.len() >= 2 { bags.push(bag); }
+                }
             }
         }
-        #[cfg(feature = "semantic")] self.sem_guard().train(text);
+        // the semantic space trains on PROSE only under semantic-db (a KV blob must not load or
+        // grow the durable space); a resident-only build keeps the historical train-everything.
+        #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
+        self.sem_guard().train(text);
+        #[cfg(feature = "semantic-db")]
+        if prose_like(text) { self.sem_ensure_loaded(); self.sem_guard().train(text); }
         // streaming topic learning: each new fact folds in against the current counts and commits
         // its assignments (the Random-Indexing posture — accumulate forever, no refit required)
         #[cfg(feature = "topics")]
-        if !bags.is_empty() { let mut tm = self.tm_guard(); for b in &bags { tm.absorb(b); } }
+        if !bags.is_empty() {
+            let mut g = self.tm_loaded();
+            if let Some(tm) = g.as_mut() {
+                for b in &bags { tm.absorb(b); }
+                self.tm_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         // sampled scope moment (1-in-16, content-gated): feeds the scope-vs-rest side of the
         // discriminant head so "does this fact even look like this scope" is answerable on demand
         #[cfg(all(feature = "fisher", feature = "semantic"))]
-        if w > 0 && !nid.contains("::") && sample16(text) {
+        if w > 0 && !nid.contains("::") && sample16(text) && prose_like(text) {
+            #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
             let x = { self.sem_guard().embed(text) };
             if let Some(x) = x {
                 let class = format!("scope:{}", Self::shard_key(nid));
-                self.fh_guard().observe_labeled(&class, &x);
+                if let Some(fh) = self.fh_loaded().as_mut() {
+                    fh.observe_labeled(&class, &x);
+                    self.fh_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         w
@@ -480,19 +580,39 @@ impl NeuronDB {
             #[cfg(feature = "topics")]
             if acc > 0 && !nid.contains("::") {
                 let start = e.n.episodes.len().saturating_sub(acc);
-                bags.extend(e.n.episodes[start..].iter().map(|ep| ep.raw.clone()));
+                for ep in &e.n.episodes[start..] {
+                    let bag: Vec<std::sync::Arc<str>> = ep.raw.iter().filter(|t| t.len() <= 24).cloned().collect();
+                    if bag.len() >= 2 { bags.push(bag); }
+                }
             }
         }
-        #[cfg(feature = "semantic")] { let mut s = self.sem_guard(); for t in texts { s.train(t); } }
+        #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
+        { let mut s = self.sem_guard(); for t in texts { s.train(t); } }
+        #[cfg(feature = "semantic-db")]
+        if texts.iter().any(|t| prose_like(t)) {
+            self.sem_ensure_loaded();
+            let mut s = self.sem_guard();
+            for t in texts.iter().filter(|t| prose_like(t)) { s.train(t); }
+        }
         #[cfg(feature = "topics")]
-        if !bags.is_empty() { let mut tm = self.tm_guard(); for b in &bags { tm.absorb(b); } }
+        if !bags.is_empty() {
+            let mut g = self.tm_loaded();
+            if let Some(tm) = g.as_mut() {
+                for b in &bags { tm.absorb(b); }
+                self.tm_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         #[cfg(all(feature = "fisher", feature = "semantic"))]
         if w > 0 && !nid.contains("::") {
-            for t in texts.iter().filter(|t| sample16(t)) {
+            for t in texts.iter().filter(|t| sample16(t) && prose_like(t)) {
+                #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
                 let x = { self.sem_guard().embed(t) };
                 if let Some(x) = x {
                     let class = format!("scope:{}", Self::shard_key(nid));
-                    self.fh_guard().observe_labeled(&class, &x);
+                    if let Some(fh) = self.fh_loaded().as_mut() {
+                        fh.observe_labeled(&class, &x);
+                        self.fh_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -540,11 +660,24 @@ impl NeuronDB {
             }
         };
         if facts.is_empty() { return None; }
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
         let mut s = self.sem_guard();
         let ranked = s.rank_cached(query, &texts);
         match ranked.first() {
             Some(&(i, score)) if score >= self.sem_threshold => {
+                // SPECIFICITY gate: with enough candidates, the winner must stand OUT of the
+                // field, not merely clear the absolute bar. A templated scope ("record recN maps
+                // to dataN") ranks EVERY fact ~equal on shared frame words — visible since the
+                // space became durable (a fresh process used to know nothing) — and the honest
+                // answer to "which one" there is none-of-them. A real paraphrase hit towers over
+                // the field median; frame similarity does not. Small candidate sets keep the
+                // absolute-threshold behavior (a median needs a field to be meaningful).
+                const SPEC_MIN_N: usize = 3;
+                if ranked.len() >= SPEC_MIN_N {
+                    let median = ranked[ranked.len() / 2].1;
+                    if score - median < 0.10 { return None; }
+                }
                 let (fact, value) = facts[i].clone();
                 // i indexes the CANDIDATE list; idxs[i] is the true episode index in the scope
                 Some(Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: idxs[i] })
@@ -580,6 +713,7 @@ impl NeuronDB {
             }
         };
         if facts.is_empty() { return Vec::new(); }
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
         let ranked = { let mut s = self.sem_guard(); s.rank_cached(query, &texts) };
         if ranked.is_empty() { return self.recall_many(nid, query, k); } // no semantic signal -> lexical
@@ -587,7 +721,7 @@ impl NeuronDB {
         // axis (helped-vs-hurt), best first — absent (and costless) while the head is inert.
         #[cfg(all(feature = "fisher", feature = "semantic"))]
         let fisher_list: Vec<(usize, f32)> = {
-            let ax = { self.fh_guard().axis(OUTCOME_POS, OUTCOME_NEG) };
+            let ax = { self.fh_loaded().as_mut().and_then(|h| h.axis(OUTCOME_POS, OUTCOME_NEG)) };
             match ax {
                 Some(ax) => { let mut s = self.sem_guard(); s.project_cached(&ax.w, ax.c, &texts).into_iter().filter(|&(_, z)| z > 0.0).collect() }
                 None => Vec::new(),
@@ -741,7 +875,10 @@ impl NeuronDB {
             w = e.n.observe(&line);
             Self::snapshot(conn, nid, e);
         }
-        #[cfg(feature = "semantic")] self.sem_guard().train(value);
+        #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
+        self.sem_guard().train(value);
+        #[cfg(feature = "semantic-db")]
+        if prose_like(value) { self.sem_ensure_loaded(); self.sem_guard().train(value); }
         w
     }
     /// Read a named variable's FULL value (everything after the first " is "), so multi-word values
@@ -819,7 +956,10 @@ impl NeuronDB {
             Self::snapshot(conn, nid, e);
             r
         };
-        #[cfg(feature = "semantic")] self.sem_guard().train(feeling);
+        #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
+        self.sem_guard().train(feeling);
+        #[cfg(feature = "semantic-db")]
+        if prose_like(feeling) { self.sem_ensure_loaded(); self.sem_guard().train(feeling); }
         out
     }
     /// Record a stance with the reactivity of an explicitly-attached persona: high Neuroticism (and a hot
@@ -927,9 +1067,14 @@ impl NeuronDB {
         }
         #[cfg(all(feature = "fisher", feature = "semantic"))]
         if !touched.is_empty() {
+            #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
             let xs: Vec<Vec<f32>> = { let s = self.sem_guard(); touched.iter().filter_map(|t| s.embed(t)).collect() };
-            let mut fh = self.fh_guard();
-            for x in &xs { fh.observe_labeled(OUTCOME_POS, x); }
+            if !xs.is_empty() {
+                if let Some(fh) = self.fh_loaded().as_mut() {
+                    for x in &xs { fh.observe_labeled(OUTCOME_POS, x); }
+                    self.fh_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
         hit
     }
@@ -982,9 +1127,14 @@ impl NeuronDB {
         {
             drop(g);   // release the shard before touching sem/fisher (single-lock discipline)
             if !removed_texts.is_empty() {
+                #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
                 let xs: Vec<Vec<f32>> = { let s = self.sem_guard(); removed_texts.iter().filter_map(|t| s.embed(t)).collect() };
-                let mut fh = self.fh_guard();
-                for x in &xs { fh.observe_labeled(OUTCOME_NEG, x); }
+                if !xs.is_empty() {
+                    if let Some(fh) = self.fh_loaded().as_mut() {
+                        for x in &xs { fh.observe_labeled(OUTCOME_NEG, x); }
+                        self.fh_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
             }
         }
         (before - after, after)
@@ -1025,7 +1175,10 @@ impl NeuronDB {
     /// right now (cold model, empty scope, or too much unindexed history) — callers fail open.
     #[cfg(feature = "topics")]
     fn ensure_topic_postings(&self, nid: &str) -> bool {
-        let ttok = { let tm = self.tm_guard(); if tm.tokens() == 0 { return false; } tm.tokens() };
+        let ttok = {
+            let g = self.tm_loaded();
+            match g.as_ref() { Some(tm) if tm.tokens() > 0 => tm.tokens(), _ => return false }
+        };
         // snapshot the scope's mutation state and the un-posted tail's word bags (Arc clones).
         // The shard->postings freshness peek is the one sanctioned nested lock pair.
         let (gen, len, from, bags): (u64, usize, usize, Vec<Vec<std::sync::Arc<str>>>) = {
@@ -1051,7 +1204,8 @@ impl NeuronDB {
         // it to whichever side won the majority); a fact the model can't place lands in the
         // no-topic bucket so it stays reachable through the gate.
         let (kk, assigns): (usize, Vec<Vec<usize>>) = {
-            let tm = self.tm_guard();
+            let g = self.tm_loaded();
+            let Some(tm) = g.as_ref() else { return false };
             let kk = tm.k();
             (kk, bags.iter().map(|b| {
                 let mix = tm.fold_in(b);
@@ -1084,7 +1238,8 @@ impl NeuronDB {
         // two-word query must reach a topic its words dominate even when the joint fold tips
         // elsewhere (the word-level view is what recall needs; the doc-level view alone is not).
         let qtopics: Vec<usize> = {
-            let tm = self.tm_guard();
+            let g = self.tm_loaded();
+            let Some(tm) = g.as_ref() else { return None };
             if tm.tokens() == 0 { return None; }
             let mut ts: Vec<usize> = tm.fold_in(&qtok).into_iter().map(|(t, _)| t).collect();
             for w in &qtok { if let Some(t) = tm.word_topic(w) { ts.push(t); } }
@@ -1138,28 +1293,34 @@ impl NeuronDB {
         let mut top: Vec<(usize, usize)> = counts.into_iter().filter(|&(_, c)| c > 0).collect();
         top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         top.truncate(m);
-        let tm = self.tm_guard();
+        let g = self.tm_loaded();
+        let Some(tm) = g.as_ref() else { return Vec::new() };
         top.into_iter().map(|(t, c)| (t, c as f32 / total as f32, tm.top_words(t, words))).collect()
     }
     /// (k, documents absorbed, tokens assigned, vocabulary) of the topic model — its stats line.
     #[cfg(feature = "topics")]
     pub fn topics_stats(&self) -> (usize, u64, u64, usize) {
-        let tm = self.tm_guard();
-        (tm.k(), tm.docs(), tm.tokens(), tm.vocab_len())
+        let g = self.tm_loaded();
+        match g.as_ref() { Some(tm) => (tm.k(), tm.docs(), tm.tokens(), tm.vocab_len()), None => (0, 0, 0, 0) }
     }
 
     /// The learned outcome axis (helped-vs-hurt), or None while the head is inert.
     #[cfg(all(feature = "fisher", feature = "semantic"))]
-    pub fn outcome_axis(&self) -> Option<crate::fisher::Axis> { self.fh_guard().axis(OUTCOME_POS, OUTCOME_NEG) }
+    pub fn outcome_axis(&self) -> Option<crate::fisher::Axis> {
+        self.fh_loaded().as_mut().and_then(|h| h.axis(OUTCOME_POS, OUTCOME_NEG))
+    }
     /// The discriminant head's observed classes with their effective sample weights.
     #[cfg(all(feature = "fisher", feature = "semantic"))]
-    pub fn fisher_classes(&self) -> Vec<(String, f64)> { self.fh_guard().classes() }
+    pub fn fisher_classes(&self) -> Vec<(String, f64)> {
+        self.fh_loaded().as_ref().map(|h| h.classes()).unwrap_or_default()
+    }
     /// The outcome axis made READABLE: the nearest vocabulary words to the helpful (+) and the
     /// harmful (−) direction, plus the effective sample weight behind each side. None while the
     /// head is inert — an axis nobody earned prints nothing.
     #[cfg(all(feature = "fisher", feature = "semantic"))]
     pub fn axis_words(&self, m: usize) -> Option<(Vec<(String, f32)>, Vec<(String, f32)>, f64, f64)> {
         let ax = self.outcome_axis()?;
+        #[cfg(feature = "semantic-db")] self.sem_ensure_loaded();
         let s = self.sem_guard();
         let pos = s.nearest_vec(&ax.w, m);
         let neg_w: Vec<f32> = ax.w.iter().map(|v| -v).collect();
@@ -1167,14 +1328,18 @@ impl NeuronDB {
         Some((pos, neg, ax.n_pos, ax.n_neg))
     }
 
-    /// Persist the statistics tier's learned state into the lazily-created stats_kv side table.
-    /// Runs on flush_all and Drop; models that never learned write nothing, so an untouched
-    /// store keeps a byte-identical schema (the trust_kv / quantum_kv policy). No-op without
+    /// Persist the statistics tier's learned state into the lazily-created stats_kv side table
+    /// (and, under `semantic-db`, the touched words of the semantic space into sem_kv). Runs on
+    /// flush_all and Drop; DIRTY-GATED, so a read-only spawn that merely loaded a model writes
+    /// nothing back, and a store that never learned keeps a byte-identical schema. No-op without
     /// the features.
     fn stats_persist(&self) {
         #[cfg(feature = "topics")]
-        {
-            let blob = { let tm = self.tm_guard(); if tm.tokens() == 0 { None } else { Some(tm.dump()) } };
+        if self.tm_dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            let blob = {
+                let g = self.tm.lock().unwrap_or_else(|e| e.into_inner());
+                match g.as_ref() { Some(tm) if tm.tokens() > 0 => Some(tm.dump()), _ => None }
+            };
             if let Some(blob) = blob {
                 let g = self.catalog();
                 let _ = g.conn.execute_batch(STATS_SCHEMA);
@@ -1182,12 +1347,37 @@ impl NeuronDB {
             }
         }
         #[cfg(all(feature = "fisher", feature = "semantic"))]
-        {
-            let blob = { let mut fh = self.fh_guard(); if fh.updates() == 0 { None } else { Some(fh.dump()) } };
+        if self.fh_dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            let blob = {
+                let mut g = self.fh.lock().unwrap_or_else(|e| e.into_inner());
+                match g.as_mut() { Some(fh) if fh.updates() > 0 => Some(fh.dump()), _ => None }
+            };
             if let Some(blob) = blob {
                 let g = self.catalog();
                 let _ = g.conn.execute_batch(STATS_SCHEMA);
                 let _ = g.conn.execute("INSERT INTO stats_kv(kind,scope,k,v) VALUES('fisher','','head',?1) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?1", params![blob]);
+            }
+        }
+        #[cfg(feature = "semantic-db")]
+        {
+            // incremental: only the words train() touched this process, one transaction. The
+            // meta row (k='') carries tokens_seen so the emb_cache drift bound survives too.
+            let (rows, tokens) = { let mut s = self.sem_guard(); (s.export_touched(), s.tokens()) };
+            if !rows.is_empty() {
+                let g = self.catalog();
+                let _ = g.conn.execute_batch(SEM_SCHEMA);
+                let tx = match g.conn.unchecked_transaction() { Ok(t) => t, Err(_) => return };
+                {
+                    if let Ok(mut st) = tx.prepare_cached("INSERT INTO sem_kv(k,c,v) VALUES(?1,?2,?3) ON CONFLICT(k) DO UPDATE SET c=?2, v=?3") {
+                        for (w, c, v) in &rows {
+                            let mut blob = Vec::with_capacity(v.len() * 4);
+                            for f in v { blob.extend_from_slice(&f.to_le_bytes()); }
+                            let _ = st.execute(params![w, *c as i64, blob]);
+                        }
+                        let _ = st.execute(params!["", tokens as i64, Vec::<u8>::new()]);
+                    }
+                }
+                let _ = tx.commit();
             }
         }
     }

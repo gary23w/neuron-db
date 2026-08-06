@@ -30,6 +30,7 @@ quantum = []                   # opt-in: the quantum-teleportation tier — enta
 quantum-db = ["quantum", "sqlite"]   # + durable quantum state (entanglements/no-clone/superposition side tables) on the NeuronDB SQLite file; wires the CLI + HTTP quantum ops
 fisher = []                    # opt-in: two-class Fisher linear-discriminant heads over feature vectors (outcome axis, scope-vs-rest) — ranking + inspection only, inert until fed (std-only)
 topics = []                    # opt-in: latent-Dirichlet-allocation topics over fact word-bags — topic-gated scope-wide fuzzy recall + "what is this scope about" inspection (std-only, deterministic Gibbs)
+semantic-db = ["semantic", "sqlite"]   # + durable semantic space: per-word context vectors persist in a lazy sem_kv side table, so fuzzy recall (and the fisher/topics tiers above it) survives process restarts — REQUIRED for spawn-per-op CLI hosts; prose-gated so KV/blob writes never train or load it
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }

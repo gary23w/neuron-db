@@ -320,8 +320,21 @@ topics` / `neuron axis` CLI verbs, and `tests/stats_tier.rs` end-to-end. Every t
 | lexical recall (`db_bench` 4, hit path) | unchanged (the tier never runs on a lexical hit) |
 | `scope_topics`, postings warm | 58 µs/call |
 
-**Known boundary:** the outcome hooks embed through the semantic space, which is
-resident-only (SEMANTIC.md future-work #3) — so the axis *learns* in long-lived mounts
-(MCP/HTTP/embedded) and only accumulates scope moments across one-shot CLI invocations.
-The head and the topic model themselves persist and reload exactly (`stats_kv`).
-Persisting the semantic space would light the CLI path up with no further change here.
+**Known boundary — CLOSED by `semantic-db`.** The outcome hooks embed through the semantic
+space, which was resident-only (SEMANTIC.md future-work #3) — so at first the axis could only
+*learn* in long-lived mounts. The follow-up `semantic-db` feature persists the space per-word
+in a lazy `sem_kv` side table (f32-LE blobs, loaded on the first op that needs meaning, saved
+touched-words-only on flush/Drop), which lights up every spawn-per-op CLI host: paraphrase
+recall, the topic gate, and the outcome axis now all survive process restarts. Two guards came
+with it, both born from real failures on that path:
+
+- **The prose gate.** KV callers (auth records, vaults, ledgers) store base64 blobs; those must
+  never train, load, or grow the durable space (or the topic vocabulary). Anything without two
+  plain 2–24-char tokens is ignored by the learned tiers, and blob-shaped tokens are filtered
+  from topic bags. KV spawns stay spawn-cheap: no model load, no space load, no write-back
+  (model persistence is dirty-gated).
+- **The specificity gate.** A durable space knows evicted/forgotten words forever, and on a
+  templated scope ("record recN maps to dataN") EVERY fact ranks ~equal on frame words — so the
+  fallback's absolute threshold started answering "which one" with any-of-them. With ≥3
+  candidates the winner must now beat the field median by 0.10 within-space cosine, or the
+  fallback abstains. A real paraphrase hit towers over the median; frame similarity does not.

@@ -74,6 +74,53 @@ fn scope_topics_reports_the_scopes_themes() {
     assert!(all_words.iter().any(|w| ["latency", "cache", "api"].contains(&w.as_str())), "server theme missing: {all_words:?}");
 }
 
+// `semantic-db`: the trained space survives a fresh handle (= a fresh process). Open #1 grounds
+// meaning and stores the fact; open #2 — a cold handle whose resident space starts empty —
+// resolves a zero-shared-words paraphrase purely from the reloaded sem_kv rows. This is the
+// contract a spawn-per-op CLI host (nl-veil) depends on: every spawn recalls with yesterday's
+// geometry.
+#[cfg(feature = "semantic-db")]
+#[test]
+fn semantic_space_survives_a_fresh_handle() {
+    let path = tmp("semdb");
+    {
+        let db = NeuronDB::open(&path, 500);
+        for _ in 0..30 { db.train_semantic(CORPUS); }
+        db.observe("u", "the wifi password is vekam73");
+        db.flush_all();
+    }
+    let db2 = NeuronDB::open(&path, 500);
+    let (vocab, tokens, _) = db2.semantic_stats();
+    assert!(vocab > 0 && tokens > 0, "the space must reload from sem_kv (vocab {vocab}, tokens {tokens})");
+    let r = db2.recall("u", "what is the thing I use to get online?");
+    assert!(r.is_some(), "a COLD handle must resolve the paraphrase from the durable space");
+    assert_eq!(r.unwrap().value, "vekam73");
+}
+
+// The prose gate: a KV/base64 write must not train, load, or persist the space — the spawn-cheap
+// guarantee for auth/vault/ledger writes — while ordinary prose does persist.
+#[cfg(feature = "semantic-db")]
+#[test]
+fn kv_blobs_never_enter_the_durable_space() {
+    let kv = tmp("semkv");
+    {
+        let db = NeuronDB::open(&kv, 500);
+        db.observe("cfg", "eyJ2IjoxLCJ3aG8iOiJmaXJzdCB3cml0ZSJ9");   // the KV callers' shape
+        db.flush_all();
+    }
+    let (vocab, _, _) = NeuronDB::open(&kv, 500).semantic_stats();
+    assert_eq!(vocab, 0, "a base64 blob must not create durable vocabulary");
+
+    let pr = tmp("sempr");
+    {
+        let db = NeuronDB::open(&pr, 500);
+        db.observe("u", "the deploy pipeline promotes builds to the staging cluster");
+        db.flush_all();
+    }
+    let (vocab2, _, _) = NeuronDB::open(&pr, 500).semantic_stats();
+    assert!(vocab2 > 0, "ordinary prose must persist its vocabulary");
+}
+
 // The fail-open guarantee: on a tiny scope with an un-foldable paraphrase the gate abstains and
 // everything behaves exactly as the semantic tier always has — the classic wifi paraphrase still
 // resolves, the unrelated query still abstains.

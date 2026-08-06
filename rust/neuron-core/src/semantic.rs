@@ -84,6 +84,7 @@ pub struct SemanticSpace {
     tokens_seen: u64,
     emb_cache: HashMap<String, (Vec<i8>, f32, u64)>, // fact -> (int8 unit embedding, scale, epoch)
     ctx_q: HashMap<String, (Vec<i8>, f32)>,          // int8 context vectors after compact() (serving mode)
+    touched: std::collections::HashSet<String>,      // words train() changed since the last export (durability)
 }
 impl Default for SemanticSpace { fn default() -> Self { Self::new() } }
 
@@ -101,7 +102,7 @@ impl SemanticSpace {
     pub fn new() -> Self { Self::with_dim(DEFAULT_DIM) }
     /// Build a space with a chosen dimensionality — the DIM knob. All vectors within one space
     /// share this dim (mixing spaces of different dim is not meaningful). Default (new) is 256.
-    pub fn with_dim(dim: usize) -> Self { SemanticSpace { dim, ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new(), ctx_q: HashMap::new() } }
+    pub fn with_dim(dim: usize) -> Self { SemanticSpace { dim, ctx: HashMap::new(), cnt: HashMap::new(), tokens_seen: 0, emb_cache: HashMap::new(), ctx_q: HashMap::new(), touched: std::collections::HashSet::new() } }
     pub fn vocab(&self) -> usize { self.ctx.len() + self.ctx_q.len() }
     pub fn count(&self, w: &str) -> u32 { self.cnt.get(w).copied().unwrap_or(0) }
     pub fn tokens(&self) -> u64 { self.tokens_seen }
@@ -152,8 +153,32 @@ impl SemanticSpace {
             for j in lo..hi {
                 if j != i { Self::add_index(v, &toks[j], dim); }
             }
+            self.touched.insert(toks[i].clone());   // durability: this word's vector changed
         }
     }
+
+    // --- per-word durability (feature `semantic-db` wires these to a side table) ---
+    /// Drain the words train() has changed since the last export, with their occurrence count
+    /// and full-precision context vector — the incremental persistence unit. Words longer than
+    /// 24 chars are dropped here (base64/blob chunks carry no distributional meaning and would
+    /// bloat the durable vocabulary); their resident vectors still work for this process.
+    pub fn export_touched(&mut self) -> Vec<(String, u32, Vec<f32>)> {
+        let words: Vec<String> = self.touched.drain().filter(|w| w.len() <= 24).collect();
+        words.into_iter().filter_map(|w| {
+            let v = self.ctx.get(&w)?.clone();
+            let c = self.cnt.get(&w).copied().unwrap_or(0);
+            Some((w, c, v))
+        }).collect()
+    }
+    /// Restore one persisted word (reload path). Does NOT mark it touched — a load must not
+    /// trigger a full re-save. A dim-mismatched vector is dropped rather than misread.
+    pub fn import_word(&mut self, word: &str, count: u32, ctx: Vec<f32>) {
+        if ctx.len() != self.dim { return; }
+        self.cnt.insert(word.to_string(), count);
+        self.ctx.insert(word.to_string(), ctx);
+    }
+    /// Restore the trained-token counter (reload path; drives the emb_cache drift bound).
+    pub fn set_tokens(&mut self, t: u64) { self.tokens_seen = self.tokens_seen.max(t); }
 
     /// PCA projection of the `top_n` most frequent words onto the top `k` principal
     /// components, by power iteration + deflation (pure std, no linalg crate). Each word's
