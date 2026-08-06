@@ -530,11 +530,15 @@ impl NeuronDB {
             }
         }
         // the semantic space trains on PROSE only under semantic-db (a KV blob must not load or
-        // grow the durable space); a resident-only build keeps the historical train-everything.
+        // grow the durable space), and only on text the store actually KEPT (w > 0): transient
+        // chatter — questions encode() rejects, restatements dedup drops — must not re-shape the
+        // durable geometry. Measured live: three turns of a model's file-op deflections retrained
+        // "frozen archive" toward directory vocabulary and a working paraphrase recall went dark.
+        // A resident-only build keeps the historical train-everything.
         #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
         self.sem_guard().train(text);
         #[cfg(feature = "semantic-db")]
-        if prose_like(text) { self.sem_ensure_loaded(); self.sem_guard().train(text); }
+        if w > 0 && prose_like(text) { self.sem_ensure_loaded(); self.sem_guard().train(text); }
         // streaming topic learning: each new fact folds in against the current counts and commits
         // its assignments (the Random-Indexing posture — accumulate forever, no refit required)
         #[cfg(feature = "topics")]
@@ -589,7 +593,7 @@ impl NeuronDB {
         #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
         { let mut s = self.sem_guard(); for t in texts { s.train(t); } }
         #[cfg(feature = "semantic-db")]
-        if texts.iter().any(|t| prose_like(t)) {
+        if w > 0 && texts.iter().any(|t| prose_like(t)) {
             self.sem_ensure_loaded();
             let mut s = self.sem_guard();
             for t in texts.iter().filter(|t| prose_like(t)) { s.train(t); }
@@ -878,7 +882,7 @@ impl NeuronDB {
         #[cfg(all(feature = "semantic", not(feature = "semantic-db")))]
         self.sem_guard().train(value);
         #[cfg(feature = "semantic-db")]
-        if prose_like(value) { self.sem_ensure_loaded(); self.sem_guard().train(value); }
+        if w > 0 && prose_like(value) { self.sem_ensure_loaded(); self.sem_guard().train(value); }
         w
     }
     /// Read a named variable's FULL value (everything after the first " is "), so multi-word values
