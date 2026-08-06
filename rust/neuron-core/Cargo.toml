@@ -28,6 +28,8 @@ trust = []                     # opt-in: the learned recall "floor" (outcome-rei
 http = []                      # opt-in: WASM gains a host_http import + fetch/fetched ops (browser host provides fetch)
 quantum = []                   # opt-in: the quantum-teleportation tier — entangled cross-scope links, teleport recall, burn-after-reading facts, superposed values (std-only, in-memory)
 quantum-db = ["quantum", "sqlite"]   # + durable quantum state (entanglements/no-clone/superposition side tables) on the NeuronDB SQLite file; wires the CLI + HTTP quantum ops
+fisher = []                    # opt-in: two-class Fisher linear-discriminant heads over feature vectors (outcome axis, scope-vs-rest) — ranking + inspection only, inert until fed (std-only)
+topics = []                    # opt-in: latent-Dirichlet-allocation topics over fact word-bags — topic-gated scope-wide fuzzy recall + "what is this scope about" inspection (std-only, deterministic Gibbs)
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
@@ -176,3 +178,9 @@ required-features = ["sqlite", "semantic"]
 [[example]]
 name = "quantum_bench"
 required-features = ["quantum-db"]
+
+# statistics tier: ingest overhead with topics+fisher live, absorb/fold/axis unit costs, and the
+# headline — topic-gated blended recall reaching a theme buried far beyond the 4000-fact window.
+[[example]]
+name = "stats_bench"
+required-features = ["sqlite", "semantic", "fisher", "topics"]

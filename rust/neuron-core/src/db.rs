@@ -69,6 +69,34 @@ impl crate::op::Store for NeuronDB {
 // (durable). log_next = next log seq. dirty = the log has entries not yet folded into the snapshot.
 struct Entry { n: Neuron, created: i64, turns: i64, used: u64, dirty: bool, snap_count: usize, log_next: i64 }
 struct Inner { conn: Connection, cache: HashMap<String, Entry>, tick: u64 }
+
+// ---- the statistics tier (features `topics` / `fisher`+`semantic`): shared shapes + dials ----
+// One topic model + one discriminant head per DB handle, resident like the semantic space.
+// Per-scope postings are a SIDECAR CACHE keyed by episode index; the Neuron `gen` counter tells
+// them when a removal shifted indices (pure appends extend incrementally). Everything here is
+// ranking/inspection only, and everything fails open to the pre-tier behavior.
+#[cfg(feature = "topics")] const TOPIC_K: usize = 64;         // topics in the streaming model
+#[cfg(all(feature = "topics", feature = "semantic"))] const GATE_CAP: usize = 4000;   // gated candidate ceiling = the old window size, so a gated miss never costs more than the windowed scan it replaces
+#[cfg(feature = "topics")] const BACKFILL_MAX: usize = 50_000; // most unindexed episodes a lazy postings build will fold in one call; beyond it, fail open
+#[cfg(all(feature = "fisher", feature = "semantic"))] const OUTCOME_POS: &str = "outcome:+";   // strengthened facts land here
+#[cfg(all(feature = "fisher", feature = "semantic"))] const OUTCOME_NEG: &str = "outcome:-";   // explicitly-forgotten facts land here
+// created LAZILY on the first persist of a non-empty model — a store that never learns keeps a
+// byte-identical schema (the trust_kv / quantum_kv policy).
+#[cfg(any(feature = "topics", all(feature = "fisher", feature = "semantic")))]
+const STATS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS stats_kv (kind TEXT NOT NULL, scope TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, scope, k));";
+/// topic -> episode indices for one scope (lists[k()] is the no-topic bucket, so facts absorbed
+/// while the model was cold stay reachable through the gate). `gen`/`upto` tie it to the scope's
+/// mutation state; `tokens_at` ties it to the model state (rebuilt once the model doubles).
+#[cfg(feature = "topics")]
+struct TopicPostings { gen: u64, upto: usize, tokens_at: u64, lists: Vec<Vec<u32>> }
+/// Deterministic 1-in-16 sampling gate (fnv of the text) for scope-moment updates.
+#[cfg(all(feature = "fisher", feature = "semantic"))]
+fn sample16(text: &str) -> bool {
+    let mut h = 1469598103934665603u64;
+    for b in text.bytes() { h ^= b as u64; h = h.wrapping_mul(1099511628211); }
+    h & 15 == 0
+}
+
 pub struct NeuronDB {
     shards: Vec<Mutex<Inner>>,   // cache+connection partitioned by scope family; len 1 for in-memory DBs
     max_facts: usize, cap: usize,
@@ -79,11 +107,17 @@ pub struct NeuronDB {
     // so the quantum-aware read costs one atomic load — not two SQL lookups — on an ordinary store.
     // Per-process: a fresh handle re-probes once; quantum writes in this process keep it current.
     #[cfg(feature = "quantum-db")] q_hint: std::sync::atomic::AtomicI8,
+    #[cfg(feature = "topics")] tm: Mutex<crate::topics::TopicModel>,
+    #[cfg(feature = "topics")] postings: Mutex<HashMap<String, TopicPostings>>,
+    #[cfg(all(feature = "fisher", feature = "semantic"))] fh: Mutex<crate::fisher::FisherHead>,
 }
 
 impl Drop for NeuronDB {
     /// Flush any write-behind buffers on shutdown so a clean exit never loses deferred writes.
     fn drop(&mut self) {
+        // the statistics tier's learned state persists first (isolated: a full disk must not
+        // block the fact flush below)
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.stats_persist()));
         // Lock each shard directly (de-poisoning, like the old guard()) rather than `if let Ok(lock())`:
         // a prior persist panic (e.g. SQLITE_FULL) poisons the mutex, and the old form would silently
         // SKIP this shutdown flush — dropping every dirty write-behind buffer. Each per-entry persist is
@@ -127,15 +161,34 @@ impl NeuronDB {
             conn.execute_batch(SCHEMA).expect("schema");   // CREATE IF NOT EXISTS — idempotent across shards
             shards.push(Mutex::new(Inner { conn, cache: HashMap::new(), tick: 0 }));
         }
+        #[cfg(feature = "semantic")] let sem = crate::semantic::SemanticSpace::new();
+        // reload the statistics tier's learned state (if any): reads tolerate a missing stats_kv
+        // (a store that never learned), and a dim-drifted fisher head is discarded, not misread.
+        #[cfg(feature = "topics")]
+        let tm = {
+            let g = shards[0].lock().unwrap_or_else(|e| e.into_inner());
+            let blob: String = g.conn.query_row("SELECT v FROM stats_kv WHERE kind='topics' AND scope='' AND k='model'", [], |r| r.get(0)).unwrap_or_default();
+            crate::topics::TopicModel::load(&blob).unwrap_or_else(|| crate::topics::TopicModel::new(TOPIC_K))
+        };
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        let fh = {
+            let g = shards[0].lock().unwrap_or_else(|e| e.into_inner());
+            let blob: String = g.conn.query_row("SELECT v FROM stats_kv WHERE kind='fisher' AND scope='' AND k='head'", [], |r| r.get(0)).unwrap_or_default();
+            crate::fisher::FisherHead::load(&blob).filter(|h| h.dim() == sem.dim())
+                .unwrap_or_else(|| crate::fisher::FisherHead::new(sem.dim()))
+        };
         NeuronDB {
             // cap is PER-SHARD, so divide the ~256 global cached-scope budget across shards (with a floor so
             // a single tenant's co-located sub/cross scopes don't thrash). Eviction is per-shard; an evicted
             // scope just reloads from its durable log, so this bounds memory without risking correctness.
             shards, max_facts, cap: (256 / nshards).max(32),
             flush_every: flush_every.max(1),
-            #[cfg(feature = "semantic")] sem: Mutex::new(crate::semantic::SemanticSpace::new()),
+            #[cfg(feature = "semantic")] sem: Mutex::new(sem),
             #[cfg(feature = "semantic")] sem_threshold: 0.20,
             #[cfg(feature = "quantum-db")] q_hint: std::sync::atomic::AtomicI8::new(0),
+            #[cfg(feature = "topics")] tm: Mutex::new(tm),
+            #[cfg(feature = "topics")] postings: Mutex::new(HashMap::new()),
+            #[cfg(all(feature = "fisher", feature = "semantic"))] fh: Mutex::new(fh),
         }
     }
 
@@ -230,6 +283,15 @@ impl NeuronDB {
     // catch_unwind) would otherwise poison it and crash the first recall in the request loop.
     #[cfg(feature = "semantic")]
     fn sem_guard(&self) -> std::sync::MutexGuard<'_, crate::semantic::SemanticSpace> { self.sem.lock().unwrap_or_else(|e| e.into_inner()) }
+    // The statistics tier's locks follow a single-lock discipline: no path holds two of
+    // {shard, sem, tm, postings, fh} at once (data is snapshotted between acquisitions), except
+    // the harmless shard->postings freshness peek — so no ordering cycle can form.
+    #[cfg(feature = "topics")]
+    fn tm_guard(&self) -> std::sync::MutexGuard<'_, crate::topics::TopicModel> { self.tm.lock().unwrap_or_else(|e| e.into_inner()) }
+    #[cfg(feature = "topics")]
+    fn postings_guard(&self) -> std::sync::MutexGuard<'_, HashMap<String, TopicPostings>> { self.postings.lock().unwrap_or_else(|e| e.into_inner()) }
+    #[cfg(all(feature = "fisher", feature = "semantic"))]
+    fn fh_guard(&self) -> std::sync::MutexGuard<'_, crate::fisher::FisherHead> { self.fh.lock().unwrap_or_else(|e| e.into_inner()) }
 
     /// Persist all scopes with unsaved (write-behind) changes. Call before shutdown for durability;
     /// also run automatically on Drop and on LRU eviction.
@@ -247,6 +309,7 @@ impl NeuronDB {
                 }
             }
         }
+        self.stats_persist();
     }
 
     /// Train the semantic space on arbitrary background text (e.g. a book/corpus), so recall
@@ -353,6 +416,7 @@ impl NeuronDB {
 
     pub fn observe(&self, nid: &str, text: &str) -> usize {
         let w;
+        #[cfg(feature = "topics")] let mut bags: Vec<Vec<std::sync::Arc<str>>> = Vec::new();
         {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
@@ -371,13 +435,36 @@ impl NeuronDB {
             // durable INSERT); a front-drain moved everything, so re-snapshot the whole scope instead.
             if e.n.episodes.len() == old_len + w { Self::append(conn, nid, e, old_len, self.flush_every); }
             else { Self::snapshot(conn, nid, e); }
+            // the new episodes' word bags, cloned under the lock (Arc<str> clones — cheap) so the
+            // topic absorb below runs OUTSIDE it. Typed `::` sub-scopes (vars/stances/moods) are
+            // bookkeeping, not prose — they stay out of the topic space.
+            #[cfg(feature = "topics")]
+            if w > 0 && !nid.contains("::") {
+                let start = e.n.episodes.len().saturating_sub(w);
+                bags.extend(e.n.episodes[start..].iter().map(|ep| ep.raw.clone()));
+            }
         }
         #[cfg(feature = "semantic")] self.sem_guard().train(text);
+        // streaming topic learning: each new fact folds in against the current counts and commits
+        // its assignments (the Random-Indexing posture — accumulate forever, no refit required)
+        #[cfg(feature = "topics")]
+        if !bags.is_empty() { let mut tm = self.tm_guard(); for b in &bags { tm.absorb(b); } }
+        // sampled scope moment (1-in-16, content-gated): feeds the scope-vs-rest side of the
+        // discriminant head so "does this fact even look like this scope" is answerable on demand
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        if w > 0 && !nid.contains("::") && sample16(text) {
+            let x = { self.sem_guard().embed(text) };
+            if let Some(x) = x {
+                let class = format!("scope:{}", Self::shard_key(nid));
+                self.fh_guard().observe_labeled(&class, &x);
+            }
+        }
         w
     }
     /// Batch ingest: one load, many appends, one save. Amortizes the per-write commit.
     pub fn observe_many(&self, nid: &str, texts: &[String]) -> usize {
         let w;
+        #[cfg(feature = "topics")] let mut bags: Vec<Vec<std::sync::Arc<str>>> = Vec::new();
         {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
@@ -390,8 +477,25 @@ impl NeuronDB {
             if e.n.episodes.len() == old_len + acc { Self::append(conn, nid, e, old_len, self.flush_every); }
             else { Self::snapshot(conn, nid, e); }
             w = acc;
+            #[cfg(feature = "topics")]
+            if acc > 0 && !nid.contains("::") {
+                let start = e.n.episodes.len().saturating_sub(acc);
+                bags.extend(e.n.episodes[start..].iter().map(|ep| ep.raw.clone()));
+            }
         }
         #[cfg(feature = "semantic")] { let mut s = self.sem_guard(); for t in texts { s.train(t); } }
+        #[cfg(feature = "topics")]
+        if !bags.is_empty() { let mut tm = self.tm_guard(); for b in &bags { tm.absorb(b); } }
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        if w > 0 && !nid.contains("::") {
+            for t in texts.iter().filter(|t| sample16(t)) {
+                let x = { self.sem_guard().embed(t) };
+                if let Some(x) = x {
+                    let class = format!("scope:{}", Self::shard_key(nid));
+                    self.fh_guard().observe_labeled(&class, &x);
+                }
+            }
+        }
         w
     }
     pub fn recall(&self, nid: &str, query: &str) -> Option<Recall> {
@@ -414,12 +518,26 @@ impl NeuronDB {
     #[cfg(feature = "semantic")]
     pub fn recall_semantic(&self, nid: &str, query: &str) -> Option<Recall> {
         const SEM_FALLBACK_CAP: usize = 4000;
-        let (start, facts): (usize, Vec<(String, String)>) = {
+        // topic gate first: SCOPE-WIDE topical candidates when the topics tier can offer them
+        // (a paraphrase of a fact 100k episodes back becomes reachable); fail-open to the
+        // recent window otherwise — byte-identical to the pre-topics behavior.
+        #[cfg(all(feature = "topics", feature = "semantic"))] let gated = self.topic_gate(nid, query);
+        #[cfg(not(all(feature = "topics", feature = "semantic")))] let gated: Option<Vec<u32>> = None;
+        let (idxs, facts): (Vec<usize>, Vec<(String, String)>) = {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
-            let start = eps.len().saturating_sub(SEM_FALLBACK_CAP);   // most-recent window only
-            (start, eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect())
+            match gated {
+                Some(list) => {
+                    let idxs: Vec<usize> = list.into_iter().map(|i| i as usize).filter(|&i| i < eps.len()).collect();
+                    let facts = idxs.iter().map(|&i| (eps[i].t.clone(), eps[i].v.clone())).collect();
+                    (idxs, facts)
+                }
+                None => {
+                    let start = eps.len().saturating_sub(SEM_FALLBACK_CAP);   // most-recent window only
+                    ((start..eps.len()).collect(), eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect())
+                }
+            }
         };
         if facts.is_empty() { return None; }
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
@@ -428,8 +546,8 @@ impl NeuronDB {
         match ranked.first() {
             Some(&(i, score)) if score >= self.sem_threshold => {
                 let (fact, value) = facts[i].clone();
-                // i indexes the recent WINDOW; start+i is the true episode index in the scope
-                Some(Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: start + i })
+                // i indexes the CANDIDATE list; idxs[i] is the true episode index in the scope
+                Some(Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: idxs[i] })
             }
             _ => None,
         }
@@ -441,18 +559,40 @@ impl NeuronDB {
     pub fn recall_blended(&self, nid: &str, query: &str, k: usize) -> Vec<Recall> {
         // BOUNDED like recall_semantic: rank the most-recent window so blended recall is O(window), not
         // O(scope), as a chat's memory grows into the millions (and the embedding cache stays bounded).
+        // The topic gate upgrades the window to SCOPE-WIDE topical candidates at the same ceiling.
         const BLENDED_CAP: usize = 4000;
-        let (start, facts): (usize, Vec<(String, String)>) = {
+        #[cfg(all(feature = "topics", feature = "semantic"))] let gated = self.topic_gate(nid, query);
+        #[cfg(not(all(feature = "topics", feature = "semantic")))] let gated: Option<Vec<u32>> = None;
+        let (idxs, facts): (Vec<usize>, Vec<(String, String)>) = {
             let mut g = self.shard(nid); let inner = &mut *g;
             Self::ensure(inner, nid, self.max_facts, self.cap);
             let eps = &inner.cache.get(nid).unwrap().n.episodes;
-            let start = eps.len().saturating_sub(BLENDED_CAP);
-            (start, eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect())
+            match gated {
+                Some(list) => {
+                    let idxs: Vec<usize> = list.into_iter().map(|i| i as usize).filter(|&i| i < eps.len()).collect();
+                    let facts = idxs.iter().map(|&i| (eps[i].t.clone(), eps[i].v.clone())).collect();
+                    (idxs, facts)
+                }
+                None => {
+                    let start = eps.len().saturating_sub(BLENDED_CAP);
+                    ((start..eps.len()).collect(), eps[start..].iter().map(|e| (e.t.clone(), e.v.clone())).collect())
+                }
+            }
         };
         if facts.is_empty() { return Vec::new(); }
         let texts: Vec<&str> = facts.iter().map(|(t, _)| t.as_str()).collect();   // borrow, no second clone
         let ranked = { let mut s = self.sem_guard(); s.rank_cached(query, &texts) };
         if ranked.is_empty() { return self.recall_many(nid, query, k); } // no semantic signal -> lexical
+        // the discriminant's rank list: candidates scoring positive along the learned outcome
+        // axis (helped-vs-hurt), best first — absent (and costless) while the head is inert.
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        let fisher_list: Vec<(usize, f32)> = {
+            let ax = { self.fh_guard().axis(OUTCOME_POS, OUTCOME_NEG) };
+            match ax {
+                Some(ax) => { let mut s = self.sem_guard(); s.project_cached(&ax.w, ax.c, &texts).into_iter().filter(|&(_, z)| z > 0.0).collect() }
+                None => Vec::new(),
+            }
+        };
         // HYBRID FUSION via Reciprocal Rank Fusion (Cormack et al. 2009): combine the lexical ranking and
         // the semantic ranking by summing 1/(K+rank) instead of adding a cosine and a coverage score that
         // live on mismatched scales. A fact ranked high by BOTH signals wins; crucially, a strong exact
@@ -468,17 +608,21 @@ impl NeuronDB {
             (qw.iter().filter(|w| lt.contains(w.as_str())).count(), i)
         }).filter(|(h, _)| *h > 0).collect();
         lex.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        // `ranked` is already the semantic order (cosine desc). Fuse the two rank lists by RRF.
+        // `ranked` is already the semantic order (cosine desc). Fuse the rank lists by RRF —
+        // and because RRF composes over any number of lists, the discriminant's evidence joins
+        // as a THIRD list when it exists: rank evidence, never a raw score on a foreign scale.
         let mut rrf: HashMap<usize, f32> = HashMap::new();
         for (rank, &(_, i)) in lex.iter().enumerate() { *rrf.entry(i).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0); }
         for (rank, &(i, _)) in ranked.iter().enumerate() { *rrf.entry(i).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0); }
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        for (rank, &(i, _)) in fisher_list.iter().enumerate() { *rrf.entry(i).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0); }
         let mut scored: Vec<(f32, usize)> = rrf.into_iter().map(|(i, s)| (s, i)).collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
         scored.truncate(k);
         scored.into_iter().map(|(score, i)| {
             let (fact, value) = facts[i].clone();
-            // i indexes the recent WINDOW; start+i is the true episode index in the scope
-            Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: start + i }
+            // i indexes the CANDIDATE list; idxs[i] is the true episode index in the scope
+            Recall { fact, value, coverage: score as f64, overlap: 0, exact: 0, echo: false, idx: idxs[i] }
         }).collect()
     }
     /// Recall across a base scope AND its document sub-scopes (`base`, `base__doc1`, …), merging the
@@ -762,22 +906,55 @@ impl NeuronDB {
     /// mirror). Never mints and never rewrites text, unlike note_stance: outcome feedback re-ranks
     /// what the scope already learned, it cannot invent memories. Returns the touched count.
     pub fn strengthen(&self, nid: &str, matching: &str, bump: f32) -> usize {
-        let mut g = self.shard(nid); let inner = &mut *g;
-        Self::ensure(inner, nid, self.max_facts, self.cap);
-        let Inner { conn, cache, .. } = inner;
-        let e = cache.get_mut(nid).unwrap();
-        let hit = e.n.strengthen_matching(matching, bump);
-        if hit > 0 { Self::snapshot(conn, nid, e); }   // strength is persisted in the fact blob
+        #[cfg(all(feature = "fisher", feature = "semantic"))] let mut touched: Vec<String> = Vec::new();
+        let hit;
+        {
+            let mut g = self.shard(nid); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            let Inner { conn, cache, .. } = inner;
+            let e = cache.get_mut(nid).unwrap();
+            hit = e.n.strengthen_matching(matching, bump);
+            if hit > 0 {
+                // a strengthen IS a grounded positive outcome on specific facts — feed their
+                // embeddings to the discriminant head's "+" class (bounded, base scopes only)
+                #[cfg(all(feature = "fisher", feature = "semantic"))]
+                if !nid.contains("::") {
+                    let nl = matching.trim().to_lowercase();
+                    touched.extend(e.n.episodes.iter().filter(|ep| ep.t.to_lowercase().contains(&nl)).take(16).map(|ep| ep.t.clone()));
+                }
+                Self::snapshot(conn, nid, e);   // strength is persisted in the fact blob
+            }
+        }
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        if !touched.is_empty() {
+            let xs: Vec<Vec<f32>> = { let s = self.sem_guard(); touched.iter().filter_map(|t| s.embed(t)).collect() };
+            let mut fh = self.fh_guard();
+            for x in &xs { fh.observe_labeled(OUTCOME_POS, x); }
+        }
         hit
     }
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
         let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
+        #[cfg(all(feature = "fisher", feature = "semantic"))] let mut removed_texts: Vec<String> = Vec::new();
         let (before, after) = {
             let Inner { conn, cache, .. } = &mut *inner;
             let e = cache.get_mut(nid).unwrap();
             let before = e.n.fact_count();
-            match m { Some(s) => { let s = s.to_lowercase(); e.n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&s)); }, None => e.n.episodes.clear() }
+            match m {
+                Some(s) => {
+                    let s = s.to_lowercase();
+                    // a TARGETED forget is a grounded negative outcome on specific content — the
+                    // removed facts feed the discriminant's "−" class (bounded, base scopes only;
+                    // a full wipe carries no per-fact signal and trains nothing)
+                    #[cfg(all(feature = "fisher", feature = "semantic"))]
+                    if !nid.contains("::") {
+                        removed_texts.extend(e.n.episodes.iter().filter(|ep| ep.t.to_lowercase().contains(&s)).take(16).map(|ep| ep.t.clone()));
+                    }
+                    e.n.episodes.retain(|ep| !ep.t.to_lowercase().contains(&s));
+                }
+                None => e.n.episodes.clear(),
+            }
             e.n.invalidate_index(); // removal shifts episode indices -> force a rebuild on next recall
             let after = e.n.fact_count();
             Self::snapshot(conn, nid, e);
@@ -801,6 +978,15 @@ impl NeuronDB {
         // delete. With secure_delete=FAST the freed pages are already zeroed; this flushes + truncates the
         // log. Best-effort (a concurrent writer can defer it) and only on the cold forget path.
         let _ = inner.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        {
+            drop(g);   // release the shard before touching sem/fisher (single-lock discipline)
+            if !removed_texts.is_empty() {
+                let xs: Vec<Vec<f32>> = { let s = self.sem_guard(); removed_texts.iter().filter_map(|t| s.embed(t)).collect() };
+                let mut fh = self.fh_guard();
+                for x in &xs { fh.observe_labeled(OUTCOME_NEG, x); }
+            }
+        }
         (before - after, after)
     }
     pub fn stats(&self, nid: &str) -> Stats {
@@ -829,6 +1015,181 @@ impl NeuronDB {
         let mut g = self.shard(nid); let inner = &mut *g;
         Self::ensure(inner, nid, self.max_facts, self.cap);
         inner.cache.get(nid).unwrap().n.episodes.iter().map(|e| e.t.clone()).collect()
+    }
+
+    // ---- the statistics tier: topic postings + the gate, discriminant inspection, persistence ----
+
+    /// Bring `nid`'s topic postings up to date (lazy, incremental): fold only the episodes the
+    /// postings haven't seen, rebuild from scratch when a removal shifted indices (the Neuron
+    /// `gen` counter) or the model has doubled since. False = the tier can't serve this scope
+    /// right now (cold model, empty scope, or too much unindexed history) — callers fail open.
+    #[cfg(feature = "topics")]
+    fn ensure_topic_postings(&self, nid: &str) -> bool {
+        let ttok = { let tm = self.tm_guard(); if tm.tokens() == 0 { return false; } tm.tokens() };
+        // snapshot the scope's mutation state and the un-posted tail's word bags (Arc clones).
+        // The shard->postings freshness peek is the one sanctioned nested lock pair.
+        let (gen, len, from, bags): (u64, usize, usize, Vec<Vec<std::sync::Arc<str>>>) = {
+            let mut g = self.shard(nid); let inner = &mut *g;
+            Self::ensure(inner, nid, self.max_facts, self.cap);
+            let n = &inner.cache.get(nid).unwrap().n;
+            let (gen, len) = (n.gen, n.episodes.len());
+            if len == 0 { return false; }
+            let from = {
+                let p = self.postings_guard();
+                match p.get(nid) {
+                    Some(tp) if tp.gen == gen && tp.upto <= len
+                        && ttok < tp.tokens_at.saturating_mul(2).max(tp.tokens_at + 512) => tp.upto,
+                    _ => 0,
+                }
+            };
+            if len - from > BACKFILL_MAX { return false; }   // too much unindexed history: fail open
+            (gen, len, from, n.episodes[from..].iter().map(|e| e.raw.clone()).collect())
+        };
+        if bags.is_empty() { return true; }   // postings already cover the scope
+        // frozen fold per un-posted episode, outside every other lock. A fact posts under EVERY
+        // topic in its mixture (a sentence's vocabulary can straddle topics — top-1 alone loses
+        // it to whichever side won the majority); a fact the model can't place lands in the
+        // no-topic bucket so it stays reachable through the gate.
+        let (kk, assigns): (usize, Vec<Vec<usize>>) = {
+            let tm = self.tm_guard();
+            let kk = tm.k();
+            (kk, bags.iter().map(|b| {
+                let mix = tm.fold_in(b);
+                if mix.is_empty() { vec![kk] } else { mix.into_iter().map(|(t, _)| t).collect() }
+            }).collect())
+        };
+        let mut p = self.postings_guard();
+        let tp = p.entry(nid.to_string()).or_insert_with(|| TopicPostings { gen, upto: 0, tokens_at: ttok, lists: vec![Vec::new(); kk + 1] });
+        if tp.gen != gen || tp.upto > len || from == 0 {
+            *tp = TopicPostings { gen, upto: 0, tokens_at: ttok, lists: vec![Vec::new(); kk + 1] };
+        }
+        if tp.upto != from { return true; }   // another thread already extended past our snapshot
+        for (off, ts) in assigns.iter().enumerate() {
+            for &t in ts { tp.lists[t.min(kk)].push((from + off) as u32); }
+        }
+        tp.upto = len;
+        true
+    }
+
+    /// The topic gate: SCOPE-WIDE candidate indices for a query, selected by topical overlap —
+    /// the query folds into the model, its top topics' postings union (plus the no-topic bucket),
+    /// capped at GATE_CAP most-recent. None = no usable signal; callers fall back to the recent
+    /// window, so the gate can only widen reach, never lose it.
+    #[cfg(all(feature = "topics", feature = "semantic"))]
+    fn topic_gate(&self, nid: &str, query: &str) -> Option<Vec<u32>> {
+        let mut qtok: Vec<String> = crate::content(query).into_iter().collect();
+        qtok.sort();   // content() is set-ordered; sorting makes the fold deterministic
+        if qtok.is_empty() { return None; }
+        // the query's topics: its folded mixture PLUS each query word's own strongest topic — a
+        // two-word query must reach a topic its words dominate even when the joint fold tips
+        // elsewhere (the word-level view is what recall needs; the doc-level view alone is not).
+        let qtopics: Vec<usize> = {
+            let tm = self.tm_guard();
+            if tm.tokens() == 0 { return None; }
+            let mut ts: Vec<usize> = tm.fold_in(&qtok).into_iter().map(|(t, _)| t).collect();
+            for w in &qtok { if let Some(t) = tm.word_topic(w) { ts.push(t); } }
+            ts.sort_unstable(); ts.dedup();
+            ts
+        };
+        if qtopics.is_empty() { return None; }
+        if !self.ensure_topic_postings(nid) { return None; }
+        let (mut topical, bucket): (Vec<u32>, Vec<u32>) = {
+            let p = self.postings_guard();
+            let tp = p.get(nid)?;
+            let kk = tp.lists.len() - 1;
+            let mut u: Vec<u32> = Vec::new();
+            for &t in &qtopics { if t < kk { u.extend_from_slice(&tp.lists[t]); } }
+            (u, tp.lists[kk].clone())   // cold-model facts ride along, so they stay reachable
+        };
+        topical.sort_unstable(); topical.dedup();
+        // the cap trims the BUCKET first, then the oldest topical facts — the whole point of the
+        // gate is reaching old-but-topical episodes, so topical evidence outlives the fallback pool
+        let mut union: Vec<u32> = if topical.len() >= GATE_CAP {
+            let cut = topical.len() - GATE_CAP;
+            topical.drain(0..cut);
+            topical
+        } else {
+            let room = GATE_CAP - topical.len();
+            let mut u = topical;
+            let start = bucket.len().saturating_sub(room);
+            u.extend_from_slice(&bucket[start..]);
+            u.sort_unstable(); u.dedup();
+            u
+        };
+        if union.is_empty() { return None; }
+        union.sort_unstable();
+        Some(union)
+    }
+
+    /// The top-m topics of a scope by posting share, each with its top words — "what is this
+    /// scope about". Empty while the topic model has seen nothing (or the scope is empty).
+    #[cfg(feature = "topics")]
+    pub fn scope_topics(&self, nid: &str, m: usize, words: usize) -> Vec<(usize, f32, Vec<(String, f32)>)> {
+        if !self.ensure_topic_postings(nid) { return Vec::new(); }
+        let counts: Vec<(usize, usize)> = {
+            let p = self.postings_guard();
+            match p.get(nid) {
+                Some(tp) => tp.lists[..tp.lists.len() - 1].iter().enumerate().map(|(t, l)| (t, l.len())).collect(),
+                None => return Vec::new(),
+            }
+        };
+        let total: usize = counts.iter().map(|&(_, c)| c).sum();
+        if total == 0 { return Vec::new(); }
+        let mut top: Vec<(usize, usize)> = counts.into_iter().filter(|&(_, c)| c > 0).collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        top.truncate(m);
+        let tm = self.tm_guard();
+        top.into_iter().map(|(t, c)| (t, c as f32 / total as f32, tm.top_words(t, words))).collect()
+    }
+    /// (k, documents absorbed, tokens assigned, vocabulary) of the topic model — its stats line.
+    #[cfg(feature = "topics")]
+    pub fn topics_stats(&self) -> (usize, u64, u64, usize) {
+        let tm = self.tm_guard();
+        (tm.k(), tm.docs(), tm.tokens(), tm.vocab_len())
+    }
+
+    /// The learned outcome axis (helped-vs-hurt), or None while the head is inert.
+    #[cfg(all(feature = "fisher", feature = "semantic"))]
+    pub fn outcome_axis(&self) -> Option<crate::fisher::Axis> { self.fh_guard().axis(OUTCOME_POS, OUTCOME_NEG) }
+    /// The discriminant head's observed classes with their effective sample weights.
+    #[cfg(all(feature = "fisher", feature = "semantic"))]
+    pub fn fisher_classes(&self) -> Vec<(String, f64)> { self.fh_guard().classes() }
+    /// The outcome axis made READABLE: the nearest vocabulary words to the helpful (+) and the
+    /// harmful (−) direction, plus the effective sample weight behind each side. None while the
+    /// head is inert — an axis nobody earned prints nothing.
+    #[cfg(all(feature = "fisher", feature = "semantic"))]
+    pub fn axis_words(&self, m: usize) -> Option<(Vec<(String, f32)>, Vec<(String, f32)>, f64, f64)> {
+        let ax = self.outcome_axis()?;
+        let s = self.sem_guard();
+        let pos = s.nearest_vec(&ax.w, m);
+        let neg_w: Vec<f32> = ax.w.iter().map(|v| -v).collect();
+        let neg = s.nearest_vec(&neg_w, m);
+        Some((pos, neg, ax.n_pos, ax.n_neg))
+    }
+
+    /// Persist the statistics tier's learned state into the lazily-created stats_kv side table.
+    /// Runs on flush_all and Drop; models that never learned write nothing, so an untouched
+    /// store keeps a byte-identical schema (the trust_kv / quantum_kv policy). No-op without
+    /// the features.
+    fn stats_persist(&self) {
+        #[cfg(feature = "topics")]
+        {
+            let blob = { let tm = self.tm_guard(); if tm.tokens() == 0 { None } else { Some(tm.dump()) } };
+            if let Some(blob) = blob {
+                let g = self.catalog();
+                let _ = g.conn.execute_batch(STATS_SCHEMA);
+                let _ = g.conn.execute("INSERT INTO stats_kv(kind,scope,k,v) VALUES('topics','','model',?1) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?1", params![blob]);
+            }
+        }
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        {
+            let blob = { let mut fh = self.fh_guard(); if fh.updates() == 0 { None } else { Some(fh.dump()) } };
+            if let Some(blob) = blob {
+                let g = self.catalog();
+                let _ = g.conn.execute_batch(STATS_SCHEMA);
+                let _ = g.conn.execute("INSERT INTO stats_kv(kind,scope,k,v) VALUES('fisher','','head',?1) ON CONFLICT(kind,scope,k) DO UPDATE SET v=?1", params![blob]);
+            }
+        }
     }
 }
 

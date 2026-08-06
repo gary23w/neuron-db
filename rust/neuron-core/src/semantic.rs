@@ -281,12 +281,10 @@ impl SemanticSpace {
     /// Drop the embedding cache so it rebuilds against the current space.
     pub fn clear_cache(&mut self) { self.emb_cache.clear(); }
 
-    /// Rank candidates by cosine to the query, reusing cached int8 embeddings. The query is
-    /// embedded fresh each call; a candidate is re-embedded only if uncached or the space has
-    /// more than doubled since (a cheap drift bound). After warm-up this is O(N) dot products.
-    pub fn rank_cached(&mut self, query: &str, cands: &[&str]) -> Vec<(usize, f32)> {
-        const EMB_CACHE_CAP: usize = 50_000;   // bound the fact-embedding cache so a long-lived server can't grow it without limit
-        let q = match self.embed(query) { Some(q) => q, None => return Vec::new() };
+    const EMB_CACHE_CAP: usize = 50_000;   // bound the fact-embedding cache so a long-lived server can't grow it without limit
+    /// Ensure every candidate has a fresh cached int8 embedding: re-embed when uncached or the
+    /// space has more than doubled since (the drift bound rank_cached always used).
+    fn ensure_cached(&mut self, cands: &[&str]) {
         let ts = self.tokens_seen;
         for &c in cands {
             let need = match self.emb_cache.get(c) { Some((_, _, ep)) => ts >= ep.saturating_mul(2), None => true };
@@ -294,6 +292,13 @@ impl SemanticSpace {
                 if let Some(e) = self.embed(c) { let (qz, s) = Self::quantize(&e); self.emb_cache.insert(c.to_string(), (qz, s, ts)); }
             }
         }
+    }
+    /// Rank candidates by cosine to the query, reusing cached int8 embeddings. The query is
+    /// embedded fresh each call; candidates refresh through the drift bound in ensure_cached.
+    /// After warm-up this is O(N) dot products.
+    pub fn rank_cached(&mut self, query: &str, cands: &[&str]) -> Vec<(usize, f32)> {
+        let q = match self.embed(query) { Some(q) => q, None => return Vec::new() };
+        self.ensure_cached(cands);
         let mut scored: Vec<(usize, f32)> = Vec::with_capacity(cands.len());
         for (i, &c) in cands.iter().enumerate() {
             if let Some((e, s, _)) = self.emb_cache.get(c) {
@@ -302,8 +307,41 @@ impl SemanticSpace {
             }
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        if self.emb_cache.len() > EMB_CACHE_CAP { self.emb_cache.clear(); }   // hard memory bound (re-embeds after a flush)
+        if self.emb_cache.len() > Self::EMB_CACHE_CAP { self.emb_cache.clear(); }   // hard memory bound (re-embeds after a flush)
         scored
+    }
+    /// Score candidates along a LINEAR AXIS (w, c) in this space — z = w·x − c per candidate,
+    /// highest first — reusing the same cached int8 embeddings rank_cached uses. This is how a
+    /// Fisher discriminant head reads the store's facts without a second embedding pass; the
+    /// axis is plain numbers here, so semantic.rs stays independent of the fisher feature.
+    pub fn project_cached(&mut self, w: &[f32], c: f32, cands: &[&str]) -> Vec<(usize, f32)> {
+        self.ensure_cached(cands);
+        let mut scored: Vec<(usize, f32)> = Vec::with_capacity(cands.len());
+        for (i, &t) in cands.iter().enumerate() {
+            if let Some((e, s, _)) = self.emb_cache.get(t) {
+                let dot = e.iter().zip(w).map(|(c8, wf)| *c8 as f32 * wf).sum::<f32>() * s;
+                scored.push((i, dot - c));
+            }
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if self.emb_cache.len() > Self::EMB_CACHE_CAP { self.emb_cache.clear(); }
+        scored
+    }
+    /// The k nearest words to an arbitrary DIRECTION in the space, by cosine — how a learned
+    /// axis becomes readable ("what does the helpful direction look like"). Mirrors nearest().
+    pub fn nearest_vec(&self, v: &[f32], k: usize) -> Vec<(String, f32)> {
+        let bn = Self::norm(v);
+        if bn == 0.0 { return Vec::new(); }
+        let mut out: Vec<(String, f32)> = self.ctx.iter()
+            .filter_map(|(w, cv)| {
+                let n = Self::norm(cv);
+                if n == 0.0 { return None; }
+                let dot: f32 = v.iter().zip(cv).map(|(a, b)| a * b).sum();
+                Some((w.clone(), dot / (bn * n)))
+            }).collect();
+        out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        out.truncate(k);
+        out
     }
 
     /// The k nearest words to a given word, by cosine (for inspecting the space).

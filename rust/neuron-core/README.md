@@ -26,6 +26,8 @@ cargo run --release --bin bench                              # microbenchmark
 | `mcp` | `neuron-mcp` | stdio MCP server: `recall` / `recall_chain` / `remember` / `forget` / `stats` |
 | `semantic` | `SemanticSpace` | corpus-distributional fuzzy recall (Random Indexing, no model, no deps) |
 | `personality` | `Persona` | opt-in Big-Five + temperament that modulate affect/stance — OFF by default, inert until attached |
+| `topics` | `TopicModel` | latent-Dirichlet-allocation topics over fact word-bags (deterministic Gibbs): topic-gated SCOPE-WIDE fuzzy recall + `neuron topics` introspection |
+| `fisher` | `FisherHead` | two-class Fisher discriminant heads (outcome axis, scope-vs-rest) — learned separation as rank evidence, inert until outcomes feed it |
 
 Tests live in `tests/` (recall, db_tier, secure_tier, router, turn, plastic, inference,
 db_comprehensive, semantic_tier). Server-side multi-hop (`recall_chain`), the book-ingestion

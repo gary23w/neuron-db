@@ -332,9 +332,12 @@ pub struct Neuron {
     index_len: usize,
     pub dropped: u64,   // oldest facts evicted by the max_facts front-drain. Per-session: NOT persisted
                         // by dump()/load(), so it resets on reload/eviction — read it right after a write.
+    pub(crate) gen: u64,   // bumped on every index-shifting mutation (removal/drain/rewrite), so any
+                           // sidecar keyed by episode INDEX (e.g. the topic postings) can detect that
+                           // its indices went stale. Pure appends do NOT bump it — sidecars extend.
 }
 impl Neuron {
-    pub fn new(max_facts: usize) -> Self { Neuron { episodes: Vec::new(), max_facts, index: None, index_len: usize::MAX, dropped: 0 } }
+    pub fn new(max_facts: usize) -> Self { Neuron { episodes: Vec::new(), max_facts, index: None, index_len: usize::MAX, dropped: 0, gen: 0 } }
 
     fn build_index(&mut self) {
         let mut idx: HashMap<Arc<str>, Vec<usize>> = HashMap::new();
@@ -375,7 +378,7 @@ impl Neuron {
             let start = self.episodes.len() - self.max_facts;
             self.dropped = self.dropped.saturating_add(start as u64);   // record the eviction (not silent)
             self.episodes.drain(0..start);
-            self.index = None; self.index_len = usize::MAX; // front-drain shifts indices -> rebuild
+            self.index = None; self.index_len = usize::MAX; self.gen += 1; // front-drain shifts indices -> rebuild
         }
         n
     }
@@ -703,7 +706,7 @@ impl Neuron {
             Some(i) => {
                 let s = self.episodes[i].strength + bump;
                 if let Some(mut e) = encode(&stored, None) {   // refine wording, carry strength
-                    self.episodes.remove(i); self.index = None; // removal shifts indices -> rebuild
+                    self.episodes.remove(i); self.index = None; self.gen += 1; // removal shifts indices -> rebuild
                     e.strength = s; self.episodes.push(e);
                 } else {
                     self.episodes[i].strength = s;             // unencodable refinement: just intensify
@@ -734,7 +737,7 @@ impl Neuron {
         let before = self.episodes.len();
         self.episodes.retain(|e| !e.t.to_lowercase().starts_with(&pl));
         let removed = before - self.episodes.len();
-        if removed > 0 { self.index = None; self.index_len = usize::MAX; } // removals shift indices
+        if removed > 0 { self.index = None; self.index_len = usize::MAX; self.gen += 1; } // removals shift indices
         removed
     }
     /// STRENGTHEN-ONLY plasticity: bump the strength of every episode whose text contains `needle`
@@ -758,7 +761,7 @@ impl Neuron {
     }
 
     pub fn fact_count(&self) -> usize { self.episodes.len() }
-    pub(crate) fn invalidate_index(&mut self) { self.index = None; }
+    pub(crate) fn invalidate_index(&mut self) { self.index = None; self.gen += 1; }
 
     /// Candidate episode indices for a cue (ensures the index is current). Used by PlasticNeuron.
     pub(crate) fn candidates(&mut self, cue: &HashSet<String>, pet_query: bool) -> Vec<usize> {
@@ -800,6 +803,8 @@ pub mod op;     // the one op vocabulary + apply() every transport routes throug
 #[cfg(feature = "server")] pub mod server;
 #[cfg(feature = "mcp")] pub mod mcp;
 #[cfg(feature = "semantic")] pub mod semantic;
+#[cfg(feature = "fisher")] pub mod fisher;     // opt-in: two-class Fisher discriminant heads — learned separation as RANK evidence, never a gate
+#[cfg(feature = "topics")] pub mod topics;     // opt-in: LDA topics over fact word-bags — the coarse index + scope introspection
 #[cfg(feature = "personality")] pub mod persona;   // opt-in: Big Five + temperament that modulate affect/stance (inert until attached)
 #[cfg(feature = "quantum")] pub mod quantum;   // opt-in: the quantum-teleportation tier — a structural analogy, not hardware (see quantum.rs)
 #[cfg(feature = "compress")] pub mod codec;

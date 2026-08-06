@@ -33,7 +33,7 @@ jobs:
             rust/neuron-core/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('rust/neuron-core/Cargo.toml') }}
       - name: Test (all native features)
-        run: cargo test --features secure,server,mcp,http,compress,quantum-db
+        run: cargo test --features secure,server,mcp,http,compress,quantum-db,fisher,topics
       - name: Build cortex wasm (default features)
         run: cargo build --lib --release --target wasm32-unknown-unknown
       - name: Build store-only wasm

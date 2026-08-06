@@ -377,6 +377,47 @@ fn main() {
                 if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
                 else { println!("facts:   {}\nmax:     {}\nturns:   {}\ncreated: {}\nupdated: {}", s.facts, s.max_facts, s.turns, s.created, s.updated); }
             } }
+        // the statistics tier: what a scope is ABOUT — its topic shares with each topic's top words
+        #[cfg(feature = "topics")]
+        "topics" => { need_scope("topics"); let d = NeuronDB::open(&db, max);
+            let tops = d.scope_topics(&scope, 8, 6);
+            if json {
+                let items: Vec<String> = tops.iter().map(|(t, share, words)| {
+                    let ws: Vec<String> = words.iter().map(|(w, p)| format!("{{\"word\":\"{}\",\"phi\":{:.4}}}", esc(w), p)).collect();
+                    format!("{{\"topic\":{},\"share\":{:.4},\"words\":[{}]}}", t, share, ws.join(","))
+                }).collect();
+                println!("[{}]", items.join(","));
+            } else if tops.is_empty() {
+                eprintln!("(no topics yet — the model learns as facts are observed)"); std::process::exit(3);
+            } else {
+                for (t, share, words) in tops {
+                    let ws: Vec<String> = words.into_iter().map(|(w, _)| w).collect();
+                    println!("topic {:>3}  {:>5.1}%  {}", t, share * 100.0, ws.join(" "));
+                }
+            } }
+        // the discriminant head: the learned helped-vs-hurt direction, rendered as words
+        #[cfg(all(feature = "fisher", feature = "semantic"))]
+        "axis" => { let d = NeuronDB::open(&db, max);
+            match d.axis_words(8) {
+                Some((posw, negw, np, nn)) => {
+                    if json {
+                        let f = |v: &[(String, f32)]| v.iter().map(|(w, c)| format!("{{\"word\":\"{}\",\"cos\":{:.3}}}", esc(w), c)).collect::<Vec<_>>().join(",");
+                        println!("{{\"n_pos\":{:.1},\"n_neg\":{:.1},\"helpful\":[{}],\"harmful\":[{}]}}", np, nn, f(&posw), f(&negw));
+                    } else {
+                        println!("outcome axis (n+ {:.1}, n- {:.1})", np, nn);
+                        println!("  helpful -> {}", posw.into_iter().map(|(w, _)| w).collect::<Vec<_>>().join(" "));
+                        println!("  harmful -> {}", negw.into_iter().map(|(w, _)| w).collect::<Vec<_>>().join(" "));
+                    }
+                }
+                None => {
+                    if json { println!("{{\"axis\":null}}"); }
+                    else {
+                        eprintln!("(axis inert — it forms once strengthen/forget outcomes have fed both sides)");
+                        for (c, n) in d.fisher_classes() { eprintln!("  class {:<24} n~{:.1}", c, n); }
+                    }
+                    std::process::exit(3);
+                }
+            } }
         "forget" => { need_scope("forget"); let d = NeuronDB::open(&db, max); let m = pos.get(2..).map(|s| s.join(" ")).filter(|s| !s.is_empty());
             if let OpResult::Forgot { forgot, remaining } = apply(&d, NeuronOp::Forget { scope: scope.clone(), matching: m }) {
                 if json { println!("{{\"forgot\":{},\"remaining\":{}}}", forgot, remaining); } else { println!("forgot {}, {} remaining", forgot, remaining); }
@@ -1020,6 +1061,8 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   import  <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]   bulk-load a fact pack\n\
   export  <scope> [-o FILE] | export --all [-o FILE]                          dump scope(s) to a pack\n\
   stats   <scope>                fact count + timestamps\n\
+  topics  <scope>                what the scope is ABOUT: topic shares + top words (--features topics)\n\
+  axis                           the learned helped-vs-hurt direction, as words (--features fisher+semantic)\n\
   forget  <scope> [match...]     drop facts\n\
   list                           list scope ids\n\
   caps    [host-caps...]          capability manifest (grounded vs deferrable); resolve vs a host\n\
