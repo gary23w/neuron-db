@@ -2,9 +2,10 @@
 //! your shell; no server needed (SQLite is embedded). Build: cargo build --release --features sqlite
 //!
 //! Usage: neuron [--db FILE] [--json] <command> [args...]
-//!   observe <scope> <text...>      store a fact
+//!   observe <scope> <text...> [--check]   store a fact (--check: flag polarity conflicts vs stored facts)
 //!   get     <scope> <query...>     print the recalled value (or nothing)
 //!   recall  <scope> <query...>     print fact + value + coverage
+//!   recallscored <scope> <query...>  top-k facts WITH numbers (coverage/overlap/exact) + contested marks
 //!   turn    <scope> <message...>   conversational: store or answer
 //!   stats   <scope>               fact count + timestamps
 //!   forget  <scope> [match...]     drop facts (all, or those containing match)
@@ -68,8 +69,39 @@ fn main() {
 
     match cmd.as_str() {
         "observe" => { need_scope("observe"); let d = NeuronDB::open(&db, max);
-            let n = apply(&d, NeuronOp::Observe { scope: scope.clone(), text: body(rest()) }).wrote();
-            if json { println!("{{\"wrote\":{}}}", n); } else { println!("stored {} fact(s)", n); } }
+            // --check: consolidation-time contradiction scan. Recall the nearest stored facts FIRST (so the
+            // new text can't match itself), flag conservative polarity conflicts, then store anyway — write
+            // cheap, adjudicate at recall. Both sides are marked in the {scope}::contested sidecar scope
+            // (the ::affect pattern), so the marks never enter the scope's own recall; `recallscored` reads
+            // the flag from there. Without --check, behavior and output are byte-identical to before.
+            let tail: Vec<String> = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            let check = tail.iter().any(|a| a == "--check");
+            let text = body(tail.iter().filter(|a| a.as_str() != "--check").cloned().collect::<Vec<_>>().join(" "));
+            let mut conflicts: Vec<(String, &'static str)> = Vec::new();
+            if check {
+                for h in apply(&d, NeuronOp::Recall { scope: scope.clone(), query: text.clone(), k: 4, semantic: false, across: false }).hits() {
+                    if let Some(reason) = contradicts(&text, &h.fact, h.coverage, h.overlap) { conflicts.push((h.fact.clone(), reason)); }
+                }
+            }
+            let n = apply(&d, NeuronOp::Observe { scope: scope.clone(), text: text.clone() }).wrote();
+            if !conflicts.is_empty() {
+                let side = format!("{}::contested", scope);
+                for (old, _r) in &conflicts { d.var_set(&side, &key_hash(old), &var_safe(&text)); }
+                // The NEW side is only markable when it stores as ONE sentence: the mark is keyed on the
+                // atomized fact recallscored will surface, and a multi-sentence observe splits into several.
+                if single_sentence(&text) {
+                    if let Some((old, _r)) = conflicts.first() { d.var_set(&side, &key_hash(&text), &var_safe(old)); }
+                }
+            }
+            if json {
+                if check {
+                    let cs: Vec<String> = conflicts.iter().map(|(f, r)| format!("{{\"with\":\"{}\",\"reason\":\"{}\"}}", esc(f), r)).collect();
+                    println!("{{\"wrote\":{},\"conflicts\":[{}]}}", n, cs.join(","));
+                } else { println!("{{\"wrote\":{}}}", n); }
+            } else {
+                println!("stored {} fact(s)", n);
+                for (f, r) in &conflicts { eprintln!("(conflict [{}] with: {})", r, f); }
+            } }
         "get" => { need_scope("get"); let d = NeuronDB::open(&db, max);
             // quantum-aware read under `quantum-db`: a matching superposition collapses on this
             // measurement, and a write_once fact spends a read (the last read burns it).
@@ -91,6 +123,43 @@ fn main() {
                 None => if json { println!("{{\"fact\":null}}"); } else { eprintln!("(no match)"); },
             }
             if h.is_none() { std::process::exit(3); } }
+        // TOP-K SCORED recall — the CLI face of the wasm tier's `recallscored`: per-fact NUMBERS
+        // (coverage/overlap/exact) instead of prose, so a caller can carry confidence across its own
+        // seams instead of re-deriving it from formatting. `contested` marks facts the --check
+        // consolidation scan flagged against a stored sibling ({scope}::contested sidecar); `with`
+        // carries that sibling's text so a verifier can weigh both sides.
+        "recallscored" => { need_scope("recallscored"); let d = NeuronDB::open(&db, max);
+            let (mut k, mut across, mut semantic) = (6usize, false, false);
+            let tail = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
+            let mut qw: Vec<String> = Vec::new();
+            let mut i = 0;
+            while i < tail.len() {
+                match tail[i].as_str() {
+                    "--k" => { if let Some(v) = tail.get(i + 1).and_then(|s| s.parse().ok()) { k = v; } i += 2; }
+                    "--across" => { across = true; i += 1; }
+                    "--semantic" => { semantic = true; i += 1; }
+                    _ => { qw.push(tail[i].clone()); i += 1; }
+                }
+            }
+            let q = qw.join(" ");
+            if q.trim().is_empty() { eprintln!("usage: neuron --db <db> recallscored <scope> <query…> [--k N] [--semantic] [--across]"); std::process::exit(2); }
+            let hits = apply(&d, NeuronOp::Recall { scope: scope.clone(), query: q, k, semantic, across }).hits();
+            let side = format!("{}::contested", scope);
+            if json {
+                let items: Vec<String> = hits.iter().map(|h| {
+                    let with = d.var_get(&side, &key_hash(&h.fact));
+                    format!("{{\"fact\":\"{}\",\"coverage\":{:.4},\"overlap\":{},\"exact\":{},\"idx\":{},\"contested\":{},\"with\":{}}}",
+                        esc(&h.fact), h.coverage, h.overlap, h.exact, h.idx, with.is_some(),
+                        with.as_deref().map(|w| format!("\"{}\"", esc(w))).unwrap_or_else(|| "null".into()))
+                }).collect();
+                println!("{{\"hits\":[{}]}}", items.join(","));
+            } else {
+                for h in &hits {
+                    let c = if d.var_get(&side, &key_hash(&h.fact)).is_some() { " [contested]" } else { "" };
+                    println!("{:.3}\t{}{}", h.coverage, h.fact, c);
+                }
+            }
+            if hits.is_empty() { std::process::exit(3); } }
         // spreading-activation recall: seed on the cue, then fire across synapses until the spread
         // SETTLES (frontier-drain convergence — hops are unbounded by default; NEURON_HOPS bounds
         // them explicitly). Surfaces the CHAINED facts a single-hop recall misses.
@@ -1032,12 +1101,124 @@ mod tests {
     }
 }
 
+// ---- consolidation contradiction check (CLI layer; the core store stays untouched) ----
+
+/// Negator vocabulary for the polarity test, post-normalization (apostrophes removed: can't -> cant).
+const NEGATORS: &[&str] = &["not", "never", "cannot", "cant", "wont", "isnt", "arent", "wasnt", "werent", "dont", "doesnt", "didnt", "no"];
+
+/// Lowercased alphanumeric words; apostrophes removed BEFORE splitting so contractions stay one token.
+fn norm_words(s: &str) -> Vec<String> {
+    s.replace('\'', "")
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// Stable identity for a fact across formatting drift: fnv1a64 over the normalized word stream.
+/// Keys the {scope}::contested sidecar at mark time AND at recallscored lookup time — the two must
+/// normalize identically or contested marks silently never resurface.
+fn key_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in norm_words(s).join(" ").as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+    format!("{:016x}", h)
+}
+
+/// A sidecar var VALUE must survive the "«key» is «value»" fact encoding: one line, no sentence
+/// boundary the atomizer would split on, bounded.
+fn var_safe(s: &str) -> String {
+    let joined: String = s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).collect();
+    let flat = joined.replace(". ", "; ");
+    let t = flat.trim();
+    let mut out: String = t.chars().take(160).collect();
+    if t.chars().count() > 160 { out.push('…'); }
+    out
+}
+
+/// True when an observe body will store as ONE fact (no sentence boundary) — the only case where
+/// hashing the raw body matches the stored atom.
+fn single_sentence(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && !t.contains('\n') && !t.contains(". ")
+}
+
+/// Conservative polarity-conflict test between a NEW text and a stored fact recall already deemed
+/// lexically close. Only two shapes count — negation asymmetry, and same-head "X is/are/was/were Y"
+/// with fully divergent tails — because a false contradiction mark pollutes recall receipts the same
+/// way a false fact pollutes recall. Advisory either way: nothing is blocked.
+fn contradicts(new_text: &str, old_fact: &str, coverage: f64, overlap: usize) -> Option<&'static str> {
+    if overlap < 3 && coverage < 0.6 { return None; }
+    let (nn, on) = (norm_words(new_text), norm_words(old_fact));
+    if nn.is_empty() || on.is_empty() { return None; }
+    let neg = |ws: &[String]| ws.iter().any(|w| NEGATORS.contains(&w.as_str()));
+    if neg(&nn) != neg(&on) { return Some("negation"); }
+    if let (Some((h1, t1)), Some((h2, t2))) = (split_copula(&nn), split_copula(&on)) {
+        if h1 == h2 && !t1.is_empty() && !t2.is_empty()
+            && !t1.iter().any(|w| w.len() >= 3 && t2.contains(w)) { return Some("value"); }
+    }
+    None
+}
+
+/// Split a normalized word stream at its first copula: (head words joined, tail words).
+fn split_copula(ws: &[String]) -> Option<(String, Vec<String>)> {
+    let at = ws.iter().position(|w| matches!(w.as_str(), "is" | "are" | "was" | "were"))?;
+    if at == 0 { return None; }
+    Some((ws[..at].join(" "), ws[at + 1..].to_vec()))
+}
+
+#[cfg(test)]
+mod contested_tests {
+    use super::*;
+
+    #[test]
+    fn key_hash_survives_formatting_drift() {
+        assert_eq!(key_hash("The port is 8080."), key_hash("the  port IS 8080"));
+        assert_ne!(key_hash("the port is 8080"), key_hash("the port is 9090"));
+    }
+
+    #[test]
+    fn negation_asymmetry_flags_and_symmetric_negation_does_not() {
+        assert_eq!(contradicts("the server is not reachable", "the server is reachable", 0.9, 4), Some("negation"));
+        assert_eq!(contradicts("the server is not reachable", "the server is never reachable", 0.9, 4), None);
+    }
+
+    #[test]
+    fn value_divergence_needs_same_head_and_disjoint_tails() {
+        assert_eq!(contradicts("the api key is alpha", "the api key is beta", 0.8, 3), Some("value"));
+        assert_eq!(contradicts("the sky is deep blue", "the sky is blue", 0.8, 3), None); // shared tail word
+        assert_eq!(contradicts("the api key is alpha", "the deploy key is beta", 0.8, 3), None); // heads differ
+    }
+
+    #[test]
+    fn weak_kinship_never_flags() {
+        assert_eq!(contradicts("the port is not 8080", "the port is 8080", 0.2, 1), None);
+    }
+
+    #[test]
+    fn var_safe_stays_one_atom_and_bounded() {
+        let v = var_safe("first part. second part\nthird\tpart");
+        assert!(!v.contains(". ") && !v.contains('\n') && !v.contains('\t'));
+        assert!(var_safe(&"x".repeat(400)).chars().count() <= 161);
+    }
+
+    #[test]
+    fn single_sentence_gate() {
+        assert!(single_sentence("the port is 8080"));
+        assert!(!single_sentence("one. two"));
+        assert!(!single_sentence("a\nb"));
+    }
+}
+
 fn help() {
     eprintln!("neuron — query a neuron-db SQLite file from the CLI\n\n\
 Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
-  observe <scope> <text...|->    store a fact ('-' reads the body from stdin)\n\
+  observe <scope> <text...|-> [--check]   store a fact ('-' reads stdin; --check flags polarity\n\
+                                 conflicts vs stored facts into the {{scope}}::contested sidecar)\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
+  recallscored <scope> <query...> [--k N] [--semantic] [--across]\n\
+                                 top-k facts WITH numbers (coverage/overlap/exact) + contested marks\n\
   assoc   <scope> <query...> [--across]   spreading-activation recall: the CHAINED facts a multi-hop question needs\n\
                                  (spreads until it settles; NEURON_HOPS bounds it, NEURON_K=10; --across widens over <scope>__* sub-scopes)\n\
   context <scope> <query...> [--k N] [--before N] [--after N] [--across]\n\
