@@ -34,6 +34,7 @@ NeuronDB (one .db file)
 | insert | `INSERT` | `observe(scope, "the plan is pro")` |
 | read (one value) | `SELECT … LIMIT 1` | `get(scope, "what plan?") -> "pro"` |
 | read (with metadata) | `SELECT *` | `recall(scope, "what plan?") -> {value, fact, coverage}` |
+| read (top-k, scored) | `SELECT … LIMIT k` | `recall_block(scope, q, k)` — CLI/wasm `recallscored`, each hit with its numbers + `contested` marks |
 | "update" | `UPDATE` | just `observe` again — newest wins; or `reinforce` (plastic tier) |
 | delete | `DELETE` | `forget(scope, "plan")` (by substring) or `forget(scope, None)` (all) |
 | converse | — | `turn(scope, "my plan is pro")` → stores or answers, one call |
@@ -141,6 +142,7 @@ Build with `./build.sh` (or `cargo build --release --features "sqlite secure ser
 neuron --db app.db observe user:42 "the plan is pro"      # INSERT
 neuron --db app.db get     user:42 "what plan am i on?"   # -> pro
 neuron --db app.db recall  user:42 "what plan?"           # value + fact + coverage
+neuron --db app.db recallscored user:42 "what plan?" --k 4   # top-k WITH numbers + [contested] marks
 neuron --db app.db turn    user:42 "my color is teal"     # store or answer
 neuron --db app.db forget  user:42 "plan"                 # DELETE facts containing "plan"
 neuron --db app.db stats   user:42
@@ -154,6 +156,20 @@ neuron --db vault.db --secret s3cr3t secure-get alice "what is the wifi password
 
 The db path comes from `--db` or `$NEURON_DB` (default `neurons.db`). The secret comes from
 `--secret` or `$NEURON_SECRET`.
+
+Two behaviors worth knowing:
+
+- **`observe` scans for contradictions by default** (`--no-check` opts out). Before storing, the
+  nearest stored facts are tested for two conservative polarity shapes — negation asymmetry
+  ("the deploy uses docker" vs "the deploy does not use docker") and same-head value divergence
+  ("the api key is alpha" vs "the api key is beta"). The new fact **still stores** — the store is
+  write-cheap and adjudicates at recall — but both sides are marked in a `{scope}::contested`
+  sidecar scope that never pollutes the scope's own recall. When nothing conflicts, output is
+  byte-identical to a plain observe.
+- **`recallscored`** (`--json`) returns each hit's numbers — `coverage`, `overlap`, `exact`,
+  `idx` — plus `contested` and, when set, `with`: the disagreeing sibling's text. That is the
+  surface an agent host uses to carry *numeric* confidence into its own prompt assembly instead
+  of re-deriving it from formatting, and to show a model both sides of a contested memory.
 
 ## 3) HTTP — query it over the network
 

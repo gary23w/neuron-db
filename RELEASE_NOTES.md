@@ -6,6 +6,17 @@ server, and an MCP server are opt-in. This is the first tagged release.
 
 ## Unreleased — performance & capabilities
 
+- **Scored recall on the CLI.** New verb `recallscored <scope> <query…> [--k N] [--semantic]
+  [--across]`: top-k facts with their numbers (`coverage`/`overlap`/`exact`/`idx`) as JSON —
+  the CLI face of the wasm tier's op, so a spawn-per-op host carries numeric confidence across
+  its own seams instead of re-deriving it from prose.
+- **Consolidation-time contradiction marks, on by default.** `observe` now scans the nearest
+  stored facts for conservative polarity conflicts (negation asymmetry; same-head "X is Y" with
+  fully divergent values) before storing. The new fact still stores — write cheap, adjudicate at
+  recall — and both sides are marked in a `{scope}::contested` sidecar scope that `recallscored`
+  surfaces as `contested` plus the disagreeing sibling (`with`). `--no-check` opts out; when
+  nothing conflicts the output stays byte-identical. Default-on is deliberate: capability rides
+  the binary, not the argv, so no host flag can ever be mistaken for fact text by an older build.
 - **Sharded concurrency.** The durable cache + its connection are partitioned by top-level scope
   family, so independent tenants recall in parallel: cache-hot recall scales ~8× across 16 cores
   (it was flat under one global lock). `examples/concurrency_bench`.

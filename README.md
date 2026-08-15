@@ -187,6 +187,15 @@ echo "the launch is on Friday" | neuron --db demo.db observe user -
 neuron --db demo.db get user "when is the launch"          # -> Friday
 neuron --db demo.db get user "the gate code" || research "gate code"   # routes on the knowledge gap
 
+# scored recall: top-k facts WITH their numbers (--json adds coverage/overlap/exact), so a host
+# carries real confidence across its own seams instead of re-deriving it from prose. Storing a
+# fact that contradicts a stored one marks BOTH as contested (observe scans by default;
+# --no-check opts out) — the fact still stores, and recall is where the tension surfaces:
+neuron --db demo.db observe user "the launch is on Monday"
+neuron --db demo.db recallscored user "when is the launch" --k 4
+#   1.000  the launch is on Friday [contested]
+#   1.000  the launch is on Monday [contested]
+
 # an interactive shell over the whole store — recall, spreading assoc, multi-hop chain, vars
 neuron shell case
   case> observe Lena Marsh's partner was Marcus Vane
