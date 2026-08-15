@@ -2,7 +2,8 @@
 //! your shell; no server needed (SQLite is embedded). Build: cargo build --release --features sqlite
 //!
 //! Usage: neuron [--db FILE] [--json] <command> [args...]
-//!   observe <scope> <text...> [--check]   store a fact (--check: flag polarity conflicts vs stored facts)
+//!   observe <scope> <text...> [--no-check]   store a fact (polarity conflicts vs stored facts are
+//!                                  marked into {scope}::contested by default; --no-check opts out)
 //!   get     <scope> <query...>     print the recalled value (or nothing)
 //!   recall  <scope> <query...>     print fact + value + coverage
 //!   recallscored <scope> <query...>  top-k facts WITH numbers (coverage/overlap/exact) + contested marks
@@ -69,14 +70,17 @@ fn main() {
 
     match cmd.as_str() {
         "observe" => { need_scope("observe"); let d = NeuronDB::open(&db, max);
-            // --check: consolidation-time contradiction scan. Recall the nearest stored facts FIRST (so the
-            // new text can't match itself), flag conservative polarity conflicts, then store anyway — write
-            // cheap, adjudicate at recall. Both sides are marked in the {scope}::contested sidecar scope
-            // (the ::affect pattern), so the marks never enter the scope's own recall; `recallscored` reads
-            // the flag from there. Without --check, behavior and output are byte-identical to before.
+            // Consolidation contradiction scan, ON BY DEFAULT (--no-check opts out; --check is accepted as
+            // an explicit no-op). Default-on is deliberate: a host passing a flag an OLDER binary doesn't
+            // know would store the flag as part of the fact text, so capability must ride the binary, not
+            // the argv. Recall the nearest stored facts FIRST (so the new text can't match itself), flag
+            // conservative polarity conflicts, then store anyway — write cheap, adjudicate at recall. Both
+            // sides are marked in the {scope}::contested sidecar scope (the ::affect pattern), so marks
+            // never enter the scope's own recall; `recallscored` reads them from there. When nothing
+            // conflicts, output stays byte-identical to before.
             let tail: Vec<String> = pos.get(2..).map(|s| s.to_vec()).unwrap_or_default();
-            let check = tail.iter().any(|a| a == "--check");
-            let text = body(tail.iter().filter(|a| a.as_str() != "--check").cloned().collect::<Vec<_>>().join(" "));
+            let check = !tail.iter().any(|a| a == "--no-check");
+            let text = body(tail.iter().filter(|a| a.as_str() != "--check" && a.as_str() != "--no-check").cloned().collect::<Vec<_>>().join(" "));
             let mut conflicts: Vec<(String, &'static str)> = Vec::new();
             if check {
                 for h in apply(&d, NeuronOp::Recall { scope: scope.clone(), query: text.clone(), k: 4, semantic: false, across: false }).hits() {
@@ -94,10 +98,11 @@ fn main() {
                 }
             }
             if json {
-                if check {
+                if conflicts.is_empty() { println!("{{\"wrote\":{}}}", n); }
+                else {
                     let cs: Vec<String> = conflicts.iter().map(|(f, r)| format!("{{\"with\":\"{}\",\"reason\":\"{}\"}}", esc(f), r)).collect();
                     println!("{{\"wrote\":{},\"conflicts\":[{}]}}", n, cs.join(","));
-                } else { println!("{{\"wrote\":{}}}", n); }
+                }
             } else {
                 println!("stored {} fact(s)", n);
                 for (f, r) in &conflicts { eprintln!("(conflict [{}] with: {})", r, f); }
@@ -1213,8 +1218,9 @@ mod contested_tests {
 fn help() {
     eprintln!("neuron — query a neuron-db SQLite file from the CLI\n\n\
 Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
-  observe <scope> <text...|-> [--check]   store a fact ('-' reads stdin; --check flags polarity\n\
-                                 conflicts vs stored facts into the {{scope}}::contested sidecar)\n\
+  observe <scope> <text...|-> [--no-check]   store a fact ('-' reads stdin). Polarity conflicts vs\n\
+                                 stored facts are marked into the {{scope}}::contested sidecar by\n\
+                                 default (--no-check opts out); recallscored surfaces the marks\n\
   get     <scope> <query...>     print the recalled value (exit 3 on no match)\n\
   recall  <scope> <query...>     fact + value + coverage (exit 3 on no match)\n\
   recallscored <scope> <query...> [--k N] [--semantic] [--across]\n\
