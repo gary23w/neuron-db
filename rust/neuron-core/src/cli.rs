@@ -451,6 +451,18 @@ fn main() {
                 if json { println!("{{\"facts\":{},\"max_facts\":{},\"created\":{},\"updated\":{},\"turns\":{}}}", s.facts, s.max_facts, s.created, s.updated, s.turns); }
                 else { println!("facts:   {}\nmax:     {}\nturns:   {}\ncreated: {}\nupdated: {}", s.facts, s.max_facts, s.turns, s.created, s.updated); }
             } }
+        "stats-batch" => { need_scope("stats-batch"); let d = NeuronDB::open(&db, max);
+            let mut rows = Vec::with_capacity(pos.len() - 1);
+            for name in &pos[1..] {
+                let OpResult::Stats(s) = apply(&d, NeuronOp::Stats { scope: name.clone() }) else {
+                    eprintln!("could not read statistics for '{}'", name); std::process::exit(1);
+                };
+                rows.push(if json { format!("{{\"scope\":\"{}\",\"facts\":{}}}", esc(name), s.facts) }
+                          else { format!("{}: {} facts", name, s.facts) });
+            }
+            if json { println!("{{\"scopes\":[{}]}}", rows.join(",")); }
+            else { println!("{}", rows.join("\n")); }
+        }
         // the statistics tier: what a scope is ABOUT — its topic shares with each topic's top words
         #[cfg(feature = "topics")]
         "topics" => { need_scope("topics"); let d = NeuronDB::open(&db, max);
@@ -1248,6 +1260,7 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   import  <pack.jsonl|.facts> [--scope S] [--flush N] [--dedup] [--replace]   bulk-load a fact pack\n\
   export  <scope> [-o FILE] | export --all [-o FILE]                          dump scope(s) to a pack\n\
   stats   <scope>                fact count + timestamps\n\
+  stats-batch <scope...>          fact counts for several scopes, opening the database once\n\
   topics  <scope>                what the scope is ABOUT: topic shares + top words (--features topics)\n\
   axis                           the learned helped-vs-hurt direction, as words (--features fisher+semantic)\n\
   forget  <scope> [match...]     drop facts\n\
