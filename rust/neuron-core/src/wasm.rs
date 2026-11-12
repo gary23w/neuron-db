@@ -24,10 +24,12 @@ fn cortex() -> &'static GaryModel {
     M.get_or_init(GaryModel::embedded)
 }
 
-// 1 MiB result buffer — large enough that `dump`/`episodes`/big recalls of a realistic scope (~20k facts)
-// don't truncate. Zero-initialized static, so it costs linear memory at runtime, not module size.
+// 1 MiB result buffer. Zero-initialized static, so it costs linear memory at runtime, not module size.
+// A result that does not fit (a `dump` of a large scope) goes to BIG instead of being cut off;
+// answer_ptr() points at whichever holds the last result, so a host must read it after each call.
 static mut BUF: [u8; 1048576] = [0u8; 1048576];
 static mut BUFLEN: usize = 0;
+static mut BIG: Vec<u8> = Vec::new();
 
 // ---- persistent in-browser store, for the live "synapse" visualization ----
 static mut STORE: Option<Neuron> = None;
@@ -38,8 +40,11 @@ fn store() -> &'static mut Neuron {
 #[allow(static_mut_refs)]
 fn put(s: &str) -> usize {
     let b = s.as_bytes();
-    let n = b.len().min(unsafe { BUF.len() });
-    unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
+    let n = b.len();
+    unsafe {
+        if n <= BUF.len() { BUF[..n].copy_from_slice(b); BIG = Vec::new(); } else { BIG = b.to_vec(); }
+        BUFLEN = n;
+    }
     n
 }
 fn input(ptr: *const u8, len: usize) -> String {
@@ -122,7 +127,7 @@ pub extern "C" fn selftest() -> i32 {
     unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
     code
 }
-#[no_mangle] pub extern "C" fn answer_ptr() -> *const u8 { unsafe { BUF.as_ptr() } }
+#[no_mangle] pub extern "C" fn answer_ptr() -> *const u8 { unsafe { if BUFLEN > BUF.len() { BIG.as_ptr() } else { BUF.as_ptr() } } }
 #[no_mangle] pub extern "C" fn answer_len() -> usize { unsafe { BUFLEN } }
 
 /// Allocate `n` bytes in wasm memory and return a pointer the host writes into.
@@ -308,6 +313,12 @@ impl crate::op::Store for MemStore {
         let after = n.fact_count();
         (before - after, after)
     }
+    fn upsert(&self, scope: &str, key: &str, text: &str) -> usize { memdb().n(scope).upsert_keyed(key, text) }
+    fn forget_key(&self, scope: &str, key: &str) -> (usize, usize) {
+        let n = memdb().n(scope);
+        let forgot = n.forget_key(key);
+        (forgot, n.fact_count())
+    }
     fn stats(&self, scope: &str) -> crate::Stats {
         let (facts, dropped) = memdb().scopes.get(scope).map(|n| (n.fact_count(), n.dropped)).unwrap_or((0, 0));
         crate::Stats { facts, max_facts: 1_000_000, dropped, ..Default::default() }
@@ -337,9 +348,9 @@ fn httpmap() -> &'static mut HashMap<i32, String> { unsafe { HTTP.get_or_insert_
 #[no_mangle] pub extern "C" fn http_deliver(token: i32, ptr: *const u8, len: usize) { httpmap().insert(token, input(ptr, len)); }
 
 /// Tab-delimited request "op\tscope\targ1\targ2…"; writes the result to BUF, returns its length.
-/// ops: observe | obsmany | recall | recallscored | value | assess | assoc | context | readpage |
+/// ops: observe | obsmany | recall | recallscored | recallkeyed | value | assess | assoc | context | readpage |
 ///      chain | setvar | getvar | vars | delvar | addinstr | instrs | delinstr | clearinstr |
-///      forget | strengthen | stats | episodes | dump | load | scopes | feel | stance | humanize |
+///      forget | upsert | forgetkey | strengthen | stats | episodes | dump | load | scopes | feel | stance | humanize |
 ///      mood | topstance | stanceof | fetch | fetched.
 #[no_mangle]
 pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
@@ -391,6 +402,12 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         "clearinstr" => memdb().instrs.get_mut(&scope).map(|v| { let n = v.len(); v.clear(); n.to_string() }).unwrap_or_else(|| "0".into()),
         // empty needle clears the scope; otherwise drops facts containing it (same substring semantics as the MCP/db forget)
         "forget" => match apply(&MemStore, NeuronOp::Forget { scope, matching: { let m = arg(2); if m.is_empty() { None } else { Some(m.to_string()) } } }) {
+            OpResult::Forgot { forgot, .. } => forgot.to_string(), _ => "0".into(),
+        },
+        // keyed replace: "upsert\t<scope>\t<key>\t<text>" stores text under key and drops what the key
+        // held; "forgetkey\t<scope>\t<key>" removes it. The key matches exactly (no substring scan).
+        "upsert" => apply(&MemStore, NeuronOp::Upsert { scope, key: arg(2).to_string(), text: arg(3).to_string() }).wrote().to_string(),
+        "forgetkey" => match apply(&MemStore, NeuronOp::ForgetKey { scope, key: arg(2).to_string() }) {
             OpResult::Forgot { forgot, .. } => forgot.to_string(), _ => "0".into(),
         },
         // strengthen-only plasticity (the positive mirror of forget): bump facts CONTAINING the needle;
@@ -484,6 +501,16 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
         // recall WITH per-hit confidence: "fact\tcoverage\toverlap" lines, best first (so the lab can rank + show how sure it is)
         "recallscored" => memdb().n(&scope).recall_many(arg(2), num(3, 6))
             .into_iter().map(|r| format!("{}\t{:.4}\t{}", r.fact, r.coverage, r.overlap)).collect::<Vec<_>>().join("\n"),
+        // recallscored plus the hit's key: "fact\tcoverage\toverlap\tkey" lines (key empty for an unkeyed
+        // fact). A separate op because hosts parse recallscored as exactly three fields.
+        "recallkeyed" => {
+            let n = memdb().n(&scope);
+            let hits = n.recall_many(arg(2), num(3, 6));
+            hits.into_iter().map(|r| {
+                let key = n.episodes.get(r.idx).filter(|e| e.t == r.fact).and_then(|e| e.key.as_deref()).unwrap_or("").replace(['\t', '\n'], " ");
+                format!("{}\t{:.4}\t{}\t{}", r.fact, r.coverage, r.overlap, key)
+            }).collect::<Vec<_>>().join("\n")
+        }
         // list every variable as "key\tvalue" lines (sorted, for a deterministic view)
         "vars" => memdb().vars.get(&scope).map(|m| { let mut v: Vec<String> = m.iter().map(|(k,val)| format!("{}\t{}", k, val)).collect(); v.sort(); v.join("\n") }).unwrap_or_default(),
         // delete one variable; returns "1" if it existed else "0"
@@ -527,10 +554,10 @@ pub extern "C" fn mem(ptr: *const u8, len: usize) -> usize {
 /// op). Keep in sync with the match arms above; the host binding reads this to fail loud at load on a
 /// missing op rather than silently no-op'ing.
 pub const MEM_OPS: &[&str] = &[
-    "observe", "obsmany", "loadmany", "recall", "recallscored", "value", "assess", "assoc", "chain",
+    "observe", "obsmany", "loadmany", "recall", "recallscored", "recallkeyed", "value", "assess", "assoc", "chain",
     "context", "readpage",
     "setvar", "getvar", "vars", "delvar", "addinstr", "instrs", "delinstr", "clearinstr",
-    "forget", "strengthen", "stats", "episodes", "dump", "load", "scopes",
+    "forget", "upsert", "forgetkey", "strengthen", "stats", "episodes", "dump", "load", "scopes",
     "feel", "stance", "humanize", "mood", "topstance", "stanceof", "fetch", "fetched",
     "caps", "ops",
 ];
