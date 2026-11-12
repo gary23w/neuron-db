@@ -508,6 +508,20 @@ fn main() {
             if let OpResult::Forgot { forgot, remaining } = apply(&d, NeuronOp::Forget { scope: scope.clone(), matching: m }) {
                 if json { println!("{{\"forgot\":{},\"remaining\":{}}}", forgot, remaining); } else { println!("forgot {}, {} remaining", forgot, remaining); }
             } }
+        // keyed facts: `upsert` stores text under a key and drops what the key held; `forgetkey` removes
+        // it. The key matches exactly. A missing key is a usage error, never a scope-wide forget.
+        "upsert" => { need_scope("upsert"); let d = NeuronDB::open(&db, max);
+            let key = pos.get(2).cloned().unwrap_or_default();
+            let text = body(pos.get(3..).map(|s| s.join(" ")).unwrap_or_default());
+            if key.trim().is_empty() || text.trim().is_empty() { eprintln!("usage: neuron --db <db> upsert <scope> <key> <text...|->"); std::process::exit(2); }
+            let n = apply(&d, NeuronOp::Upsert { scope: scope.clone(), key, text }).wrote();
+            if json { println!("{{\"wrote\":{}}}", n); } else { println!("stored {} fact(s)", n); } }
+        "forgetkey" => { need_scope("forgetkey"); let d = NeuronDB::open(&db, max);
+            let key = pos.get(2).cloned().unwrap_or_default();
+            if key.trim().is_empty() || pos.len() > 3 { eprintln!("usage: neuron --db <db> forgetkey <scope> <key>"); std::process::exit(2); }
+            if let OpResult::Forgot { forgot, remaining } = apply(&d, NeuronOp::ForgetKey { scope: scope.clone(), key }) {
+                if json { println!("{{\"forgot\":{},\"remaining\":{}}}", forgot, remaining); } else { println!("forgot {}, {} remaining", forgot, remaining); }
+            } }
         // affective layer — the persona ops. `stance` accumulates a disposition toward a topic (strength
         // grows on repetition while neglected stances decay), `mood` sets/clears an override emotion, and
         // `affect` renders the current humanize directive (mood + dominant stance). Parity with the MCP
@@ -1264,6 +1278,8 @@ Usage: neuron [--db FILE] [--max N] [--json] <command> [args]\n\n\
   topics  <scope>                what the scope is ABOUT: topic shares + top words (--features topics)\n\
   axis                           the learned helped-vs-hurt direction, as words (--features fisher+semantic)\n\
   forget  <scope> [match...]     drop facts\n\
+  upsert  <scope> <key> <text...|->   store a fact under a key, replacing what the key held\n\
+  forgetkey <scope> <key>        drop the facts stored under a key (exact match)\n\
   list                           list scope ids\n\
   caps    [host-caps...]          capability manifest (grounded vs deferrable); resolve vs a host\n\
   serve   [port]                 HTTP server (--features server)\n\
