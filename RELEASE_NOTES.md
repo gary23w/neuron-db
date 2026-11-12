@@ -1,11 +1,40 @@
-# neuron-db v0.3.0
+# neuron-db v0.4.0
 
-An associative memory you can run anywhere — and the flat-cost long-term memory for an LLM.
-Pure-Rust core (zero deps, compiles to WebAssembly); durable storage, encryption, an HTTP
-server, and an MCP server are opt-in. This is the first tagged release.
+Everything merged since v0.3.0. The headline is keyed facts: a fact can be stored under a key,
+replaced by that key and removed by that key, in the core, the durable store, the WebAssembly
+build and the CLI.
 
-## Unreleased — performance & capabilities
+## What's new in 0.4.0
 
+### Keyed facts
+- **Core.** `Neuron::upsert_keyed(key, text)` stores the text under a key and drops whatever the
+  key held before. `Neuron::forget_key(key)` removes it. The key matches exactly and never enters
+  the fact text, so replacing one record cannot remove another record whose text happens to
+  contain the same substring.
+- **One vocabulary.** `Upsert` and `ForgetKey` are in the shared op vocabulary (`op::apply`) and
+  implemented for both the durable `NeuronDB` and the in-memory WebAssembly store.
+- **CLI.** `neuron upsert <scope> <key> <text...|->` and `neuron forgetkey <scope> <key>`, both with
+  `--json`. A missing key or text is a usage error (exit 2); a keyless `forgetkey` never falls
+  through to a scope-wide forget.
+- **WebAssembly.** New `mem()` ops `upsert`, `forgetkey` and `recallkeyed`. `recallkeyed` returns
+  `fact`, `coverage`, `overlap` and `key` per hit; `recallscored` keeps its three fields.
+- **JS binding.** `upsert`, `forgetKey` and `recallKeyed`, with types.
+- **Persistence.** A keyed fact carries its key in the dump's flag field (`<flag>:<key>`).
+  Existing dumps load unchanged.
+- An upsert whose text stores nothing leaves the key's existing facts in place.
+- Not yet: the interactive shell, the MCP server and the HTTP server do not expose the keyed ops,
+  and keyed recall is WebAssembly-only.
+
+### Fixes
+- **JS binding: `forget()` no longer trims its match.** A match ending in a space (`"rec12 "`) was
+  sent without the space and also removed `rec120`, `rec1200` and so on. The match is now sent as
+  given; only tabs and newlines are replaced.
+- **WebAssembly: results larger than 1 MiB are no longer cut off.** A `dump` of a large scope used
+  to return a partial blob with no error. Oversized results now go to a heap buffer and
+  `answer_ptr()` points at whichever buffer holds the last result. A host must call
+  `answer_ptr()` after each call, as the binding and the demos already do.
+
+### Also since 0.3.0
 - **Scored recall on the CLI.** New verb `recallscored <scope> <query…> [--k N] [--semantic]
   [--across]`: top-k facts with their numbers (`coverage`/`overlap`/`exact`/`idx`) as JSON —
   the CLI face of the wasm tier's op, so a spawn-per-op host carries numeric confidence across
@@ -31,6 +60,38 @@ server, and an MCP server are opt-in. This is the first tagged release.
 - **Opt-in personality layer** (`personality` feature, OFF by default): a Big-Five + temperament
   `Persona` that, when explicitly attached, modulates the affect/stance dynamics. A neutral persona
   is byte-identical to none. New CLI: `stance` / `mood` / `affect`.
+- **Quantum tier** (experimental, `quantum` feature; durable state and CLI/HTTP ops with
+  `quantum-db`): entangled cross-scope links, teleport recall, burn-after-reading facts and
+  superposed values. A structural analogy, not hardware. See `docs/guide/QUANTUM_TELEPORTATION.md`.
+- **Statistics tier** (opt-in): `fisher` adds two-class Fisher linear-discriminant heads, and
+  `topics` adds deterministic latent-Dirichlet-allocation topics with topic-gated scope-wide
+  fuzzy recall.
+- **Durable semantic space** (`semantic-db` feature): per-word context vectors persist in a lazy
+  `sem_kv` side table, so fuzzy recall survives process restarts.
+- **Trust floor** (`trust` feature): learned per-tag-class trust and trust-weighted associative
+  recall, with `trust_get` to read a class's trust.
+- **Document recall.** Hits carry their episode index; `context` stitches top hits into in-order
+  passages; `assoc --across` reaches document sub-scopes; `read` pages a whole document in order.
+  The WebAssembly build has `context` and `readpage`.
+- **Strengthen-only plasticity.** `strengthen <scope> <match...>` bumps facts containing the
+  match and never creates a fact.
+- **`stats-batch`.** Read-only statistics for several scopes in one database process.
+- **More CLI verbs.** `assoc`, `chain`, `reinforce`, `why`, `route` and `caps`, plus fact-pack
+  preload across the CLI, MCP and WebAssembly.
+- **JS binding as a package.** The binding ships under `js/` as `@gary23w/neuron-db`. The npm
+  package has not been republished with this release.
+
+### Tests
+269 tests pass under the CI feature set
+(`secure,server,mcp,http,compress,quantum-db,fisher,topics,semantic-db`).
+
+---
+
+# neuron-db v0.3.0
+
+An associative memory you can run anywhere — and the flat-cost long-term memory for an LLM.
+Pure-Rust core (zero deps, compiles to WebAssembly); durable storage, encryption, an HTTP
+server, and an MCP server are opt-in. This is the first tagged release.
 
 ## Highlights
 
