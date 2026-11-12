@@ -48,6 +48,24 @@ ok("load restores fact count", db.stats("kb2") === db.stats("kb"), [db.stats("kb
 ok("scopes lists kb", db.scopes().some(s => s.scope === "kb"), db.scopes());
 ok("forget removes wifi", db.forget("kb", "wifi") >= 1);
 
+// keyed facts: upsert replaces by exact key, forgetKey removes by exact key, keys survive dump/load
+db.upsert("crm", "customer:1", "customer Dana Reyes of Oakville phone 905-555-0101 note see rec12 file");
+db.upsert("crm", "customer:12", "customer Omar Haddad of Milton phone 905-555-0112");
+ok("upsert stores both", db.stats("crm") === 2, db.stats("crm"));
+db.upsert("crm", "customer:12", "customer Omar Haddad of Burlington phone 905-555-0112");
+ok("upsert replaces, no duplicate", db.stats("crm") === 2, db.stats("crm"));
+ok("upsert keeps the other key's fact", db.recall("crm", "Dana Reyes", 5).some(h => h.includes("Oakville")), db.recall("crm", "Dana Reyes", 5));
+ok("upsert dropped the old text", !db.recall("crm", "Omar Haddad", 5).some(h => h.includes("Milton")), db.recall("crm", "Omar Haddad", 5));
+const keyed = db.recallKeyed("crm", "Omar Haddad", 5);
+ok("recallKeyed returns the hit's key", keyed.length > 0 && keyed[0].key === "customer:12" && typeof keyed[0].coverage === "number", keyed);
+db.observe("crm", "the office is in Toronto on King Street");
+ok("recallKeyed key is null for an unkeyed fact", db.recallKeyed("crm", "office Toronto", 5).some(h => h.fact.includes("King Street") && h.key === null), db.recallKeyed("crm", "office Toronto", 5));
+db.forget("crm", "King Street");
+db.load("crm2", db.dump("crm"));
+ok("forgetKey works after dump/load", db.forgetKey("crm2", "customer:12") === 1 && db.stats("crm2") === 1, db.stats("crm2"));
+ok("forgetKey is exact, not a prefix", db.forgetKey("crm", "customer:1") === 1 && db.stats("crm") === 1, db.stats("crm"));
+ok("forgetKey on a missing key removes nothing", db.forgetKey("crm", "customer:99") === 0);
+
 // §7 caps
 ok("caps recall=grounded", db.caps().some(c => c.name === "recall" && c.owner === "grounded"));
 ok("resolveCaps defers summarize", db.resolveCaps(["summarize"]).some(r => r.name === "summarize" && r.disposition === "defer"));

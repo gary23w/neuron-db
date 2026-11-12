@@ -61,6 +61,8 @@ impl crate::op::Store for NeuronDB {
     fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String { NeuronDB::affect(self, scope, asked_topic) }
     fn turn(&self, scope: &str, message: &str) -> TurnOut { NeuronDB::turn(self, scope, message) }
     fn forget(&self, scope: &str, matching: Option<&str>) -> (usize, usize) { NeuronDB::forget(self, scope, matching) }
+    fn upsert(&self, scope: &str, key: &str, text: &str) -> usize { NeuronDB::upsert(self, scope, key, text) }
+    fn forget_key(&self, scope: &str, key: &str) -> (usize, usize) { NeuronDB::forget_key(self, scope, key) }
     fn stats(&self, scope: &str) -> Stats { NeuronDB::stats(self, scope) }
     fn scopes(&self) -> Vec<String> { self.neurons() }
 }
@@ -1081,6 +1083,31 @@ impl NeuronDB {
             }
         }
         hit
+    }
+    /// Keyed replace (see Neuron::upsert_keyed). A keyed fact is a record, not prose: it does not
+    /// train the semantic or topic tiers.
+    pub fn upsert(&self, nid: &str, key: &str, text: &str) -> usize {
+        let mut g = self.shard(nid); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        let Inner { conn, cache, .. } = inner;
+        let e = cache.get_mut(nid).unwrap();
+        let old_len = e.n.episodes.len();
+        let w = e.n.upsert_keyed(key, text);
+        if w == 0 { return 0; }
+        // nothing replaced or evicted -> pure append; otherwise indices shifted -> snapshot
+        if e.n.episodes.len() == old_len + w { Self::append(conn, nid, e, old_len, self.flush_every); }
+        else { Self::snapshot(conn, nid, e); }
+        w
+    }
+    /// Remove the facts stored under `key` (exact match): (forgot, remaining).
+    pub fn forget_key(&self, nid: &str, key: &str) -> (usize, usize) {
+        let mut g = self.shard(nid); let inner = &mut *g;
+        Self::ensure(inner, nid, self.max_facts, self.cap);
+        let Inner { conn, cache, .. } = inner;
+        let e = cache.get_mut(nid).unwrap();
+        let forgot = e.n.forget_key(key);
+        if forgot > 0 { Self::snapshot(conn, nid, e); }
+        (forgot, e.n.fact_count())
     }
     pub fn forget(&self, nid: &str, m: Option<&str>) -> (usize, usize) {
         let mut g = self.shard(nid); let inner = &mut *g;

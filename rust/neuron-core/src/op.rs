@@ -40,6 +40,10 @@ pub trait Store {
     fn affect(&self, scope: &str, asked_topic: Option<&str>) -> String;
     fn turn(&self, scope: &str, message: &str) -> TurnOut;
     fn forget(&self, scope: &str, matching: Option<&str>) -> (usize, usize);
+    /// Keyed replace: store `text` under `key`, dropping what the key held. Returns facts stored.
+    fn upsert(&self, scope: &str, key: &str, text: &str) -> usize;
+    /// Remove the facts stored under `key` (exact match): (forgot, remaining).
+    fn forget_key(&self, scope: &str, key: &str) -> (usize, usize);
     fn stats(&self, scope: &str) -> Stats;
     fn scopes(&self) -> Vec<String>;
 }
@@ -67,6 +71,8 @@ pub enum NeuronOp {
     Affect { scope: String, topic: Option<String> },     // topic = optional stance to bias the persona toward
     Turn { scope: String, message: String },
     Forget { scope: String, matching: Option<String> },
+    Upsert { scope: String, key: String, text: String },
+    ForgetKey { scope: String, key: String },
     Stats { scope: String },
     List,
 }
@@ -131,6 +137,8 @@ pub fn apply<S: Store + ?Sized>(db: &S, op: NeuronOp) -> OpResult {
         NeuronOp::Affect { scope, topic } => OpResult::Text(db.affect(&scope, topic.as_deref())),
         NeuronOp::Turn { scope, message } => OpResult::Turned(db.turn(&scope, &message)),
         NeuronOp::Forget { scope, matching } => { let (forgot, remaining) = db.forget(&scope, matching.as_deref()); OpResult::Forgot { forgot, remaining } }
+        NeuronOp::Upsert { scope, key, text } => OpResult::Wrote(db.upsert(&scope, &key, &text)),
+        NeuronOp::ForgetKey { scope, key } => { let (forgot, remaining) = db.forget_key(&scope, &key); OpResult::Forgot { forgot, remaining } }
         NeuronOp::Stats { scope } => OpResult::Stats(db.stats(&scope)),
         NeuronOp::List => OpResult::Scopes(db.scopes()),
     }

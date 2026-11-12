@@ -114,6 +114,8 @@ export declare class NeuronDB {
   recall(scope: string, query: string, k?: number): string[];
   /** Recall with per-hit confidence, best-first. */
   recallScored(scope: string, query: string, k?: number): RecallHit[];
+  /** recallScored plus the key each hit was stored under (null for a fact stored without one). */
+  recallKeyed(scope: string, query: string, k?: number): (RecallHit & { key: string | null })[];
   /** A single best-matching value for a direct question, or null. */
   recallValue(scope: string, query: string): string | null;
   /** The knowledge-gap signal: how well memory covers a query. */
@@ -132,6 +134,10 @@ export declare class NeuronDB {
   // ── lifecycle ──
   /** Drop facts containing `match` (substring), or the whole scope if omitted. Returns count removed. */
   forget(scope: string, match?: string): number;
+  /** Store `fact` under `key`, replacing what the key held (exact key match). Returns episodes stored. */
+  upsert(scope: string, key: string, fact: string): number;
+  /** Drop the facts stored under `key` (exact match). Returns count removed. */
+  forgetKey(scope: string, key: string): number;
   /** Fact count held by a scope. */
   stats(scope: string): number;
   /** Every live scope. */

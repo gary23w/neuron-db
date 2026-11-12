@@ -181,7 +181,7 @@ fn intern(s: &str) -> Arc<str> {
 #[inline] pub(crate) fn stem_pos<S: AsRef<str>>(s: &[Arc<str>], c: S) -> Option<usize> { s.binary_search_by(|p| p.as_ref().cmp(c.as_ref())).ok() }
 
 #[derive(Clone, Debug)]
-pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<Arc<str>>, pub raw: Vec<Arc<str>>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32 }
+pub struct Episode { pub t: String, pub v: String, pub c: Vec<String>, pub s: Vec<Arc<str>>, pub raw: Vec<Arc<str>>, pub pos: Vec<u32>, pub head: String, pub self_flag: bool, pub id: i64, pub strength: f32, pub key: Option<Arc<str>> }
 
 /// Ceiling for episode strength as a RANKING signal. Enforced where strength is written by
 /// strengthen_matching and where it is read for ranking (spreading recall clamps to the cap), so
@@ -277,7 +277,7 @@ fn encode(text: &str, entity: Option<&str>) -> Option<Episode> {
     let s: Vec<Arc<str>> = s_str.iter().map(|x| intern(x)).collect();   // share common stems across facts
     let mut raw_str: Vec<String> = cont.into_iter().collect(); raw_str.sort(); raw_str.dedup();
     let raw: Vec<Arc<str>> = raw_str.iter().map(|x| intern(x)).collect();
-    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, pos, head, self_flag: self_name, id: -1, strength: 1.0 })
+    Some(Episode { t: text.to_string(), v: keep[0].clone(), c: keep, s, raw, pos, head, self_flag: self_name, id: -1, strength: 1.0, key: None })
 }
 fn w_clone(raw: &str) -> String { clip(raw) }
 
@@ -657,7 +657,9 @@ impl Neuron {
         (start, self.episodes[start..end].iter().map(|e| e.t.clone()).collect())
     }
 
-    /// Persistence: "<flag>\t<text>\t<strength>" per line; index rebuilt on load. Strength carries
+    /// Persistence: "<flag>\t<text>\t<strength>" per line; index rebuilt on load. A keyed fact
+    /// carries its key in the flag field ("<flag>:<key>"): load() never read that field, so a
+    /// build without keys still loads the facts and just drops the keys. Strength carries
     /// accumulated salience (e.g. a stance that intensified with repetition) durably across restarts.
     pub fn dump(&self) -> String { self.dump_from(0) }
     /// Serialize `episodes[from..]` in the same line format as dump(). The durable append-log uses this
@@ -669,7 +671,9 @@ impl Neuron {
         let mut out = String::with_capacity(eps.len().saturating_mul(48));
         for (i, e) in eps.iter().enumerate() {
             if i > 0 { out.push('\n'); }
-            let _ = write!(out, "{}\t{}\t{}", if e.self_flag {1} else {0}, esc(&e.t), e.strength);
+            let _ = write!(out, "{}", if e.self_flag {1} else {0});
+            if let Some(k) = &e.key { let _ = write!(out, ":{}", esc(k)); }
+            let _ = write!(out, "\t{}\t{}", esc(&e.t), e.strength);
         }
         out
     }
@@ -680,7 +684,8 @@ impl Neuron {
             // line = "flag\ttext[\tstrength]". Slice past the flag, then peel an optional trailing
             // strength only if the last tab-field parses as f32 — zero allocation per line, and any
             // tabs that were inside legacy text are preserved (the strength peel just won't fire).
-            let after_flag = match line.find('\t') { Some(i) => &line[i + 1..], None => continue };
+            let (flag, after_flag) = match line.find('\t') { Some(i) => (&line[..i], &line[i + 1..]), None => continue };
+            let key: Option<Arc<str>> = flag.split_once(':').map(|(_, k)| Arc::from(unesc(k)));
             let (text, strength) = match after_flag.rfind('\t') {
                 Some(j) => match after_flag[j + 1..].parse::<f32>() {
                     Ok(s) => (&after_flag[..j], s),
@@ -688,7 +693,7 @@ impl Neuron {
                 },
                 None => (after_flag, 1.0),
             };
-            if let Some(mut e) = encode(&unesc(text), None) { e.strength = strength; n.episodes.push(e); }
+            if let Some(mut e) = encode(&unesc(text), None) { e.strength = strength; e.key = key; n.episodes.push(e); }
         }
         n.build_index();   // load is pure append -> build once here, so the first recall pays no O(N) rebuild
         n
@@ -738,6 +743,34 @@ impl Neuron {
         self.episodes.retain(|e| !e.t.to_lowercase().starts_with(&pl));
         let removed = before - self.episodes.len();
         if removed > 0 { self.index = None; self.index_len = usize::MAX; self.gen += 1; } // removals shift indices
+        removed
+    }
+    /// Keyed replace: store `text` under `key` and drop whatever the key held before. The key is
+    /// matched exactly and never enters the fact text, so it cannot collide with content the way a
+    /// substring forget can. The old facts go only once the new text has stored something: text
+    /// that encodes to nothing returns 0 and leaves the key's facts as they were.
+    pub fn upsert_keyed(&mut self, key: &str, text: &str) -> usize {
+        let key = key.trim();
+        if key.is_empty() { return 0; }
+        let n = self.observe(text);
+        if n == 0 { return 0; }
+        let fresh = self.episodes.len().saturating_sub(n);
+        let k: Arc<str> = Arc::from(key);
+        for e in &mut self.episodes[fresh..] { e.key = Some(k.clone()); }
+        let before = self.episodes.len();
+        let mut i = 0;
+        self.episodes.retain(|e| { let keep = i >= fresh || e.key.as_deref() != Some(key); i += 1; keep });
+        if self.episodes.len() != before { self.index = None; self.index_len = usize::MAX; self.gen += 1; }
+        n
+    }
+    /// Remove every fact stored under `key` (exact match). Returns the removed count.
+    pub fn forget_key(&mut self, key: &str) -> usize {
+        let key = key.trim();
+        if key.is_empty() { return 0; }
+        let before = self.episodes.len();
+        self.episodes.retain(|e| e.key.as_deref() != Some(key));
+        let removed = before - self.episodes.len();
+        if removed > 0 { self.index = None; self.index_len = usize::MAX; self.gen += 1; }
         removed
     }
     /// STRENGTHEN-ONLY plasticity: bump the strength of every episode whose text contains `needle`
