@@ -198,8 +198,9 @@ export class NeuronDB {
   delVar(scope, key) { return this._call("delvar", scope, this._clean(key)) === "1"; }
 
   // ── lifecycle ────────────────────────────────────────────────────────────────
-  /** Drop facts containing `match` (substring), or the whole scope if omitted. Returns count removed. */
-  forget(scope, match) { return parseInt(this._call("forget", scope, match ? this._clean(match) : ""), 10) || 0; }
+  /** Drop facts containing `match` (substring), or the whole scope if omitted. Returns count removed.
+   *  The match is used as given: a trailing space is part of it, so "rec12 " does not match "rec120". */
+  forget(scope, match) { return parseInt(this._call("forget", scope, match ? String(match).replace(/[\t\r\n]/g, " ") : ""), 10) || 0; }
   /** Store `fact` under `key`, replacing what the key held (exact key match). Returns episodes stored;
    *  0 means the fact did not encode and the key's previous facts are untouched. */
   upsert(scope, key, fact) { return parseInt(this._call("upsert", scope, this._clean(key), this._clean(fact)), 10) || 0; }

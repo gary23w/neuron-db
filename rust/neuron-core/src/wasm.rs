@@ -24,10 +24,12 @@ fn cortex() -> &'static GaryModel {
     M.get_or_init(GaryModel::embedded)
 }
 
-// 1 MiB result buffer — large enough that `dump`/`episodes`/big recalls of a realistic scope (~20k facts)
-// don't truncate. Zero-initialized static, so it costs linear memory at runtime, not module size.
+// 1 MiB result buffer. Zero-initialized static, so it costs linear memory at runtime, not module size.
+// A result that does not fit (a `dump` of a large scope) goes to BIG instead of being cut off;
+// answer_ptr() points at whichever holds the last result, so a host must read it after each call.
 static mut BUF: [u8; 1048576] = [0u8; 1048576];
 static mut BUFLEN: usize = 0;
+static mut BIG: Vec<u8> = Vec::new();
 
 // ---- persistent in-browser store, for the live "synapse" visualization ----
 static mut STORE: Option<Neuron> = None;
@@ -38,8 +40,11 @@ fn store() -> &'static mut Neuron {
 #[allow(static_mut_refs)]
 fn put(s: &str) -> usize {
     let b = s.as_bytes();
-    let n = b.len().min(unsafe { BUF.len() });
-    unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
+    let n = b.len();
+    unsafe {
+        if n <= BUF.len() { BUF[..n].copy_from_slice(b); BIG = Vec::new(); } else { BIG = b.to_vec(); }
+        BUFLEN = n;
+    }
     n
 }
 fn input(ptr: *const u8, len: usize) -> String {
@@ -122,7 +127,7 @@ pub extern "C" fn selftest() -> i32 {
     unsafe { BUF[..n].copy_from_slice(&b[..n]); BUFLEN = n; }
     code
 }
-#[no_mangle] pub extern "C" fn answer_ptr() -> *const u8 { unsafe { BUF.as_ptr() } }
+#[no_mangle] pub extern "C" fn answer_ptr() -> *const u8 { unsafe { if BUFLEN > BUF.len() { BIG.as_ptr() } else { BUF.as_ptr() } } }
 #[no_mangle] pub extern "C" fn answer_len() -> usize { unsafe { BUFLEN } }
 
 /// Allocate `n` bytes in wasm memory and return a pointer the host writes into.

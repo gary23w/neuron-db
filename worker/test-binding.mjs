@@ -66,6 +66,18 @@ ok("forgetKey works after dump/load", db.forgetKey("crm2", "customer:12") === 1 
 ok("forgetKey is exact, not a prefix", db.forgetKey("crm", "customer:1") === 1 && db.stats("crm") === 1, db.stats("crm"));
 ok("forgetKey on a missing key removes nothing", db.forgetKey("crm", "customer:99") === 0);
 
+// forget matches the text as given: a trailing space must not be trimmed into a prefix match
+db.observeMany("ids", [12, 120, 125, 1200, 13].map(i => `customer rec${i} Person${i} Example of Oakville`));
+ok("forget keeps a trailing space in the match", db.forget("ids", "rec12 ") === 1 && db.stats("ids") === 4, db.stats("ids"));
+
+// a result larger than the 1 MiB static buffer comes back whole (dump of a big scope), then small results still work
+const bigFacts = Array.from({ length: 15000 }, (_, i) => `customer Person${i} Example${i} of Oakville at ${100 + i} King Street phone 905-555-${String(i % 10000).padStart(4, "0")}`);
+for (let i = 0; i < bigFacts.length; i += 500) db.observeMany("big", bigFacts.slice(i, i + 500));
+const bigBlob = db.dump("big");
+ok("big dump is not cut off", bigBlob.length > 1048576 && bigBlob.split("\n").length === db.stats("big"), [bigBlob.length, bigBlob.split("\n").length, db.stats("big")]);
+ok("big dump round-trips through load", db.load("big2", bigBlob) === db.stats("big"), db.stats("big2"));
+ok("small results still work after a big one", db.stats("big2") === 15000 && db.recall("big2", "Person14999", 1).length === 1, db.recall("big2", "Person14999", 1));
+
 // §7 caps
 ok("caps recall=grounded", db.caps().some(c => c.name === "recall" && c.owner === "grounded"));
 ok("resolveCaps defers summarize", db.resolveCaps(["summarize"]).some(r => r.name === "summarize" && r.disposition === "defer"));
