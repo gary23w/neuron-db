@@ -5,40 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>neuron-db · semantic space in N dimensions</title>
 <meta name="description" content="The real neuron-db semantic space, learned in your browser from a corpus and projected from 256 dimensions with in-WASM PCA. Words cluster by meaning; switch which principal components map to X/Y/Z to fly through multiple dimensions of meaning.">
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="../garrett-mode.css?v=1">
+<script src="../garrett-mode.js?v=1"></script>
 <style>
-  :root{--bg:#1a1b26;--ink:#e9edfa;--mid:#a9b1d6;--dim:#7d85a8;--faint:#6a7297;--accent:#4fcbe2;--accent2:#8fb0f8;--pink:#c4a6f8;--amber:#e5b878;--line:#292e42;--panel:rgba(22,22,30,.84);--mono:Consolas,"Lucida Console",Menlo,"SF Mono","DejaVu Sans Mono","Liberation Mono",monospace;--sans:Calibri,Corbel,Candara,"Segoe UI",-apple-system,"Helvetica Neue","DejaVu Sans","Liberation Sans",sans-serif}
+  :root{--bg:var(--ag-bg);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--accent2:var(--ag-blue);--line:var(--ag-border);--panel:color-mix(in srgb,var(--ag-bg) 86%,transparent);--mono:var(--ag-mono);--sans:var(--ag-mono)}
+  :root{--green:#111;--amber:#555;--pink:#454545;--red:#111;--c0:#111;--c1:#555;--c2:#2b2b2b;--c3:#767676;--c4:#3c3c3c;--c5:#666;--c6:#000;--c7:#4a4a4a}
+  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--pink:#7eb7ff;--red:#ff2d55;--c0:#00ef72;--c1:#7eb7ff;--c2:#f3f7f1;--c3:#16c56b;--c4:#9effbd;--c5:#ff2d55;--c6:#8da494;--c7:#c5d4c8}
   *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
   #cv{position:fixed;inset:0;display:block}
   .ov{position:fixed;z-index:5}
-  #top{top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:13px 18px;background:linear-gradient(180deg,rgba(5,6,12,.92),transparent)}
+  #top{top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:13px 18px;background:var(--panel)}
   .brand{display:flex;align-items:center;gap:9px;font-weight:730;font-size:16px;letter-spacing:-.01em}
-  .brand b{color:var(--accent)} .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
-  .eng{margin-left:auto;font:11px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:3px 8px;background:rgba(10,14,22,.6)}
-  #panel{top:62px;left:18px;width:320px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(10px);padding:16px;box-shadow:0 24px 60px -30px #000}
+  .brand b{color:var(--accent)} .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+  .eng{margin-left:auto;font:11px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:0;padding:3px 8px;background:color-mix(in srgb,var(--ag-code) 60%,transparent)}
+  #panel{top:62px;left:18px;width:320px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:0;padding:16px}
   #panel h1{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}
   #panel .sub{font-size:12.5px;color:var(--mid);margin:0 0 14px;line-height:1.5}
   .lab{font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:14px 0 8px}
   .axes{display:grid;grid-template-columns:18px 1fr 54px;gap:7px;align-items:center;margin-bottom:7px}
   .axes .ax{font:13px var(--mono);font-weight:700}
-  .axes .axx{color:#fb7185}.axes .axy{color:#34d399}.axes .axz{color:#7c9cff}
-  select{width:100%;background:#0a0e16;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:7px 8px;font:12px var(--mono)}
+  .axes .axx{color:var(--red)}.axes .axy{color:var(--green)}.axes .axz{color:var(--accent2)}
+  select{width:100%;background:var(--ag-code);border:1px solid var(--ag-field-border);border-radius:0;color:var(--ink);padding:7px 8px;font:12px var(--mono)}
   select:focus{outline:none;border-color:var(--accent)}
   .axes .pv{font:11px var(--mono);color:var(--dim);text-align:right}
   .qrow{display:flex;gap:7px;margin-top:6px}
-  #q{flex:1;min-width:0;background:#0a0e16;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:8px 10px;font:12px var(--mono)}
+  #q{flex:1;min-width:0;background:var(--ag-code);border:1px solid var(--ag-field-border);border-radius:0;color:var(--ink);padding:8px 10px;font:12px var(--mono)}
   #q:focus{outline:none;border-color:var(--accent)}
-  #go{background:var(--accent);color:#04211c;border:none;border-radius:8px;padding:0 12px;font-weight:700;cursor:pointer}
+  #go{background:var(--accent);color:var(--ag-on-accent);border:none;border-radius:0;padding:0 12px;font-family:var(--mono);font-weight:700;cursor:pointer}
   .hint{font:11px var(--mono);color:var(--faint);margin-top:8px;line-height:1.5}
-  #info{bottom:18px;left:18px;width:320px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(10px);padding:13px 16px;box-shadow:0 24px 60px -30px #000}
+  #info{bottom:18px;left:18px;width:320px;max-width:calc(100vw - 36px);background:var(--panel);border:1px solid var(--line);border-radius:0;padding:13px 16px}
   #info .h{font:11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent2);margin-bottom:7px}
   #word{font-size:16px;font-weight:700;color:var(--ink)} #word .c{font:11px var(--mono);color:var(--dim);font-weight:400}
   #near{font:12.5px var(--mono);color:var(--mid);margin-top:6px;line-height:1.7;min-height:18px}
   #near b{color:var(--accent)}
-  #help{bottom:18px;right:18px;font:11.5px var(--mono);color:var(--dim);text-align:right;line-height:1.7;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 13px;backdrop-filter:blur(8px)}
+  #help{bottom:18px;right:18px;font:11.5px var(--mono);color:var(--dim);text-align:right;line-height:1.7;background:var(--panel);border:1px solid var(--line);border-radius:0;padding:10px 13px}
   #help b{color:var(--mid)}
-  #banner{top:62px;left:50%;transform:translateX(-50%);background:#2a1620;border:1px solid #5b2740;color:#ffd9e4;padding:9px 14px;border-radius:9px;font:12px var(--mono);display:none;max-width:80vw;text-align:center}
+  #banner{top:62px;left:50%;transform:translateX(-50%);background:color-mix(in srgb,var(--ag-danger) 10%,var(--ag-bg));border:1px solid color-mix(in srgb,var(--ag-danger) 45%,transparent);color:var(--ag-danger);padding:9px 14px;border-radius:0;font:12px var(--mono);display:none;max-width:80vw;text-align:center}
   #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font:13px var(--mono);color:var(--dim);z-index:6}
-  @media(max-width:760px){#panel{top:54px;left:8px;right:8px;width:auto;max-height:46vh;overflow:auto}#info{left:8px;right:8px;width:auto;bottom:8px}#help{display:none}}
+  @media(max-width:760px){#top{flex-wrap:wrap;padding:8px 10px;gap:6px 10px}#top .color-mode-toggle{order:1;margin-left:auto}.eng{order:2}#panel{top:96px;left:8px;right:8px;width:auto;max-height:46vh;overflow:auto}#info{left:8px;right:8px;width:auto;bottom:8px}#help{display:none}}
 </style>
 </head>
 <body>
@@ -47,6 +52,7 @@
 <div class="ov" id="top">
   <span class="brand"><span class="dot"></span> neuron<b>-db</b> · semantic space</span>
   <span class="eng" id="eng">engine: <b id="engName">loading…</b></span>
+  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </div>
 <div class="ov" id="banner"></div>
 <div class="ov" id="panel" style="display:none">
@@ -128,20 +134,24 @@ function parseProj(blob){
 }
 
 /* ===== scene ===== */
+// colours come from the page's CSS tokens, so the scene follows the light/dark switch
+var css=function(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();};
 var cv=document.getElementById("cv");
 var renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-var scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x05060c,0.0035);
+renderer.setClearColor(css("--ag-bg"));
+var scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(css("--ag-bg"),0.0035);
 var camera=new THREE.PerspectiveCamera(60,1,0.1,4000); camera.position.set(0,0,260);
 var world=new THREE.Group(); scene.add(world);
 
-function glowTex(){var c=document.createElement("canvas");c.width=c.height=64;var x=c.getContext("2d");
-  var g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.4,"rgba(255,255,255,.55)");g.addColorStop(1,"rgba(255,255,255,0)");
-  x.fillStyle=g;x.fillRect(0,0,64,64);return new THREE.CanvasTexture(c);}
-var GLOW=glowTex();
+// a flat disc for each point (white, tinted per point by its vertex colour)
+function dotTex(){var c=document.createElement("canvas");c.width=c.height=64;var x=c.getContext("2d");
+  x.fillStyle="white";x.beginPath();x.arc(32,32,18,0,Math.PI*2);x.fill();return new THREE.CanvasTexture(c);}
+var GLOW=dotTex();
 
 var PROJ=null, AX=[0,1,2], pts=null, posCur=null, posTarget=null, colorsArr=null, animT=1, labels=[];
-var CLUSTER_COLORS=[0x5eead4,0x7c9cff,0xf472b6,0x34d399,0xf5b454,0xfb7185,0x60a5fa,0xa78bfa,0x2dd4bf,0xfca5a5,0xfacc15,0x4ade80];
+var CLUSTER_N=8; // cluster colours are the --c0..--c7 tokens
+function clusterColor(c){return new THREE.Color(css("--c"+(c%CLUSTER_N)));}
 
 // scale each PC to a comparable range
 var SPAN=120, scaleK=[];
@@ -163,31 +173,40 @@ function buildCloud(){
   var n=PROJ.n;
   var geo=new THREE.BufferGeometry();
   posCur=new Float32Array(n*3); posTarget=new Float32Array(n*3); colorsArr=new Float32Array(n*3);
-  var maxc=Math.max.apply(null,PROJ.counts);
   for(var i=0;i<n;i++){
     var t=targetPos(i); posCur[i*3]=t[0];posCur[i*3+1]=t[1];posCur[i*3+2]=t[2];
     posTarget[i*3]=t[0];posTarget[i*3+1]=t[1];posTarget[i*3+2]=t[2];
-    // colour by TRUE 256-D cluster; brighter for more frequent words
-    var b=0.55+0.45*Math.sqrt(PROJ.counts[i]/maxc);
-    var col=new THREE.Color(CLUSTER_COLORS[PROJ.clusters[i]%CLUSTER_COLORS.length]).multiplyScalar(b);
-    colorsArr[i*3]=col.r;colorsArr[i*3+1]=col.g;colorsArr[i*3+2]=col.b;
   }
+  paintCloud();
   geo.setAttribute("position",new THREE.BufferAttribute(posCur,3));
   geo.setAttribute("color",new THREE.BufferAttribute(colorsArr,3));
-  var mat=new THREE.PointsMaterial({size:13,map:GLOW,vertexColors:true,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true});
+  var mat=new THREE.PointsMaterial({size:13,map:GLOW,vertexColors:true,transparent:true,depthWrite:false,sizeAttenuation:true});
   if(pts){world.remove(pts);} pts=new THREE.Points(geo,mat); world.add(pts);
-  // labels: top ~110 by frequency
-  labels.forEach(function(l){world.remove(l.spr);}); labels=[];
-  var order=PROJ.words.map(function(_,i){return i;}).sort(function(a,b){return PROJ.counts[b]-PROJ.counts[a];});
-  for(var r=0;r<Math.min(60,n);r++){ var i2=order[r]; labels.push({i:i2,spr:textSprite(PROJ.words[i2])}); world.add(labels[labels.length-1].spr); }
-  positionLabels();
+  makeLabels();
   document.getElementById("nW").textContent=n;
   document.getElementById("nK").textContent=PROJ.k;
 }
+function paintCloud(){
+  var n=PROJ.n, maxc=Math.max.apply(null,PROJ.counts), bg=new THREE.Color(css("--ag-bg"));
+  for(var i=0;i<n;i++){
+    // colour by TRUE 256-D cluster; stronger for more frequent words, rarer ones fade toward the ground
+    var b=0.55+0.45*Math.sqrt(PROJ.counts[i]/maxc);
+    var col=clusterColor(PROJ.clusters[i]).lerp(bg,1-b);
+    colorsArr[i*3]=col.r;colorsArr[i*3+1]=col.g;colorsArr[i*3+2]=col.b;
+  }
+  if(pts) pts.geometry.attributes.color.needsUpdate=true;
+}
+function makeLabels(){
+  // labels: top ~110 by frequency
+  labels.forEach(function(l){world.remove(l.spr);l.spr.material.map.dispose();l.spr.material.dispose();}); labels=[];
+  var n=PROJ.n, order=PROJ.words.map(function(_,i){return i;}).sort(function(a,b){return PROJ.counts[b]-PROJ.counts[a];});
+  for(var r=0;r<Math.min(60,n);r++){ var i2=order[r]; labels.push({i:i2,spr:textSprite(PROJ.words[i2])}); world.add(labels[labels.length-1].spr); }
+  positionLabels();
+}
 function textSprite(txt){
-  var c=document.createElement("canvas"),x=c.getContext("2d");var f=26;x.font="600 "+f+"px ui-sans-serif,system-ui";
-  var w=x.measureText(txt).width;c.width=w+8;c.height=f+8;x.font="600 "+f+"px ui-sans-serif,system-ui";
-  x.fillStyle="rgba(233,238,247,.92)";x.textBaseline="middle";x.fillText(txt,4,c.height/2);
+  var c=document.createElement("canvas"),x=c.getContext("2d");var f=26,font="600 "+f+"px "+css("--ag-mono");x.font=font;
+  var w=x.measureText(txt).width;c.width=w+8;c.height=f+8;x.font=font;
+  x.fillStyle=css("--ag-heading");x.globalAlpha=.92;x.textBaseline="middle";x.fillText(txt,4,c.height/2);
   var tex=new THREE.CanvasTexture(c);var m=new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false,depthTest:false});
   var s=new THREE.Sprite(m);s.scale.set(c.width/c.height*7,7,1);return s;
 }
@@ -207,9 +226,18 @@ function updateLinks(i){
     seg.push(posCur[i*3],posCur[i*3+1],posCur[i*3+2],posCur[j*3],posCur[j*3+1],posCur[j*3+2]);}
   if(links){world.remove(links);}
   linkGeo=new THREE.BufferGeometry();linkGeo.setAttribute("position",new THREE.Float32BufferAttribute(seg,3));
-  links=new THREE.LineSegments(linkGeo,new THREE.LineBasicMaterial({color:0x5eead4,transparent:true,opacity:.55,blending:THREE.AdditiveBlending,depthWrite:false}));
+  links=new THREE.LineSegments(linkGeo,new THREE.LineBasicMaterial({color:css("--ag-accent"),transparent:true,opacity:.55,depthWrite:false}));
   world.add(links);
 }
+
+/* ===== light/dark switch: re-read the tokens and repaint the scene ===== */
+document.addEventListener("garrett:color-mode",function(){
+  var bg=css("--ag-bg");
+  renderer.setClearColor(bg); scene.fog.color.set(bg);
+  if(!PROJ||!pts) return;
+  paintCloud(); makeLabels();
+  if(hover>=0) updateLinks(hover);
+});
 
 /* ===== axis controls ===== */
 function fillSelectors(){
@@ -259,7 +287,7 @@ function loop(){
 }
 
 /* ===== boot ===== */
-function setEng(n){var e=document.getElementById("engName");e.textContent=n==="wasm"?"Rust core (WebAssembly)":"unavailable";e.style.color=n==="wasm"?"#34d399":"#fb7185";}
+function setEng(n){var e=document.getElementById("engName");e.textContent=n==="wasm"?"Rust core (WebAssembly)":"unavailable";e.style.color=n==="wasm"?"var(--green)":"var(--red)";}
 function start(){
   // learn the corpus (repeat to strengthen co-occurrence stats), then project 256 -> 6 PCs
   EX.sem_reset();
@@ -276,7 +304,7 @@ function start(){
 }
 function focusWord(){
   var w=document.getElementById("q").value.trim().toLowerCase(); if(!w)return;
-  var i=PROJ.words.indexOf(w); if(i<0){document.getElementById("near").innerHTML='<span style="color:#fb7185">not in the projected vocabulary</span>';return;}
+  var i=PROJ.words.indexOf(w); if(i<0){document.getElementById("near").innerHTML='<span style="color:var(--red)">not in the projected vocabulary</span>';return;}
   hover=i; showNeighbors(i); spin=false;
   // point camera toward it
   var t=[posCur[i*3],posCur[i*3+1],posCur[i*3+2]]; ry=Math.atan2(t[0],t[2]); rx=0.2; dist=140;

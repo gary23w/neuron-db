@@ -2,28 +2,33 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>neuron-db · plasticity playground</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="../garrett-mode.css?v=1">
+<script src="../garrett-mode.js?v=1"></script>
 <style>
-  :root{--bg:#1a1b26;--panel:#16161e;--panel2:#1f2335;--line:#292e42;--line2:#3b425e;--ink:#e9edfa;--mid:#a9b1d6;--dim:#7d85a8;--faint:#6a7297;--accent:#4fcbe2;--accent2:#8fb0f8;--pink:#c4a6f8;--green:#a6d47f;--amber:#e5b878;--red:#f88a9f;--mono:Consolas,"Lucida Console",Menlo,"SF Mono","DejaVu Sans Mono","Liberation Mono",monospace;--sans:Calibri,Corbel,Candara,"Segoe UI",-apple-system,"Helvetica Neue","DejaVu Sans","Liberation Sans",sans-serif}
+  :root{--bg:var(--ag-bg);--panel:var(--ag-surface);--panel2:var(--ag-code);--line:var(--ag-border-dim);--line2:var(--ag-border);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--accent2:var(--ag-blue);--mono:var(--ag-mono);--sans:var(--ag-mono)}
+  :root{--green:#111;--amber:#555;--pink:#454545;--red:#111;--grid:#dddddd}
+  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--pink:#7eb7ff;--red:#ff2d55;--grid:#0f2a1a}
   *{box-sizing:border-box}html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
   .mono{font-family:var(--mono)}
   header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
   header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
-  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}
+  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:0;padding:4px 11px;color:var(--mid)}
   main{flex:1;overflow:auto;padding:18px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px;align-content:start}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;min-height:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:0;padding:16px;display:flex;flex-direction:column;min-height:0}
   .card h2{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}
   .card h2 .d{width:9px;height:9px;border-radius:50%}
   .card .sub{font-size:12.5px;color:var(--dim);line-height:1.55;margin-bottom:13px}
   .bars{display:flex;flex-direction:column;gap:9px;margin:6px 0 12px}
   .barrow{display:flex;align-items:center;gap:9px;font:12px var(--mono)}
   .barrow .nm{width:78px;color:var(--mid)}
-  .track{flex:1;height:20px;background:#0b0e16;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+  .track{flex:1;height:20px;background:var(--ag-code);border:1px solid var(--line);border-radius:0;overflow:hidden}
   .fill{height:100%;border-radius:0;transition:width .4s cubic-bezier(.2,.7,.2,1)}
   .barrow .vv{width:42px;text-align:right;color:var(--ink)}
-  .win{font:12px var(--mono);padding:7px 10px;border-radius:8px;background:#0b0e16;border:1px solid var(--line2);color:var(--mid);margin-bottom:11px}
+  .win{font:12px var(--mono);padding:7px 10px;border-radius:0;background:var(--ag-code);border:1px solid var(--line2);color:var(--mid);margin-bottom:11px}
   .win b{color:var(--green)}
-  button{background:var(--accent);color:#04211c;border:none;border-radius:9px;font:680 13.5px var(--sans);padding:9px 14px;cursor:pointer}
+  button{background:var(--accent);color:var(--ag-on-accent);border:none;border-radius:0;font:680 13.5px var(--sans);padding:9px 14px;cursor:pointer}
   button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line2)}
   button:active{transform:translateY(1px)}
   .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
@@ -31,10 +36,10 @@
   input[type=range]{width:100%;accent-color:var(--accent)}
   .read{font:12px var(--mono);color:var(--mid);display:flex;justify-content:space-between;margin-top:6px}
   .read b{color:var(--accent)}
-  canvas{width:100%;height:110px;background:#0b0e16;border:1px solid var(--line);border-radius:8px;margin:8px 0}
-  .graph{position:relative;height:130px;background:#0b0e16;border:1px solid var(--line);border-radius:8px;margin:8px 0;overflow:hidden}
+  canvas{width:100%;height:110px;background:var(--ag-code);border:1px solid var(--line);border-radius:0;margin:8px 0}
+  .graph{position:relative;height:130px;background:var(--ag-code);border:1px solid var(--line);border-radius:0;margin:8px 0;overflow:hidden}
   .node{position:absolute;width:12px;height:12px;border-radius:50%;transform:translate(-50%,-50%);transition:.4s}
-  .syn{position:absolute;height:2px;transform-origin:left center;background:var(--line2);transition:.4s}
+  .syn{position:absolute;height:2px;transform-origin:left center;background:var(--ag-field-border);transition:.4s}
   .lab{font:11px var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.07em;margin:10px 0 4px}
   .note{font:11.5px var(--mono);color:var(--faint);line-height:1.6;margin-top:10px}
   .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -45,6 +50,7 @@
 <header>
   <h1>⚡ neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· plasticity playground — PlasticNeuron</span></h1>
   <span class="pill">O(1) scalar updates · no neural net · no re-indexing</span>
+  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </header>
 <main>
   <!-- ADAPTATION -->
@@ -118,24 +124,26 @@ drawAd();
 
 /* ---- decay ---- */
 var cv=$('decayCv'), ctx=cv.getContext('2d');
+var css=function(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();};
 function eff(age,hl){return Math.pow(0.5, age/hl);}
 function drawDecay(){
   var hl=+$('hl').value, age=+$('age').value, W=cv.width, H=cv.height, pad=24;
   ctx.clearRect(0,0,W,H);
   // grid
-  ctx.strokeStyle='#1a2029'; ctx.lineWidth=1;
+  ctx.strokeStyle=css('--grid'); ctx.lineWidth=1;
   for(var gy=0;gy<=4;gy++){var y=pad+(H-2*pad)*gy/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(W-pad,y);ctx.stroke();}
   // curve
-  ctx.strokeStyle='#f5b454'; ctx.lineWidth=2.5; ctx.beginPath();
+  ctx.strokeStyle=css('--amber'); ctx.lineWidth=2.5; ctx.beginPath();
   for(var x=0;x<=200;x++){var px=pad+(W-2*pad)*x/200, py=pad+(H-2*pad)*(1-eff(x,hl));if(x===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
   ctx.stroke();
   // marker
-  var mx=pad+(W-2*pad)*age/200, my=pad+(H-2*pad)*(1-eff(age,hl));
-  ctx.fillStyle='#5eead4'; ctx.beginPath(); ctx.arc(mx,my,5,0,7); ctx.fill();
-  ctx.strokeStyle='rgba(94,234,212,.3)';ctx.beginPath();ctx.moveTo(mx,pad);ctx.lineTo(mx,H-pad);ctx.stroke();
+  var mx=pad+(W-2*pad)*age/200, my=pad+(H-2*pad)*(1-eff(age,hl)), acc=css('--ag-accent');
+  ctx.fillStyle=acc; ctx.beginPath(); ctx.arc(mx,my,5,0,7); ctx.fill();
+  ctx.strokeStyle=acc;ctx.globalAlpha=.3;ctx.beginPath();ctx.moveTo(mx,pad);ctx.lineTo(mx,H-pad);ctx.stroke();ctx.globalAlpha=1;
   $('ageR').textContent=age; $('effR').textContent=eff(age,hl).toFixed(2);
 }
 $('hl').addEventListener('input',drawDecay); $('age').addEventListener('input',drawDecay);
+document.addEventListener('garrett:color-mode',drawDecay);
 drawDecay();
 
 /* ---- association ---- */
@@ -147,13 +155,13 @@ function drawSyn(){
   var s=$('syn');
   s.style.left=ax+'px'; s.style.top=ay+'px'; s.style.width=len+'px'; s.style.transform='rotate('+ang+'deg)';
   s.style.height=Math.min(2+link*1.4,12)+'px';
-  s.style.background= link>2 ? 'var(--accent)' : 'var(--line2)';
+  s.style.background= link>2 ? 'var(--accent)' : 'var(--ag-field-border)';
   s.style.opacity=Math.min(.3+link/8,1);
   $('linkR').textContent=link.toFixed(1);
 }
 $('coact').addEventListener('click',function(){ link=Math.min(link*1.7+0.3,8); drawSyn(); $('spreadR').textContent='spread: —'; });
 $('spread').addEventListener('click',function(){
-  if(link>2){ $('nB').style.boxShadow='0 0 16px var(--accent)'; $('nB').style.width='18px'; $('nB').style.height='18px';
+  if(link>2){ $('nB').style.boxShadow='0 0 0 3px var(--bg), 0 0 0 5px var(--accent)'; $('nB').style.width='18px'; $('nB').style.height='18px';
     $('spreadR').innerHTML='spread: <b style="color:var(--green)">reached B</b>';
     $('asNote').textContent='cue for A activated B across the synapse — recall surfaced an associate you never queried.';
     setTimeout(function(){$('nB').style.boxShadow='';$('nB').style.width='12px';$('nB').style.height='12px';},900);

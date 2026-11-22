@@ -5,22 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>The Vermillion Room · a neuron-db detective game</title>
 <meta name="description" content="A noir cold-case game with neuron-db as its whole backend. Pull suspect files (recall), follow the red string (spreading-activation), and crack the case with multi-hop deduction (chain) — all in a 332 KB WebAssembly module running in your browser.">
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="../garrett-mode.css?v=1">
+<script src="../garrett-mode.js?v=1"></script>
 <style>
   :root{
-    --bg:#1a1b26; --panel:#16161e; --panel2:#1f2335; --line:#292e42; --line2:#3b425e;
-    --ink:#e9edfa; --mid:#a9b1d6; --dim:#7d85a8; --faint:#6a7297;
-    --amber:#e5b878; --amber2:#ecc78f; --red:#f88a9f; --green:#a6d47f; --blue:#8fb0f8;
-    --mono:Consolas,"Lucida Console",Menlo,"SF Mono","DejaVu Sans Mono","Liberation Mono",monospace;
-    --serif:"Iowan Old Style","Palatino Linotype",Georgia,"Times New Roman",serif;
-    --sans:Calibri,Corbel,Candara,"Segoe UI",-apple-system,"Helvetica Neue","DejaVu Sans","Liberation Sans",sans-serif;
+    --bg:var(--ag-bg); --panel:var(--ag-surface); --panel2:var(--ag-code); --line:var(--ag-border-dim); --line2:var(--ag-border);
+    --ink:var(--ag-text); --mid:var(--ag-muted); --dim:var(--ag-muted); --faint:var(--ag-faint);
+    --amber:var(--ag-accent); --amber2:var(--ag-accent-strong); --blue:var(--ag-blue);
+    --mono:var(--ag-mono);
+    --serif:var(--ag-mono);
+    --sans:var(--ag-mono);
   }
+  :root{--green:#111;--red:#111}
+  :root[data-color-mode="dark"]{--green:#00ef72;--red:#ff2d55}
   *{box-sizing:border-box}
   html,body{margin:0;min-height:100%}
   body{
-    background:
-      radial-gradient(1100px 520px at 78% -8%, rgba(227,166,74,.10), transparent 60%),
-      radial-gradient(900px 600px at -10% 110%, rgba(207,75,62,.06), transparent 55%),
-      var(--bg);
+    background:var(--bg);
     color:var(--ink); font:15px/1.6 var(--sans);
     -webkit-font-smoothing:antialiased; padding:0 0 56px;
   }
@@ -29,41 +31,40 @@
   .wrap{max-width:860px;margin:0 auto;padding:0 18px}
 
   /* ---- header ---- */
-  header{border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.018),transparent)}
+  header{border-bottom:1px solid var(--line)}
   .head{display:flex;align-items:center;gap:14px;padding:16px 0;flex-wrap:wrap}
   .lamp{width:34px;height:34px;flex:none;border-radius:50%;
-    background:radial-gradient(circle at 50% 35%, #ffe6ad, #e3a64a 45%, #8a5e1e 75%, #3a2a12);
-    box-shadow:0 0 22px rgba(227,166,74,.5), inset 0 -3px 6px rgba(0,0,0,.35)}
+    background:var(--amber)}
   .head h1{font:600 16px/1.2 var(--sans);margin:0;letter-spacing:.01em}
   .head h1 b{color:var(--amber2);font-weight:700}
   .head .sub{font:12px var(--mono);color:var(--dim);margin-top:3px}
   .badges{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
-  .badge{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;
+  .badge{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:0;
     padding:5px 11px;color:var(--mid);display:flex;align-items:center;gap:7px;white-space:nowrap}
   .badge b{color:var(--amber)}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);display:inline-block;transition:.3s}
-  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
-  .dot.err{background:var(--red);box-shadow:0 0 8px var(--red)}
+  .dot.on{background:var(--green)}
+  .dot.err{background:var(--red)}
 
   /* ---- briefing ---- */
   .brief{margin:22px 0 8px;padding:18px 20px;border:1px solid var(--line);border-left:3px solid var(--amber);
-    border-radius:12px;background:var(--panel);position:relative}
+    border-radius:0;background:var(--panel);position:relative}
   .brief .stamp{position:absolute;top:14px;right:16px;font:700 11px var(--mono);letter-spacing:.22em;
-    color:var(--red);border:2px solid var(--red);border-radius:6px;padding:4px 9px;transform:rotate(-7deg);opacity:.85}
+    color:var(--red);border:2px solid var(--red);border-radius:0;padding:4px 9px;transform:rotate(-7deg);opacity:.85}
   .brief h2{font:600 14px var(--sans);margin:0 0 8px;color:var(--amber2);letter-spacing:.02em}
   .brief p{margin:0 0 9px;color:var(--ink)} .brief p:last-child{margin:0}
-  .brief .lede{font-family:var(--serif);font-size:18px;line-height:1.5;color:#f3ecdc}
+  .brief .lede{font-family:var(--serif);font-size:18px;line-height:1.5;color:var(--ag-heading)}
   .brief .note{font:12.5px var(--mono);color:var(--dim);margin-top:4px}
 
   /* ---- how it works ---- */
   .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:14px 0}
-  .lg{border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:var(--panel2)}
+  .lg{border:1px solid var(--line);border-radius:0;padding:11px 13px;background:var(--panel2)}
   .lg b{display:block;font:600 13px var(--sans);color:var(--amber2);margin-bottom:2px}
   .lg .op{font:11px var(--mono);color:var(--blue)}
   .lg span{font-size:12.5px;color:var(--mid)}
 
   /* ---- the board ---- */
-  .boardwrap{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden;margin-top:6px}
+  .boardwrap{border:1px solid var(--line);border-radius:0;background:var(--panel);overflow:hidden;margin-top:6px}
   .bh{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);
     font:11px var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim)}
   .bh .clear{cursor:pointer;color:var(--faint)} .bh .clear:hover{color:var(--amber)}
@@ -72,9 +73,9 @@
   @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .cmd{font:12px var(--mono);color:var(--amber);display:flex;align-items:center;gap:8px}
   .cmd .v{color:var(--dim)}
-  .card{margin-top:7px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);overflow:hidden}
+  .card{margin-top:7px;border:1px solid var(--line2);border-radius:0;background:var(--panel2);overflow:hidden}
   .card .ct{font:10.5px var(--mono);text-transform:uppercase;letter-spacing:.13em;color:var(--dim);
-    padding:8px 13px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.015)}
+    padding:8px 13px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--ink) 3%,transparent)}
   .file{padding:6px 13px 11px}
   .file .ln{padding:7px 0;border-bottom:1px dashed var(--line);color:var(--ink);display:flex;gap:9px}
   .file .ln:last-child{border-bottom:0}
@@ -92,7 +93,7 @@
 
   /* deduction trail */
   .trail{padding:13px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-  .node{font:600 13px var(--sans);color:#10100f;background:var(--amber2);border-radius:7px;padding:6px 12px;
+  .node{font:600 13px var(--sans);color:var(--ag-on-accent);background:var(--amber2);border-radius:0;padding:6px 12px;
     animation:pop .3s ease both}
   .node.start{background:var(--ink)}
   .node.broke{background:var(--panel2);color:var(--dim);border:1px dashed var(--line2)}
@@ -109,43 +110,43 @@
   .accuse .ev{padding:7px 0;border-top:1px solid var(--line);color:var(--ink);font-size:13.5px;display:flex;gap:10px}
   .accuse .ev .k{font:10.5px var(--mono);color:var(--blue);flex:none;width:96px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}
   .closedstamp{display:inline-block;margin-top:10px;font:700 13px var(--mono);letter-spacing:.2em;color:var(--red);
-    border:2px solid var(--red);border-radius:7px;padding:6px 13px;transform:rotate(-3deg)}
+    border:2px solid var(--red);border-radius:0;padding:6px 13px;transform:rotate(-3deg)}
 
   /* ---- command bar (flows under the board; the board scrolls internally) ---- */
   .bar{margin-top:16px;padding:4px 0}
   .verbs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:9px}
   .verb{font:600 12.5px var(--sans);background:var(--panel2);border:1px solid var(--line2);color:var(--mid);
-    border-radius:9px;padding:9px 13px;min-height:42px;cursor:pointer;transition:.14s;display:flex;align-items:center;gap:7px}
+    border-radius:0;padding:9px 13px;min-height:42px;cursor:pointer;transition:.14s;display:flex;align-items:center;gap:7px}
   .verb .op{font:10px var(--mono);color:var(--faint)}
   .verb:hover{border-color:var(--amber);color:var(--ink)}
-  .verb.on{background:var(--amber);color:#13110c;border-color:var(--amber)} .verb.on .op{color:#5e4a1e}
-  .verb.danger.on{background:var(--red);border-color:var(--red);color:#fff} .verb.danger.on .op{color:#ffd9d4}
+  .verb.on{background:var(--amber);color:var(--ag-on-accent);border-color:var(--amber)} .verb.on .op{color:color-mix(in srgb,var(--ag-on-accent) 72%,transparent)}
+  .verb.danger.on{background:var(--red);border-color:var(--red);color:var(--ag-on-accent)} .verb.danger.on .op{color:color-mix(in srgb,var(--ag-on-accent) 72%,transparent)}
   .inrow{display:flex;gap:8px}
-  .inrow input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line2);color:var(--ink);
-    border-radius:10px;padding:13px 14px;font:14px var(--sans);min-height:48px}
+  .inrow input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--ag-field-border);color:var(--ink);
+    border-radius:0;padding:13px 14px;font:14px var(--sans);min-height:48px}
   .inrow input:focus{outline:none;border-color:var(--amber)}
-  .inrow button{flex:none;background:var(--amber);color:#13110c;border:0;border-radius:10px;
+  .inrow button{flex:none;background:var(--amber);color:var(--ag-on-accent);border:0;border-radius:0;
     padding:0 18px;font:700 14px var(--sans);cursor:pointer;min-height:48px}
-  .inrow button:hover{background:var(--amber2)}
+  .inrow button:hover{background:var(--ag-accent-hover)}
   .ph{font:12px var(--mono);color:var(--dim);margin:8px 2px 0;min-height:16px}
 
   /* chips + cast */
   .chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
-  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;
+  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:0;
     padding:7px 13px;min-height:36px;display:flex;align-items:center;color:var(--mid);cursor:pointer;transition:.14s}
   .chip:hover{color:var(--amber);border-color:var(--amber)}
   .cast{margin:18px 0 4px;border-top:1px solid var(--line);padding-top:14px}
   .cast h3{font:11px var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin:0 0 9px}
   .people{display:flex;gap:8px;flex-wrap:wrap}
-  .person{cursor:pointer;border:1px solid var(--line2);border-radius:9px;padding:8px 12px;background:var(--panel2);transition:.14s}
+  .person{cursor:pointer;border:1px solid var(--line2);border-radius:0;padding:8px 12px;background:var(--panel2);transition:.14s}
   .person:hover{border-color:var(--amber)}
   .person b{display:block;font:600 13px var(--sans);color:var(--ink)} .person b.victim{color:var(--red)}
   .person span{font:11px var(--mono);color:var(--dim)}
 
   footer{margin-top:26px;border-top:1px solid var(--line);padding-top:14px;color:var(--dim);font-size:12.5px}
   footer b{color:var(--mid)}
-  .banner{display:none;margin:14px 0;padding:11px 14px;border:1px solid var(--red);border-radius:10px;
-    background:rgba(207,75,62,.08);color:#f2b6af;font:13px var(--sans)}
+  .banner{display:none;margin:14px 0;padding:11px 14px;border:1px solid var(--ag-danger);border-radius:0;
+    background:color-mix(in srgb,var(--ag-danger) 8%,transparent);color:var(--ag-danger);font:13px var(--sans)}
   @media(max-width:560px){ .head h1{font-size:15px} .brief .lede{font-size:16px} .accuse .ev .k{width:74px} }
 </style>
 </head>
@@ -161,6 +162,7 @@
     <span class="badge">backend · <b>neuron-db</b></span>
     <span class="badge"><b id="wsz">332 KB</b> .wasm · in-browser</span>
   </div>
+  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </div></header>
 
 <main class="wrap">

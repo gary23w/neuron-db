@@ -2,35 +2,40 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>neuron-db · encrypted vault</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="../garrett-mode.css?v=1">
+<script src="../garrett-mode.js?v=1"></script>
 <style>
-  :root{--bg:#1a1b26;--panel:#16161e;--panel2:#1f2335;--line:#292e42;--line2:#3b425e;--ink:#e9edfa;--mid:#a9b1d6;--dim:#7d85a8;--faint:#6a7297;--accent:#4fcbe2;--green:#a6d47f;--amber:#e5b878;--red:#f88a9f;--mono:Consolas,"Lucida Console",Menlo,"SF Mono","DejaVu Sans Mono","Liberation Mono",monospace;--sans:Calibri,Corbel,Candara,"Segoe UI",-apple-system,"Helvetica Neue","DejaVu Sans","Liberation Sans",sans-serif}
+  :root{--bg:var(--ag-bg);--panel:var(--ag-surface);--panel2:var(--ag-code);--line:var(--ag-border-dim);--line2:var(--ag-border);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--mono:var(--ag-mono);--sans:var(--ag-mono)}
+  :root{--green:#111;--amber:#555;--red:#111}
+  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--red:#ff2d55}
   *{box-sizing:border-box}html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
   .mono{font-family:var(--mono)}
   header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
   header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
-  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}
+  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:0;padding:4px 11px;color:var(--mid)}
   header .pill b{color:var(--green)}
   main{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);min-height:0}
   .pane{background:var(--bg);display:flex;flex-direction:column;min-height:0;overflow:auto}
   .pane h2{margin:0;padding:11px 16px;font:11.5px var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--dim);border-bottom:1px solid var(--line);flex:none}
   .body{padding:16px;display:flex;flex-direction:column;gap:13px}
   label{font:11.5px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:5px}
-  input{width:100%;background:var(--panel);border:1px solid var(--line2);border-radius:9px;color:var(--ink);font:14px var(--sans);padding:9px 12px;outline:none}
+  input{width:100%;background:var(--panel);border:1px solid var(--ag-field-border);border-radius:0;color:var(--ink);font:14px var(--sans);padding:9px 12px;outline:none}
   input:focus{border-color:var(--accent)}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  button{background:var(--accent);color:#04211c;border:none;border-radius:9px;font:680 14px var(--sans);padding:10px 16px;cursor:pointer}
+  button{background:var(--accent);color:var(--ag-on-accent);border:none;border-radius:0;font:680 14px var(--sans);padding:10px 16px;cursor:pointer}
   button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line2)}
   button:active{transform:translateY(1px)}
   .hint{font-size:12.5px;color:var(--dim);line-height:1.6}
   .hint b{color:var(--mid)}
-  .entry{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:12.5px}
+  .entry{background:var(--panel);border:1px solid var(--line);border-radius:0;padding:11px 13px;font-size:12.5px}
   .entry .lab{font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;margin-bottom:6px}
-  .entry .ct{font:11.5px var(--mono);color:var(--red);word-break:break-all;line-height:1.5;background:#120e12;border:1px solid #2a1c22;border-radius:6px;padding:7px 9px}
+  .entry .ct{font:11.5px var(--mono);color:var(--red);word-break:break-all;line-height:1.5;background:color-mix(in srgb,var(--red) 5%,var(--ag-code));border:1px solid color-mix(in srgb,var(--red) 22%,transparent);border-radius:0;padding:7px 9px}
   .entry .idx{font:11px var(--mono);color:var(--dim);margin-top:6px;word-break:break-all}
-  .result{border-radius:9px;padding:13px;font-size:14px;border:1px solid var(--line2);background:var(--panel)}
-  .result.ok{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.06)}
-  .result.bad{border-color:rgba(251,113,133,.4);background:rgba(251,113,133,.06)}
+  .result{border-radius:0;padding:13px;font-size:14px;border:1px solid var(--line2);background:var(--panel)}
+  .result.ok{border-color:color-mix(in srgb,var(--green) 40%,transparent);background:color-mix(in srgb,var(--green) 6%,transparent)}
+  .result.bad{border-color:color-mix(in srgb,var(--ag-danger) 40%,transparent);background:color-mix(in srgb,var(--ag-danger) 6%,transparent)}
   .result .v{font:680 17px var(--mono)}
   .result.ok .v{color:var(--green)}.result.bad .v{color:var(--red)}
   .result .m{font:11.5px var(--mono);color:var(--dim);margin-top:6px}
@@ -43,6 +48,7 @@
 <header>
   <h1>🔒 neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· SecureNeuronDB — encrypted vault</span></h1>
   <span class="pill">AES-256-GCM · key <b>never stored</b></span>
+  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </header>
 <main>
   <section class="pane">

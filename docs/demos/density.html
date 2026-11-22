@@ -2,16 +2,21 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>neuron-db · storage density</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="../garrett-mode.css?v=1">
+<script src="../garrett-mode.js?v=1"></script>
 <style>
-  :root{--bg:#1a1b26;--panel:#16161e;--panel2:#1f2335;--line:#292e42;--line2:#3b425e;--ink:#e9edfa;--mid:#a9b1d6;--dim:#7d85a8;--faint:#6a7297;--accent:#4fcbe2;--accent2:#8fb0f8;--green:#a6d47f;--amber:#e5b878;--red:#f88a9f;--mono:Consolas,"Lucida Console",Menlo,"SF Mono","DejaVu Sans Mono","Liberation Mono",monospace;--sans:Calibri,Corbel,Candara,"Segoe UI",-apple-system,"Helvetica Neue","DejaVu Sans","Liberation Sans",sans-serif}
+  :root{--bg:var(--ag-bg);--panel:var(--ag-surface);--panel2:var(--ag-code);--line:var(--ag-border-dim);--line2:var(--ag-border);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--accent2:var(--ag-blue);--mono:var(--ag-mono);--sans:var(--ag-mono)}
+  :root{--green:#111;--amber:#555;--red:#111}
+  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--red:#ff2d55}
   *{box-sizing:border-box}html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
   .mono{font-family:var(--mono)}
   header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
   header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
-  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}
+  header .pill{margin-left:auto;font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:0;padding:4px 11px;color:var(--mid)}
   main{flex:1;overflow:auto;padding:22px;max-width:920px;margin:0 auto;width:100%}
-  .control{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:20px}
+  .control{background:var(--panel);border:1px solid var(--line);border-radius:0;padding:18px 20px;margin-bottom:20px}
   .control .top{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:6px}
   .control .lbl{font:11.5px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.08em}
   .control .big{font:680 30px var(--mono);color:var(--accent)}
@@ -21,13 +26,13 @@
   .rows{display:flex;flex-direction:column;gap:12px}
   .r{display:grid;grid-template-columns:170px 1fr 150px;gap:14px;align-items:center}
   .r .name{font-size:13px}.r .name b{display:block;color:var(--ink)}.r .name span{font:11px var(--mono);color:var(--dim)}
-  .r .track{height:30px;background:#0b0e16;border:1px solid var(--line);border-radius:6px;overflow:hidden;position:relative}
-  .r .fill{height:100%;transition:width .5s cubic-bezier(.2,.7,.2,1);display:flex;align-items:center;justify-content:flex-end;padding-right:8px;font:11.5px var(--mono);color:#04211c;white-space:nowrap}
+  .r .track{height:30px;background:var(--ag-code);border:1px solid var(--line);border-radius:0;overflow:hidden;position:relative}
+  .r .fill{height:100%;transition:width .5s cubic-bezier(.2,.7,.2,1);display:flex;align-items:center;justify-content:flex-end;padding-right:8px;font:11.5px var(--mono);color:var(--ag-heading);white-space:nowrap}
   .r .size{font:13px var(--mono);text-align:right}
   .r .size b{color:var(--ink)}.r .size span{color:var(--red);font-size:11.5px}
-  .r.hero .name b{color:var(--accent)} .r.hero .fill{background:var(--accent)} .r.hero .size b{color:var(--accent)}
-  .vfill{background:linear-gradient(90deg,#39455e,#2b3447)}
-  .summary{margin-top:22px;background:#0e1218;border:1px solid var(--line2);border-left:2px solid var(--accent);border-radius:8px;padding:16px 18px;font-size:14px;color:var(--mid)}
+  .r.hero .name b{color:var(--accent)} .r.hero .fill{background:var(--accent);color:var(--ag-on-accent)} .r.hero .size b{color:var(--accent)}
+  .vfill{background:var(--ag-accent-dark)}
+  .summary{margin-top:22px;background:var(--ag-code);border:1px solid var(--line2);border-left:2px solid var(--accent);border-radius:0;padding:16px 18px;font-size:14px;color:var(--mid)}
   .summary b{color:var(--ink)} .summary .hl{color:var(--accent);font-weight:680}
   .note{font:11.5px var(--mono);color:var(--faint);margin-top:16px;line-height:1.7}
   .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -38,6 +43,7 @@
 <header>
   <h1>📦 neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· storage density vs vector databases</span></h1>
   <span class="pill">~48 B/fact · 22.4M facts/GiB</span>
+  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </header>
 <main>
   <div class="control">

@@ -2,16 +2,21 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>neuron-db · emergence cortex</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="../garrett-mode.css?v=1">
+<script src="../garrett-mode.js?v=1"></script>
 <style>
-  :root{--bg:#1a1b26;--panel:#16161e;--panel2:#1f2335;--line:#292e42;--line2:#3b425e;--ink:#e9edfa;--mid:#a9b1d6;--dim:#7d85a8;--faint:#6a7297;--accent:#4fcbe2;--accent2:#8fb0f8;--pink:#c4a6f8;--green:#a6d47f;--amber:#e5b878;--red:#f88a9f;--mono:Consolas,"Lucida Console",Menlo,"SF Mono","DejaVu Sans Mono","Liberation Mono",monospace;--sans:Calibri,Corbel,Candara,"Segoe UI",-apple-system,"Helvetica Neue","DejaVu Sans","Liberation Sans",sans-serif}
+  :root{--bg:var(--ag-bg);--panel:var(--ag-surface);--panel2:var(--ag-code);--line:var(--ag-border-dim);--line2:var(--ag-border);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--accent2:var(--ag-blue);--mono:var(--ag-mono);--sans:var(--ag-mono)}
+  :root{--green:#111;--amber:#555;--pink:#454545;--red:#111}
+  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--pink:#7eb7ff;--red:#ff2d55}
   *{box-sizing:border-box}html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
   .mono{font-family:var(--mono)}
   header{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
   header h1{font-size:14.5px;margin:0;font-weight:680;display:flex;align-items:center;gap:9px}header h1 b{color:var(--accent)}
-  .pills{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
-  .pill{font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--mid)}.pill b{color:var(--accent)}
-  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}.dot.on{background:var(--green);box-shadow:0 0 7px var(--green)}.dot.off{background:var(--amber)}.dot.err{background:var(--red)}
+  .pills{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .pill{font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:0;padding:4px 11px;color:var(--mid)}.pill b{color:var(--accent)}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}.dot.on{background:var(--green)}.dot.off{background:var(--amber)}.dot.err{background:var(--red)}
   main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
   .pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
   .pane:last-child{border-right:none}
@@ -19,19 +24,19 @@
   .scroll{flex:1;overflow:auto;padding:16px}
   .hint{font-size:12.5px;color:var(--dim);line-height:1.6;margin-bottom:14px}
   .chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
-  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:999px;padding:5px 11px;color:var(--mid);cursor:pointer}
+  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:0;padding:5px 11px;color:var(--mid);cursor:pointer}
   .chip:hover,.chip.sel{color:var(--accent);border-color:var(--accent)}
-  .ctx{font:13px var(--mono);background:#0b0e16;border:1px solid var(--line);border-radius:10px;padding:14px;line-height:1.85;white-space:pre-wrap;word-break:break-word}
+  .ctx{font:13px var(--mono);background:var(--ag-code);border:1px solid var(--line);border-radius:0;padding:14px;line-height:1.85;white-space:pre-wrap;word-break:break-word}
   .ctx .u{color:var(--accent2)}.ctx .g{color:var(--faint)}
-  .ctx mark{background:rgba(94,234,212,.16);color:var(--accent);padding:0 2px;border-radius:3px;transition:background .2s}
-  .ctx mark.hot{background:var(--accent);color:#04211c}
+  .ctx mark{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);padding:0 2px;border-radius:0;transition:background .2s}
+  .ctx mark.hot{background:var(--accent);color:var(--ag-on-accent)}
   .ctx .cursor{color:var(--pink)}
-  textarea{width:100%;min-height:84px;background:var(--panel);border:1px solid var(--line2);border-radius:10px;color:var(--ink);font:13px var(--mono);padding:11px;outline:none;resize:vertical}
+  textarea{width:100%;min-height:84px;background:var(--panel);border:1px solid var(--ag-field-border);border-radius:0;color:var(--ink);font:13px var(--mono);padding:11px;outline:none;resize:vertical}
   textarea:focus{border-color:var(--accent)}
   .qrow{display:flex;gap:9px;margin-top:11px}
-  .qrow input{flex:1;background:var(--panel);border:1px solid var(--line2);border-radius:10px;color:var(--ink);font:13px var(--mono);padding:10px 12px;outline:none}
+  .qrow input{flex:1;background:var(--panel);border:1px solid var(--ag-field-border);border-radius:0;color:var(--ink);font:13px var(--mono);padding:10px 12px;outline:none}
   .qrow input:focus{border-color:var(--accent)}
-  button{background:var(--accent);color:#04211c;border:none;border-radius:10px;font:680 14px var(--sans);padding:0 18px;cursor:pointer}
+  button{background:var(--accent);color:var(--ag-on-accent);border:none;border-radius:0;font:680 14px var(--sans);padding:0 18px;cursor:pointer}
   button:disabled{opacity:.5;cursor:not-allowed}
   .gen{font:15px var(--mono);min-height:30px;line-height:1.7;margin-top:4px}
   .gen .out{color:var(--accent);font-weight:600}
@@ -39,7 +44,7 @@
   .stat{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px;font:11.5px var(--mono);color:var(--dim)}
   .stat b{color:var(--ink)}
   .lab{font:11px var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 7px}
-  .arch{font:11.5px var(--mono);color:var(--mid);background:#0b0e16;border:1px solid var(--line);border-radius:10px;padding:12px 14px;line-height:1.7}
+  .arch{font:11.5px var(--mono);color:var(--mid);background:var(--ag-code);border:1px solid var(--line);border-radius:0;padding:12px 14px;line-height:1.7}
   .arch b{color:var(--accent)}
   .foot{flex:none;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--faint);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
   .foot a{color:var(--dim)}
@@ -48,7 +53,7 @@
 <body>
 <header>
   <h1>🧠 neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· emergence cortex — copy-from-context</span></h1>
-  <div class="pills"><span class="pill"><span class="dot off" id="dot"></span><span id="state">loading core…</span></span><span class="pill">8L · E96 · 384ctx</span><span class="pill">numpy↔ts↔rust <b>0.0 MSE</b></span></div>
+  <div class="pills"><span class="pill"><span class="dot off" id="dot"></span><span id="state">loading core…</span></span><span class="pill">8L · E96 · 384ctx</span><span class="pill">numpy↔ts↔rust <b>0.0 MSE</b></span><button type="button" class="color-mode-toggle" data-color-mode-toggle></button></div>
 </header>
 <main>
   <section class="pane">
