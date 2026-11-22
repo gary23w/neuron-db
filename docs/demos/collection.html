@@ -5,8 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>neuron-db · live collection PoC</title>
 <meta name="theme-color" content="#ffffff">
+<link rel="icon" type="image/x-icon" href="../favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="../favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="../favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="../favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="../garrett-mode.css?v=1">
-<script src="../garrett-mode.js?v=1"></script>
 <style>
   :root{
     --bg:var(--ag-bg); --panel:var(--ag-surface); --panel2:var(--ag-code); --line:var(--ag-border-dim);
@@ -14,14 +19,12 @@
     --you:color-mix(in srgb,var(--ag-blue) 14%,var(--ag-bg)); --bot:var(--ag-code);
   }
   :root{--t-mouse:#767676;--t-click:#111;--t-scroll:#454545;--t-key:#555;--t-store:#111;--t-recall:#252525;--t-chat:#454545;--t-session:#111;--t-event:#666}
-  :root[data-color-mode="dark"]{--t-mouse:#8da494;--t-click:#f3f7f1;--t-scroll:#7eb7ff;--t-key:#16c56b;--t-store:#00ef72;--t-recall:#9effbd;--t-chat:#7eb7ff;--t-session:#ff2d55;--t-event:#c5d4c8}
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--ag-mono);display:flex;flex-direction:column}
   header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
   header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
   header h1 b{color:var(--accent)}
-  header .color-mode-toggle{margin-left:auto}
   .pill{font:12px var(--ag-mono);background:var(--panel2);border:1px solid var(--line);border-radius:0;padding:3px 10px;color:var(--dim)}
   .pill #sid{color:var(--accent2)}
   .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
@@ -65,7 +68,6 @@
   <span class="pill">session <span id="sid">…</span></span>
   <span class="pill"><span id="net" class="dot off"></span><span id="netlbl">in&#8209;page store</span></span>
   <span class="pill">backend: <span id="backend">detecting…</span></span>
-  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </header>
 
 <main>

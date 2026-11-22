@@ -6,8 +6,13 @@
 <title>The Vermillion Room · a neuron-db detective game</title>
 <meta name="description" content="A noir cold-case game with neuron-db as its whole backend. Pull suspect files (recall), follow the red string (spreading-activation), and crack the case with multi-hop deduction (chain) — all in a 332 KB WebAssembly module running in your browser.">
 <meta name="theme-color" content="#ffffff">
+<link rel="icon" type="image/x-icon" href="../favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="../favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="../favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="../favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="../garrett-mode.css?v=1">
-<script src="../garrett-mode.js?v=1"></script>
 <style>
   :root{
     --bg:var(--ag-bg); --panel:var(--ag-surface); --panel2:var(--ag-code); --line:var(--ag-border-dim); --line2:var(--ag-border);
@@ -18,7 +23,6 @@
     --sans:var(--ag-mono);
   }
   :root{--green:#111;--red:#111}
-  :root[data-color-mode="dark"]{--green:#00ef72;--red:#ff2d55}
   *{box-sizing:border-box}
   html,body{margin:0;min-height:100%}
   body{
@@ -162,7 +166,6 @@
     <span class="badge">backend · <b>neuron-db</b></span>
     <span class="badge"><b id="wsz">332 KB</b> .wasm · in-browser</span>
   </div>
-  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </div></header>
 
 <main class="wrap">

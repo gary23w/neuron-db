@@ -6,12 +6,16 @@
 <title>neuron-db · semantic space in N dimensions</title>
 <meta name="description" content="The real neuron-db semantic space, learned in your browser from a corpus and projected from 256 dimensions with in-WASM PCA. Words cluster by meaning; switch which principal components map to X/Y/Z to fly through multiple dimensions of meaning.">
 <meta name="theme-color" content="#ffffff">
+<link rel="icon" type="image/x-icon" href="../favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="../favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="../favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="../favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="../garrett-mode.css?v=1">
-<script src="../garrett-mode.js?v=1"></script>
 <style>
   :root{--bg:var(--ag-bg);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--accent2:var(--ag-blue);--line:var(--ag-border);--panel:color-mix(in srgb,var(--ag-bg) 86%,transparent);--mono:var(--ag-mono);--sans:var(--ag-mono)}
   :root{--green:#111;--amber:#555;--pink:#454545;--red:#111;--c0:#111;--c1:#555;--c2:#2b2b2b;--c3:#767676;--c4:#3c3c3c;--c5:#666;--c6:#000;--c7:#4a4a4a}
-  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--pink:#7eb7ff;--red:#ff2d55;--c0:#00ef72;--c1:#7eb7ff;--c2:#f3f7f1;--c3:#16c56b;--c4:#9effbd;--c5:#ff2d55;--c6:#8da494;--c7:#c5d4c8}
   *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
   #cv{position:fixed;inset:0;display:block}
   .ov{position:fixed;z-index:5}
@@ -43,16 +47,15 @@
   #help b{color:var(--mid)}
   #banner{top:62px;left:50%;transform:translateX(-50%);background:color-mix(in srgb,var(--ag-danger) 10%,var(--ag-bg));border:1px solid color-mix(in srgb,var(--ag-danger) 45%,transparent);color:var(--ag-danger);padding:9px 14px;border-radius:0;font:12px var(--mono);display:none;max-width:80vw;text-align:center}
   #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font:13px var(--mono);color:var(--dim);z-index:6}
-  @media(max-width:760px){#top{flex-wrap:wrap;padding:8px 10px;gap:6px 10px}#top .color-mode-toggle{order:1;margin-left:auto}.eng{order:2}#panel{top:96px;left:8px;right:8px;width:auto;max-height:46vh;overflow:auto}#info{left:8px;right:8px;width:auto;bottom:8px}#help{display:none}}
+  @media(max-width:760px){#top{flex-wrap:wrap;padding:8px 10px;gap:6px 10px}.eng{order:2}#panel{top:calc(var(--top-h,54px) + 8px);left:8px;right:8px;width:auto;max-height:46vh;overflow:auto}#info{left:8px;right:8px;width:auto;bottom:8px}#help{display:none}}
 </style>
 </head>
 <body>
 <canvas id="cv"></canvas>
 <div id="load">learning the semantic space &amp; projecting 256 → 3 dimensions…</div>
 <div class="ov" id="top">
-  <span class="brand"><span class="dot"></span> neuron<b>-db</b> · semantic space</span>
+  <span class="brand"><span class="dot"></span><span>neuron<b>-db</b> · semantic space</span></span>
   <span class="eng" id="eng">engine: <b id="engName">loading…</b></span>
-  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </div>
 <div class="ov" id="banner"></div>
 <div class="ov" id="panel" style="display:none">
@@ -134,7 +137,7 @@ function parseProj(blob){
 }
 
 /* ===== scene ===== */
-// colours come from the page's CSS tokens, so the scene follows the light/dark switch
+// colours come from the page's CSS tokens
 var css=function(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();};
 var cv=document.getElementById("cv");
 var renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
@@ -230,15 +233,6 @@ function updateLinks(i){
   world.add(links);
 }
 
-/* ===== light/dark switch: re-read the tokens and repaint the scene ===== */
-document.addEventListener("garrett:color-mode",function(){
-  var bg=css("--ag-bg");
-  renderer.setClearColor(bg); scene.fog.color.set(bg);
-  if(!PROJ||!pts) return;
-  paintCloud(); makeLabels();
-  if(hover>=0) updateLinks(hover);
-});
-
 /* ===== axis controls ===== */
 function fillSelectors(){
   ["selX","selY","selZ"].forEach(function(id,ax){
@@ -318,6 +312,10 @@ function fail(msg){document.getElementById("load").style.display="none";var b=do
       fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(function(){fail("failed to load the wasm core");}); });
   } else { fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(function(){fail("failed to load the wasm core");}); }
 })();
+</script>
+<script>
+/* On a phone the top bar wraps; keep the panel just under it, however many rows it takes. */
+(function(){var bar=document.getElementById("top");if(!bar||!window.ResizeObserver)return;new ResizeObserver(function(){document.documentElement.style.setProperty("--top-h",Math.round(bar.getBoundingClientRect().bottom)+"px");}).observe(bar);})();
 </script>
 </body>
 </html>

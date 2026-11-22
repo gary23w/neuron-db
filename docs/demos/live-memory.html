@@ -6,8 +6,13 @@
 <title>neuron-db · live in your browser</title>
 <meta name="description" content="The real neuron-db Rust core and emergence cortex, compiled to WebAssembly and running entirely in your browser. Tell it facts, ask them back.">
 <meta name="theme-color" content="#ffffff">
+<link rel="icon" type="image/x-icon" href="../favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="../favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="../favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="../favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="../garrett-mode.css?v=1">
-<script src="../garrett-mode.js?v=1"></script>
 <style>
   :root{
     --bg:var(--ag-bg);--panel:var(--ag-surface);--panel2:var(--ag-code);--line:var(--ag-border-dim);--line2:var(--ag-border);
@@ -17,7 +22,6 @@
     --sans:var(--ag-mono);
   }
   :root{--green:#111;--amber:#555;--pink:#454545;--red:#111}
-  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--pink:#7eb7ff;--red:#ff2d55}
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--ink);font:14.5px/1.55 var(--sans);display:flex;flex-direction:column;overflow:hidden}
@@ -91,13 +95,12 @@
 <header>
   <h1>
     <svg width="20" height="20" viewBox="0 0 32 32"><circle cx="16" cy="16" r="4.6" style="fill:var(--accent)"/><circle cx="6" cy="7" r="2.3" style="fill:var(--accent2)"/><circle cx="26" cy="9" r="2.3" style="fill:var(--accent2)"/><circle cx="7" cy="25" r="2.3" style="fill:var(--pink)"/><circle cx="25" cy="24" r="2.3" style="fill:var(--green)"/><g style="stroke:var(--accent)" stroke-width="1.1" opacity=".55"><line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/><line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g></svg>
-    neuron<b>-db</b> <span style="color:var(--dim);font-weight:500">· live in your browser</span>
+    <span>neuron<b>-db</b></span> <span style="color:var(--dim);font-weight:500">· live in your browser</span>
   </h1>
   <div class="pills">
     <span class="pill"><span class="dot off" id="wasmDot"></span><span id="wasmState">loading core…</span></span>
     <span class="pill">module <b id="wasmSize">1.4 MB</b></span>
     <span class="pill">selftest <b id="selftest">—</b></span>
-    <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
   </div>
 </header>
 

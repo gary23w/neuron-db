@@ -6,13 +6,17 @@
 <title>neuron-db · WASM web-call lab test</title>
 <meta name="description" content="Lab test: the neuron-db WASM module makes a real HTTP call through a host_http import, fetches a public CORS API directly (no worker), and stores the result into neuron-db memory.">
 <meta name="theme-color" content="#ffffff">
+<link rel="icon" type="image/x-icon" href="favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="garrett-mode.css?v=1">
-<script src="garrett-mode.js?v=1"></script>
 <style>
   :root{ --bg:var(--ag-bg); --panel:var(--ag-surface); --ink:var(--ag-text); --mid:var(--ag-muted); --dim:var(--ag-muted); --line:var(--ag-border-dim); --line2:var(--ag-border);
          --accent:var(--ag-accent); --accent2:var(--ag-blue); --mono:var(--ag-mono); --sans:var(--ag-mono); }
   :root{--warn:#555;--pink:#454545}
-  :root[data-color-mode="dark"]{--warn:#f3f7f1;--pink:#9effbd}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;max-width:920px;margin-inline:auto;padding:22px 18px 60px}
   a{color:var(--accent)} h1{font-size:21px;letter-spacing:-.02em;margin:0 0 4px} .sub{color:var(--mid);font-size:14px;margin:0 0 18px}
   .tag{display:inline-block;font:600 11px var(--mono);color:var(--accent);background:color-mix(in srgb,var(--ag-accent) 6%,var(--ag-bg));border:1px solid var(--ag-border);border-radius:0;padding:3px 9px;margin-bottom:10px}

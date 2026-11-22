@@ -19,16 +19,18 @@
 <meta name="twitter:title" content="neuron-db: an associative memory you can run anywhere">
 <meta name="twitter:description" content="A small local model decides; neuron-db grounds it and searches the web when it doesn't know. Pure-Rust associative memory, microsecond recall, all in the browser.">
 <meta name="twitter:image" content="https://gary23w.github.io/neuron-db/og-image.png">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='5' fill='%235eead4'/%3E%3Ccircle cx='6' cy='7' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='26' cy='9' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='7' cy='25' r='2.4' fill='%23f472b6'/%3E%3Ccircle cx='25' cy='24' r='2.4' fill='%2334d399'/%3E%3Cg stroke='%235eead4' stroke-width='1.1' opacity='.6'%3E%3Cline x1='16' y1='16' x2='6' y2='7'/%3E%3Cline x1='16' y1='16' x2='26' y2='9'/%3E%3Cline x1='16' y1='16' x2='7' y2='25'/%3E%3Cline x1='16' y1='16' x2='25' y2='24'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="icon" type="image/x-icon" href="favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="garrett-mode.css?v=1">
-<script src="garrett-mode.js?v=1"></script>
 <style>
   /* ============================================================================
      neuron-db · design tokens
-     Colours and type come from Agent Garrett's theme (garrett-mode.css): the
-     monochrome light palette by default and the green palette in dark mode.
-     The site's own names are bound to it, so every rule below follows the
-     reader's light/dark choice.
+     Colours and type come from Agent Garrett's light theme (garrett-mode.css).
+     The site's own names are bound to it, so every rule below follows it.
      ========================================================================= */
   :root{
     --bg:var(--ag-bg); --bg2:var(--ag-surface); --panel:var(--ag-surface);
@@ -37,7 +39,7 @@
     --ink:var(--ag-text); --mid:var(--ag-muted);
     --dim:var(--ag-muted); --faint:var(--ag-faint);
     --accent:var(--ag-accent); --accent2:var(--ag-link); --on-accent:var(--ag-on-accent);
-    /* hues: distinct greys in light so series stay apart, AG's own colours in dark */
+    /* hues: distinct greys so series stay apart */
     --pink:#454545; --green:#111; --amber:#555; --red:var(--ag-danger);
     --coral:var(--amber); --teal:var(--accent); --teal-ink:var(--on-accent);
     --wash:color-mix(in srgb, var(--accent) 7%, transparent);
@@ -47,7 +49,6 @@
     --maxw:1140px; --radius:0; --radius-sm:0;
     --shadow:none; --glow:none;
   }
-  :root[data-color-mode="dark"]{ --pink:var(--ag-blue); --green:var(--ag-accent); --amber:var(--ag-heading); }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth;overflow-x:hidden}
   /* dark-theme scrollbars (Firefox + WebKit) */
@@ -451,21 +452,15 @@
   .btn.primary,.btn.primary:hover{filter:none;box-shadow:none}
   .btn.primary:hover{background:var(--ag-accent-hover);border-color:var(--ag-accent-hover)}
   .card:hover{transform:none}
-  .garrett-family{position:relative;z-index:51}
+  /* header: one-word brand, buttons of one height with room between them; long buttons wrap on phones */
+  .brand{min-height:44px}
+  .nav-links .btn{height:40px;box-sizing:border-box}
+  @media(min-width:1101px){.nav-links .btn+.btn{margin-left:4px}}
+  .btn{max-width:100%}
 </style>
 <link rel="stylesheet" href="./christmas-snow.css">
 </head>
 <body>
-<nav class="garrett-family" aria-label="Garrett projects">
-  <ul>
-    <li><a href="https://agent.garrettstimpson.ca/">Agent Garrett</a></li>
-    <li><a href="https://veil.garrettstimpson.ca/">nl-veil</a></li>
-    <li><a href="https://gary23w.github.io/neuron-db/" aria-current="true">neuron-db</a></li>
-    <li><a href="https://gary23w.github.io/sentinels/">Sentinels</a></li>
-    <li><a href="https://garrettstimpson.ca/">Blog</a></li>
-    <li class="garrett-family-mode"><button type="button" class="color-mode-toggle" data-color-mode-toggle></button></li>
-  </ul>
-</nav>
 <!-- ===================== NAV ===================== -->
 <header class="nav" id="nav">
   <div class="nav-inner">
@@ -478,7 +473,7 @@
           <line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/>
           <line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g>
       </svg>
-      neuron<b>-db</b>
+      <span>neuron<b>-db</b></span>
     </a>
     <nav class="nav-links" id="navlinks">
       <a class="navlink" href="#synapse">Memory</a>
@@ -488,7 +483,7 @@
       <a class="navlink" href="#veil">In production</a>
       <span class="nav-sep" aria-hidden="true"></span>
       <button class="btn ghost" id="openDocs" type="button">Docs</button>
-      <a class="btn ghost" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub ↗</a>
+      <a class="btn ghost" href="https://github.com/gary23w/neuron-db" target="_blank" rel="noopener">GitHub</a>
       <a class="btn primary" href="lab.html">▶ Live lab</a>
     </nav>
     <button class="hamburger" id="hamburger" aria-label="menu"><span></span></button>
@@ -1179,7 +1174,7 @@ db.route(<span class="tok-s">"user:42"</span>, userMessage);              <span 
       <div style="max-width:320px">
         <a class="brand" href="#top">
           <svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="16" r="4.6" fill="var(--accent)"/><circle cx="6" cy="7" r="2.3" fill="var(--accent2)"/><circle cx="26" cy="9" r="2.3" fill="var(--accent2)"/><circle cx="7" cy="25" r="2.3" fill="var(--pink)"/><circle cx="25" cy="24" r="2.3" fill="var(--green)"/><g stroke="var(--accent)" stroke-width="1.1" opacity=".55"><line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="26" y2="9"/><line x1="16" y1="16" x2="7" y2="25"/><line x1="16" y1="16" x2="25" y2="24"/></g></svg>
-          neuron<b>-db</b>
+          <span>neuron<b>-db</b></span>
         </a>
         <p class="dim" style="font-size:14px;margin-top:14px">An associative memory you can run anywhere. Pure Rust, zero dependencies, with the gary-neuron dispatcher hippocampus baked in.</p>
         <p class="dim" style="font-size:13px">MIT licensed · Author: <b class="accent">gary23w</b></p>

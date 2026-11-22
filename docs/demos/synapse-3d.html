@@ -6,12 +6,16 @@
 <title>neuron-db · 3D synapse — watch neurons fire</title>
 <meta name="description" content="Watch the real neuron-db Rust core fire in 3D: a knowledge graph of neurons, and a recall_chain pulse linking neuron to neuron across the graph — running entirely in your browser via WebAssembly.">
 <meta name="theme-color" content="#ffffff">
+<link rel="icon" type="image/x-icon" href="../favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="../favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="../favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="../favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png?v=1">
 <link rel="stylesheet" href="../garrett-mode.css?v=1">
-<script src="../garrett-mode.js?v=1"></script>
 <style>
   :root{--bg:var(--ag-bg);--ink:var(--ag-text);--mid:var(--ag-muted);--dim:var(--ag-muted);--faint:var(--ag-faint);--accent:var(--ag-accent);--accent2:var(--ag-blue);--line:var(--ag-border);--panel:color-mix(in srgb,var(--ag-bg) 86%,transparent);--mono:var(--ag-mono);--sans:var(--ag-mono)}
   :root{--green:#111;--amber:#555;--pink:#454545;--red:#111;--node-person:#555;--node-project:#111;--node-other:#454545;--edge:#c4c4c4}
-  :root[data-color-mode="dark"]{--green:#00ef72;--amber:#f3f7f1;--pink:#7eb7ff;--red:#ff2d55;--node-person:#7eb7ff;--node-project:#00ef72;--node-other:#f3f7f1;--edge:#174d2f}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
   #cv{position:fixed;inset:0;display:block}
@@ -56,9 +60,8 @@
   #banner{top:64px;left:50%;transform:translateX(-50%);background:color-mix(in srgb,var(--ag-danger) 10%,var(--ag-bg));border:1px solid color-mix(in srgb,var(--ag-danger) 45%,transparent);color:var(--ag-danger);padding:9px 14px;border-radius:0;font:12px var(--mono);display:none}
   @media(max-width:760px){
     #top{flex-wrap:wrap;padding:8px 10px;gap:6px 10px}
-    #top .color-mode-toggle{order:1;margin-left:auto}
     .eng{order:2} .you{order:3;flex:1 1 0;min-width:0;text-align:right}
-    #panel{position:fixed;top:auto;bottom:auto;left:8px;right:8px;width:auto;top:104px;padding:12px;max-height:42vh;overflow:auto}
+    #panel{position:fixed;top:auto;bottom:auto;left:8px;right:8px;width:auto;top:calc(var(--top-h,58px) + 8px);padding:12px;max-height:42vh;overflow:auto}
     #out{left:8px;right:8px;width:auto;bottom:8px}
     #help{display:none}
   }
@@ -68,10 +71,9 @@
 <canvas id="cv"></canvas>
 
 <div class="ov" id="top">
-  <span class="brand"><span class="dot"></span> neuron<b>-db</b> · 3D synapse</span>
+  <span class="brand"><span class="dot"></span><span>neuron<b>-db</b> · 3D synapse</span></span>
   <span class="eng" id="eng">engine: <b id="engName">loading…</b></span>
   <span class="you">you joined as <b id="sid">anon</b></span>
-  <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
 </div>
 
 <div class="ov" id="banner"></div>
@@ -177,7 +179,7 @@ function fire(q){return ENGINE==="wasm"?wFire(q):mFire(q);}
 function chain(s,p){return ENGINE==="wasm"?wChain(s,p):mChain(s,p);}
 
 /* ============================ scene ============================ */
-// colours come from the page's CSS tokens, so the scene follows the light/dark switch
+// colours come from the page's CSS tokens
 var css=function(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();};
 var cv=document.getElementById("cv");
 var renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:false});
@@ -252,15 +254,6 @@ function spawnPulse(from,to,delay){
   pulses.push({from:from,to:to,t:-delay,dur:0.5,spr:spr});
 }
 function flare(node,amt){node.flare=Math.min(2.2, node.flare+amt);}
-
-/* ============================ light/dark switch ============================ */
-document.addEventListener("garrett:color-mode",function(){
-  readColors();
-  var bg=css("--ag-bg"); renderer.setClearColor(bg); scene.fog.color.set(bg);
-  nodes.forEach(function(n){ n.base.copy(COL[n.type]); if(!n.flare) n.spr.material.color.copy(n.base); });
-  pulses.forEach(function(p){ p.spr.material.color.copy(CHAINCOL); });
-  if(edgeGeo){ var c=edgeGeo.attributes.color; for(var i=0;i<c.count;i++) c.setXYZ(i,EDGECOL.r,EDGECOL.g,EDGECOL.b); c.needsUpdate=true; }
-});
 
 /* ============================ fire orchestration ============================ */
 var trailEl=document.getElementById("trail"), ansEl=document.getElementById("ans"), timingEl=document.getElementById("timing");
@@ -377,6 +370,10 @@ function bootMirror(msg){ setEngine("mirror"); if(msg){var b=document.getElement
     fetch(url).then(function(r){return r.arrayBuffer();}).then(function(b){return WebAssembly.instantiate(b,{});}).then(ok).catch(fail);
   }
 })();
+</script>
+<script>
+/* On a phone the top bar wraps; keep the panel just under it, however many rows it takes. */
+(function(){var bar=document.getElementById("top");if(!bar||!window.ResizeObserver)return;new ResizeObserver(function(){document.documentElement.style.setProperty("--top-h",Math.round(bar.getBoundingClientRect().bottom)+"px");}).observe(bar);})();
 </script>
 </body>
 </html>

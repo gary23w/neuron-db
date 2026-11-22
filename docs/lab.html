@@ -5,14 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>neuron-db · live browser lab</title>
 <meta name="description" content="A real lab in your browser: neuron-db memory compiled to WebAssembly + a local Llama via WebLLM. Multiple chats, settings, optional account. No server, no API key. Talk to it; watch the memory fire.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='5' fill='%235eead4'/%3E%3Ccircle cx='6' cy='7' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='26' cy='9' r='2.4' fill='%237c9cff'/%3E%3Ccircle cx='7' cy='25' r='2.4' fill='%23f472b6'/%3E%3Ccircle cx='25' cy='24' r='2.4' fill='%2334d399'/%3E%3Cg stroke='%235eead4' stroke-width='1.1' opacity='.6'%3E%3Cline x1='16' y1='16' x2='6' y2='7'/%3E%3Cline x1='16' y1='16' x2='26' y2='9'/%3E%3Cline x1='16' y1='16' x2='7' y2='25'/%3E%3Cline x1='16' y1='16' x2='25' y2='24'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="icon" type="image/x-icon" href="favicon.ico?v=1">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png?v=1">
+<link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png?v=1">
+<link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=1">
 <meta name="theme-color" content="#ffffff">
 <link rel="stylesheet" href="garrett-mode.css?v=1">
-<script src="garrett-mode.js?v=1"></script>
 <style>
-  /* Colours and type come from Agent Garrett's theme (garrett-mode.css): the
-     monochrome light palette by default and the green palette in dark mode.
-     The lab's own names are bound to it; the Appearance switch sets the mode. */
+  /* Colours and type come from Agent Garrett's light theme (garrett-mode.css).
+     The lab's own names are bound to it. */
   :root{
     --bg:var(--ag-bg); --bg2:var(--ag-surface); --panel:var(--ag-surface); --panel2:var(--ag-code);
     --ink:var(--ag-text); --mid:var(--ag-muted); --dim:var(--ag-muted);
@@ -22,7 +25,6 @@
     --p-bg-dark:var(--ag-surface); --p-bg-sel:var(--ag-accent-dark); --p-red:var(--ag-danger);
     --mono:var(--ag-mono); --sans:var(--ag-mono);
   }
-  :root[data-color-mode="dark"]{ --warn:var(--ag-heading); --pink:var(--ag-blue); }
   *{box-sizing:border-box} html,body{margin:0;height:100%;overflow-x:hidden}
   html{background:var(--bg)}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
@@ -67,7 +69,7 @@
   .chatcol{display:flex;flex-direction:column;min-height:0;min-width:0}
   .cbar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);
         background:color-mix(in srgb, var(--bg2) 76%, transparent);backdrop-filter:blur(8px)}
-  :root[data-color-mode="light"] .cbar{background:color-mix(in srgb, var(--bg2) 76%, transparent)}
+  .cbar{background:color-mix(in srgb, var(--bg2) 76%, transparent)}
   .ctitle{font-weight:680;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40vw}
   .cbar .sp{flex:1}
   .icon{background:var(--panel2);border:1px solid var(--line2);border-radius:0;color:var(--mid);padding:6px 10px;font-size:15px;line-height:1}
@@ -79,7 +81,7 @@
   .log{flex:1;overflow:auto;padding:18px 16px;display:flex;flex-direction:column;gap:12px}
   .msg{max-width:78%;padding:10px 13px;border-radius:0;font-size:14.5px;white-space:pre-wrap;word-wrap:break-word}
   .msg.u{align-self:flex-end;background:var(--p-bg-sel);border:1px solid var(--line2)}
-  :root[data-color-mode="light"] .msg.u{background:var(--p-bg-sel);border-color:var(--line2)}
+  .msg.u{background:var(--p-bg-sel);border-color:var(--line2)}
   .msg.a{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
   .msg.s{align-self:center;background:transparent;color:var(--dim);font:12.5px var(--mono);max-width:92%;text-align:center}
   .msg .who{display:block;font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
@@ -104,7 +106,7 @@
   .stat{flex:1;min-width:84px} .stat b{display:block;font:700 19px var(--mono);color:var(--accent)} .stat span{font-size:11px;color:var(--dim)}
   .affect{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,color-mix(in srgb, var(--accent2) 9%, transparent),color-mix(in srgb, var(--accent) 7%, transparent))}
   .chip{display:inline-flex;align-items:center;gap:0;font:11px var(--mono);color:var(--ink);border:1px solid var(--line2);border-radius:0;padding:3px 10px;background:var(--panel2)}
-  :root[data-color-mode="light"] .chip{background:var(--panel2)}
+  .chip{background:var(--panel2)}
   .chip b{color:var(--accent2)} .chip.mood b{color:var(--warn)}
   .chip .bar{display:inline-block;width:46px;height:5px;margin-left:7px;border-radius:0;background:var(--line2);overflow:hidden}
   .chip .bar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent))}
@@ -192,7 +194,6 @@
     body.memopen .mem{transform:translateX(0)}
     .memtoggle{display:inline-flex} .ctitle{max-width:34vw} .msg{max-width:90%}
   }
-  .sect .color-mode-toggle{width:100%}
 </style>
 <link rel="stylesheet" href="./christmas-snow.css">
 </head>
@@ -278,10 +279,6 @@
       <div class="row"><label>Feelings <span class="hint">— moods + accumulating opinions</span></label><span class="sw"><input type="checkbox" id="cfgAffect"><span class="tr"></span></span></div>
       <div class="row"><label>Ordered narration <span class="hint">— span recall for “walk me through”</span></label><span class="sw"><input type="checkbox" id="cfgOrdered"><span class="tr"></span></span></div>
       <div class="row"><label>Show synapse feed <span class="hint">— live memory internals</span></label><span class="sw"><input type="checkbox" id="cfgInternals"><span class="tr"></span></span></div>
-    </div>
-    <div class="sect">
-      <div class="lab">Appearance</div>
-      <button type="button" class="color-mode-toggle" data-color-mode-toggle></button>
     </div>
     <div class="sect">
       <div class="lab">This chat's memory</div>
